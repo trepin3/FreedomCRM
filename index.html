@@ -523,7 +523,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
     <button class="script-iframe-close" onclick="closeScriptTool()">← Back to Dialer</button>
     <div class="script-iframe-title">📋 The Basics — FE Script</div>
   </div>
-  <iframe id="scriptIframe" class="script-iframe" src="" title="The Basics"></iframe>
+  <iframe id="scriptIframe" class="script-iframe" title="The Basics"></iframe>
 </div>
 
 <!-- Search Overlay -->
@@ -1338,10 +1338,14 @@ async function loadLeaderboard() {
 // ══════════════════════════════════════════════════
 // SCRIPT TOOL IFRAME
 // ══════════════════════════════════════════════════
+let scriptToolLoaded = false;
 function openScriptTool() {
   const m = document.getElementById('scriptIframeModal');
   const f = document.getElementById('scriptIframe');
-  if (!f.src || f.src === 'about:blank') f.src = CONFIG.SCRIPT_TOOL_URL;
+  if (!scriptToolLoaded) {
+    f.src = CONFIG.SCRIPT_TOOL_URL;
+    scriptToolLoaded = true;
+  }
   m.classList.add('show');
 }
 function closeScriptTool() {
