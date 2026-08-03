@@ -1,0 +1,1590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>FreedomCRM — Lead Dialer</title>
+<style>
+:root {
+  --bg:#f5f5f7; --card:#fff; --text:#1d1d1f; --text-secondary:#6e6e73;
+  --primary:#0071e3; --primary-dark:#0059b3; --success:#30d158;
+  --warning:#ff9f0a; --danger:#ff453a; --border:#d2d2d7;
+  --shadow:0 2px 12px rgba(0,0,0,0.08); --shadow-lg:0 8px 30px rgba(0,0,0,0.14);
+  --radius:16px; --radius-sm:10px; --input-bg:#f0f0f5;
+  --accent:#5e5ce6;
+}
+[data-theme="dark"] {
+  --bg:#000; --card:#1c1c1e; --text:#f5f5f7; --text-secondary:#98989d;
+  --primary:#0a84ff; --primary-dark:#409cff; --border:#38383a;
+  --shadow:0 2px 12px rgba(0,0,0,0.35); --shadow-lg:0 8px 30px rgba(0,0,0,0.6);
+  --input-bg:#2c2c2e;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;transition:background 0.3s,color 0.3s;}
+
+/* ── VIEWS ── */
+.view{display:none;}
+
+/* ── COMMON ── */
+.field-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-bottom:5px;}
+.text-input{width:100%;padding:12px 14px;border:2px solid var(--border);border-radius:var(--radius-sm);font-size:15px;background:var(--input-bg);color:var(--text);outline:none;transition:border-color 0.2s;font-family:inherit;}
+.text-input:focus{border-color:var(--primary);}
+.field-group{margin-bottom:12px;}
+.field-row{display:flex;gap:10px;flex-wrap:wrap;}
+.field-row .field-group{flex:1;min-width:140px;}
+
+/* ── LOGIN ── */
+.login-wrap{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;}
+.login-logo{width:88px;height:88px;border-radius:24px;background:linear-gradient(135deg,#0071e3,#30d158);display:flex;align-items:center;justify-content:center;font-size:40px;color:#fff;margin-bottom:20px;box-shadow:0 10px 30px rgba(0,113,227,0.35);}
+.login-title{font-size:30px;font-weight:800;letter-spacing:-0.5px;margin-bottom:4px;}
+.login-title span{color:var(--primary);}
+.login-sub{font-size:14px;color:var(--text-secondary);margin-bottom:28px;font-weight:500;}
+.login-card{width:100%;max-width:380px;background:var(--card);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-lg);border:1px solid var(--border);}
+.login-btn{width:100%;margin-top:16px;padding:15px;border-radius:var(--radius-sm);border:none;background:var(--primary);color:#fff;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.2s;}
+.login-btn:active{opacity:0.85;}
+.login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(255,69,58,0.1);border:1.5px solid var(--danger);border-radius:var(--radius-sm);font-size:14px;font-weight:600;color:var(--danger);text-align:center;}
+.login-hint{text-align:center;margin-top:14px;font-size:12px;color:var(--text-secondary);}
+.login-hint a{color:var(--primary);text-decoration:none;font-weight:600;cursor:pointer;}
+.theme-fixed{position:fixed;top:16px;right:16px;z-index:200;width:36px;height:36px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:var(--shadow);}
+
+/* ── STATE PICKER ── */
+.picker-wrap{min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px;}
+.picker-title{font-size:26px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;color:var(--text);text-align:center;}
+.picker-sub{font-size:15px;color:var(--text-secondary);margin-bottom:28px;text-align:center;}
+.picker-agent{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--primary);margin-bottom:20px;}
+.state-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;width:100%;max-width:520px;}
+.state-tile{background:var(--card);border-radius:var(--radius);padding:24px 16px;border:2px solid var(--border);box-shadow:var(--shadow);cursor:pointer;text-align:center;transition:all 0.2s;color:var(--text);text-decoration:none;}
+.state-tile:active{transform:scale(0.96);}
+.state-tile:hover{border-color:var(--primary);}
+.state-tile.saved{border-color:var(--primary);background:linear-gradient(135deg,rgba(0,113,227,0.06),rgba(0,113,227,0.02));}
+.state-icon{font-size:40px;margin-bottom:8px;display:block;}
+.state-code{font-size:22px;font-weight:800;color:var(--primary);letter-spacing:-0.3px;}
+.state-name{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:2px;}
+@media(max-width:400px){.state-grid{grid-template-columns:1fr;}.state-tile{padding:18px 14px;}}
+
+/* ── DIALER HEADER ── */
+.hud-header{background:var(--card);border-bottom:1px solid var(--border);padding:10px 14px 8px;position:sticky;top:0;z-index:50;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);}
+.hud-header-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;}
+.hud-brand{display:flex;align-items:center;gap:8px;min-width:0;flex-shrink:0;}
+.hud-logo-icon{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#0071e3,#30d158);display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff;flex-shrink:0;}
+.hud-title{font-size:15px;font-weight:800;letter-spacing:-0.3px;white-space:nowrap;}
+.hud-title span{color:var(--primary);}
+.hud-actions{display:flex;gap:6px;}
+.icon-btn{width:32px;height:32px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform 0.15s;flex-shrink:0;}
+.icon-btn:active{transform:scale(0.9);}
+
+/* State switcher pills */
+.state-switcher{display:flex;gap:5px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
+.state-switcher::-webkit-scrollbar{display:none;}
+.switcher-pill{flex-shrink:0;padding:4px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text-secondary);font-size:11px;font-weight:800;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;font-family:inherit;}
+.switcher-pill.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.switcher-pill:active{transform:scale(0.96);}
+.hud-counter{font-size:11px;font-weight:700;color:var(--text-secondary);white-space:nowrap;padding:4px 10px;background:var(--input-bg);border-radius:20px;flex-shrink:0;}
+
+/* Stats bar */
+.stats-bar{display:flex;gap:4px;padding:6px 14px 8px;border-bottom:1px solid var(--border);background:var(--card);font-size:11px;font-weight:700;overflow-x:auto;scrollbar-width:none;}
+.stats-bar::-webkit-scrollbar{display:none;}
+.stat-chip{flex-shrink:0;padding:4px 10px;background:var(--input-bg);border-radius:20px;color:var(--text);}
+.stat-chip strong{color:var(--primary);font-weight:800;}
+
+/* Tab nav */
+.tab-nav{display:flex;gap:2px;padding:8px 12px 0;background:var(--card);border-bottom:1px solid var(--border);}
+.tab-btn{flex:1;padding:9px 6px;background:transparent;border:none;border-bottom:2.5px solid transparent;color:var(--text-secondary);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.2s;}
+.tab-btn.active{color:var(--primary);border-color:var(--primary);}
+.tab-btn:active{opacity:0.7;}
+
+/* ── DIALER CONTENT ── */
+.dialer-body{max-width:600px;margin:0 auto;padding:16px 14px 100px;}
+.tab-panel{display:none;}
+.tab-panel.active{display:block;}
+
+/* Lead card */
+.lead-card{background:var(--card);border-radius:var(--radius);padding:20px;border:1px solid var(--border);box-shadow:var(--shadow-lg);}
+.lead-flag{padding:8px 12px;background:rgba(255,159,10,0.1);border:1px solid var(--warning);border-radius:var(--radius-sm);color:var(--warning);font-size:12px;font-weight:700;margin-bottom:12px;text-align:center;}
+.lead-name{font-size:24px;font-weight:800;color:var(--text);letter-spacing:-0.4px;margin-bottom:4px;line-height:1.2;}
+.lead-phone-wrap{margin:12px 0 16px;}
+.lead-phone{display:inline-flex;align-items:center;gap:6px;font-size:22px;font-weight:700;color:var(--primary);text-decoration:none;padding:6px 12px;background:rgba(0,113,227,0.08);border-radius:10px;}
+.lead-localtime{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:6px;}
+.lead-details{background:var(--input-bg);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;}
+.detail-row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.detail-row:last-child{border-bottom:none;}
+.detail-key{color:var(--text-secondary);font-weight:600;}
+.detail-val{color:var(--text);font-weight:700;text-align:right;max-width:60%;word-break:break-word;}
+
+/* Call buttons */
+.call-primary-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:20px;border-radius:var(--radius);border:none;background:var(--success);color:#fff;font-size:20px;font-weight:800;cursor:pointer;text-decoration:none;font-family:inherit;transition:all 0.2s;box-shadow:0 6px 16px rgba(48,209,88,0.35);margin-bottom:10px;}
+.call-primary-btn:active{transform:scale(0.98);}
+.call-primary-btn.disabled{background:var(--input-bg);color:var(--text-secondary);cursor:not-allowed;box-shadow:none;}
+.script-tool-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:var(--radius);border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.2s;}
+.script-tool-btn:active{transform:scale(0.98);}
+.script-tool-btn:hover{border-color:var(--primary);color:var(--primary);}
+
+/* In-call state */
+.in-call-timer{background:var(--card);border:2px solid var(--success);border-radius:var(--radius);padding:20px;text-align:center;margin-bottom:10px;}
+.in-call-label{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--success);margin-bottom:6px;}
+.in-call-time{font-size:36px;font-weight:800;color:var(--text);letter-spacing:-0.5px;font-variant-numeric:tabular-nums;}
+.done-btn{width:100%;padding:16px;border-radius:var(--radius);border:none;background:var(--primary);color:#fff;font-size:16px;font-weight:800;cursor:pointer;font-family:inherit;}
+.done-btn:active{transform:scale(0.98);}
+
+/* Post-call action buttons grid */
+.action-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.action-btn{padding:14px 10px;border-radius:var(--radius);border:none;color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:6px;}
+.action-btn:active{transform:scale(0.96);}
+.action-next{background:var(--success);}
+.action-sold{background:var(--primary);}
+.action-dcid{background:var(--danger);}
+.action-wrong{background:var(--text-secondary);}
+.action-callback{background:var(--warning);grid-column:span 2;}
+
+/* Nav row (back + tabs stay in header) */
+.nav-row{display:flex;gap:8px;margin-bottom:12px;}
+.back-btn{padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text-secondary);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;}
+.back-btn:active{transform:scale(0.96);}
+.back-btn:disabled{opacity:0.4;cursor:not-allowed;}
+
+/* Undo bar */
+.undo-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:12px 18px;border-radius:var(--radius);display:flex;align-items:center;gap:12px;box-shadow:var(--shadow-lg);z-index:150;font-size:14px;font-weight:700;min-width:260px;}
+.undo-msg{flex:1;}
+.undo-btn{background:var(--warning);color:#000;border:none;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;}
+.undo-btn:active{transform:scale(0.94);}
+
+/* Milestone banner */
+.milestone-banner{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-120%);background:linear-gradient(135deg,var(--primary),var(--success));color:#fff;padding:14px 22px;border-radius:var(--radius);font-size:15px;font-weight:800;box-shadow:var(--shadow-lg);z-index:180;max-width:90%;text-align:center;transition:transform 0.4s cubic-bezier(0.34,1.56,0.64,1);}
+.milestone-banner.show{transform:translateX(-50%) translateY(0);}
+
+/* Callback due alert */
+.cb-alerts{position:fixed;top:70px;left:14px;right:14px;z-index:70;display:flex;flex-direction:column;gap:8px;max-width:600px;margin:0 auto;pointer-events:none;}
+.cb-alert{background:var(--warning);color:#000;padding:11px 14px;border-radius:var(--radius);display:flex;align-items:center;gap:10px;box-shadow:var(--shadow-lg);pointer-events:auto;animation:slideDown 0.3s ease;}
+.cb-alert-text{flex:1;font-size:13px;font-weight:700;}
+.cb-alert-call{background:#fff;color:var(--warning);border:none;padding:6px 12px;border-radius:16px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;}
+.cb-alert-close{background:transparent;border:none;color:#000;font-size:16px;cursor:pointer;padding:0 4px;}
+@keyframes slideDown{from{transform:translateY(-20px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+
+/* Modals */
+.modal-overlay{display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);overflow-y:auto;padding:20px 16px;}
+.modal-overlay.show{display:flex;align-items:flex-start;justify-content:center;}
+.modal-card{background:var(--card);border-radius:var(--radius);padding:22px;max-width:480px;width:100%;box-shadow:var(--shadow-lg);}
+.modal-title{font-size:18px;font-weight:800;color:var(--text);margin-bottom:4px;letter-spacing:-0.3px;}
+.modal-sub{font-size:13px;color:var(--text-secondary);margin-bottom:16px;}
+.modal-actions{display:flex;gap:8px;margin-top:16px;}
+.modal-btn{flex:1;padding:13px;border-radius:var(--radius-sm);border:none;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;}
+.modal-btn-cancel{background:var(--input-bg);color:var(--text);}
+.modal-btn-confirm{background:var(--primary);color:#fff;}
+.modal-btn-danger{background:var(--danger);color:#fff;}
+
+/* Script Iframe modal */
+.script-iframe-modal{display:none;position:fixed;inset:0;z-index:120;background:var(--bg);flex-direction:column;}
+.script-iframe-modal.show{display:flex;}
+.script-iframe-header{background:var(--card);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;}
+.script-iframe-close{padding:6px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
+.script-iframe-title{flex:1;font-size:14px;font-weight:800;text-align:center;color:var(--text);}
+.script-iframe{flex:1;width:100%;border:none;background:var(--bg);}
+
+/* Leaderboard */
+.lb-row{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;}
+.lb-row.me{border-color:var(--primary);background:linear-gradient(135deg,rgba(0,113,227,0.08),rgba(0,113,227,0.02));}
+.lb-rank{font-size:16px;font-weight:800;color:var(--text-secondary);min-width:24px;}
+.lb-rank.top{color:var(--warning);}
+.lb-name{flex:1;font-size:14px;font-weight:700;color:var(--text);}
+.lb-stats{display:flex;gap:10px;font-size:12px;color:var(--text-secondary);font-weight:600;}
+.lb-stats strong{color:var(--primary);}
+
+/* Callback list */
+.cb-list-item{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:8px;}
+.cb-item-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.cb-item-name{font-size:15px;font-weight:800;color:var(--text);}
+.cb-item-state{font-size:10px;font-weight:800;text-transform:uppercase;color:var(--primary);}
+.cb-item-when{font-size:12px;color:var(--text-secondary);font-weight:600;margin-bottom:8px;}
+.cb-item-status{display:inline-block;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.3px;}
+.cb-item-status.upcoming{background:rgba(0,113,227,0.1);color:var(--primary);}
+.cb-item-status.due{background:var(--warning);color:#000;}
+.cb-item-status.overdue{background:var(--danger);color:#fff;}
+.cb-item-actions{display:flex;gap:6px;margin-top:8px;}
+.cb-mini-btn{flex:1;padding:8px;border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:none;text-align:center;display:flex;align-items:center;justify-content:center;gap:4px;}
+.cb-mini-btn.call{border-color:var(--success);color:var(--success);}
+.cb-mini-btn:active{transform:scale(0.96);}
+
+/* Search overlay */
+.search-overlay{display:none;position:fixed;inset:0;z-index:130;background:var(--bg);}
+.search-overlay.show{display:block;overflow-y:auto;}
+.search-header{background:var(--card);border-bottom:1px solid var(--border);padding:12px 14px;position:sticky;top:0;z-index:10;display:flex;gap:8px;align-items:center;}
+.search-input{flex:1;padding:10px 14px;border:1.5px solid var(--border);border-radius:20px;font-size:15px;background:var(--input-bg);color:var(--text);outline:none;font-family:inherit;}
+.search-input:focus{border-color:var(--primary);}
+.search-body{max-width:600px;margin:0 auto;padding:16px 14px;}
+.search-result{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;}
+.search-result-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.search-result-name{font-size:16px;font-weight:800;color:var(--text);}
+.search-result-badge{font-size:10px;font-weight:800;padding:2px 8px;border-radius:12px;text-transform:uppercase;letter-spacing:0.3px;}
+.badge-lead{background:rgba(48,209,88,0.15);color:var(--success);}
+.badge-callback{background:rgba(255,159,10,0.15);color:var(--warning);}
+.search-result-phone{font-size:14px;color:var(--primary);font-weight:700;margin-bottom:4px;}
+.search-result-meta{font-size:12px;color:var(--text-secondary);margin-bottom:10px;}
+.search-actions-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;}
+.search-action-btn{padding:8px 6px;border-radius:var(--radius-sm);border:none;color:#fff;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;text-decoration:none;text-align:center;}
+.search-action-btn:active{transform:scale(0.96);}
+.sa-call{background:var(--success);}
+.sa-sold{background:var(--primary);}
+.sa-dcid{background:var(--danger);}
+.sa-wrong{background:var(--text-secondary);}
+.sa-return{background:var(--warning);}
+.sa-resched{background:var(--accent);}
+
+/* Empty / loading states */
+.empty-state{text-align:center;padding:60px 20px;color:var(--text-secondary);}
+.empty-icon{font-size:56px;margin-bottom:12px;opacity:0.5;}
+.empty-title{font-size:17px;font-weight:800;color:var(--text);margin-bottom:6px;}
+.empty-msg{font-size:14px;line-height:1.5;}
+.spinner{display:inline-block;width:36px;height:36px;border:3px solid var(--input-bg);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* Admin dashboard */
+.admin-wrap{max-width:900px;margin:0 auto;padding:20px 14px 60px;}
+.admin-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px;scrollbar-width:none;}
+.admin-tabs::-webkit-scrollbar{display:none;}
+.admin-tab{flex-shrink:0;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text-secondary);font-size:12px;font-weight:800;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;font-family:inherit;}
+.admin-tab.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.admin-section{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:16px;margin-bottom:14px;}
+.admin-section-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--primary);margin-bottom:12px;}
+.admin-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.admin-grid.stats{grid-template-columns:repeat(auto-fit, minmax(120px, 1fr));}
+.admin-stat{background:var(--input-bg);border-radius:var(--radius-sm);padding:12px;text-align:center;}
+.admin-stat-num{font-size:22px;font-weight:800;color:var(--primary);}
+.admin-stat-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-top:2px;}
+.admin-table{width:100%;border-collapse:collapse;font-size:13px;}
+.admin-table th{text-align:left;padding:8px 10px;background:var(--input-bg);font-weight:800;color:var(--text-secondary);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
+.admin-table td{padding:10px;border-bottom:1px solid var(--border);color:var(--text);}
+.admin-table tr:last-child td{border-bottom:none;}
+.admin-force-btn{padding:5px 10px;border-radius:14px;border:1.5px solid var(--warning);background:transparent;color:var(--warning);font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;}
+.admin-force-btn:active{transform:scale(0.94);}
+.admin-refresh{padding:8px 14px;border-radius:20px;border:1.5px solid var(--primary);background:transparent;color:var(--primary);font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;margin-left:auto;display:block;}
+
+@media(max-width:480px){
+  .admin-grid{grid-template-columns:1fr 1fr;}
+  .lead-name{font-size:22px;}
+  .in-call-time{font-size:32px;}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════
+     LOGIN VIEW
+══════════════════════════════════════════════════ -->
+<div id="loginView" class="view">
+  <button class="theme-fixed" onclick="toggleTheme()" id="themeBtn">🌙</button>
+  <div class="login-wrap">
+    <div class="login-logo">📞</div>
+    <div class="login-title">Freedom<span>CRM</span></div>
+    <div class="login-sub">Lead Dialer &amp; Management</div>
+    <div class="login-card">
+      <div class="field-group">
+        <label class="field-label">Username</label>
+        <input class="text-input" id="loginUser" placeholder="Enter username" autocomplete="off"
+          onkeydown="if(event.key==='Enter')document.getElementById('loginPass').focus()">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Password</label>
+        <input class="text-input" type="password" id="loginPass" placeholder="Enter password"
+          onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div class="login-error" id="loginError">Incorrect username or password.</div>
+      <button class="login-btn" onclick="doLogin()">Sign In →</button>
+      <div class="login-hint">
+        <a onclick="clearSaved()">Clear saved info</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     AGENT NAME VIEW
+══════════════════════════════════════════════════ -->
+<div id="nameView" class="view">
+  <button class="theme-fixed" onclick="toggleTheme()" id="nameThemeBtn">🌙</button>
+  <div class="login-wrap">
+    <div class="login-logo">👋</div>
+    <div class="login-title">What's your <span>name</span>?</div>
+    <div class="login-sub">Used to log your calls and dispositions</div>
+    <div class="login-card">
+      <div class="field-group">
+        <label class="field-label">Your Name</label>
+        <input class="text-input" id="agentNameInput" placeholder="e.g. Kepler" autocomplete="off"
+          onkeydown="if(event.key==='Enter')submitAgentName()">
+      </div>
+      <button class="login-btn" onclick="submitAgentName()">Continue →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     STATE PICKER VIEW
+══════════════════════════════════════════════════ -->
+<div id="pickerView" class="view">
+  <button class="theme-fixed" onclick="toggleTheme()" id="pickerThemeBtn">🌙</button>
+  <div class="picker-wrap">
+    <div class="picker-agent" id="pickerGreeting">Welcome, Agent</div>
+    <div class="picker-title">Which state today?</div>
+    <div class="picker-sub">Select the state you'd like to work</div>
+    <div class="state-grid">
+      <div class="state-tile" data-state="AZ" onclick="pickState('AZ')">
+        <span class="state-icon">🌵</span>
+        <div class="state-code">AZ</div>
+        <div class="state-name">Arizona</div>
+      </div>
+      <div class="state-tile" data-state="VA" onclick="pickState('VA')">
+        <span class="state-icon">🏛️</span>
+        <div class="state-code">VA</div>
+        <div class="state-name">Virginia</div>
+      </div>
+      <div class="state-tile" data-state="OH" onclick="pickState('OH')">
+        <span class="state-icon">🌊</span>
+        <div class="state-code">OH</div>
+        <div class="state-name">Ohio</div>
+      </div>
+    </div>
+    <div style="margin-top:24px;">
+      <button class="login-btn" style="max-width:200px;background:var(--input-bg);color:var(--text);" onclick="doLogout()">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     DIALER VIEW
+══════════════════════════════════════════════════ -->
+<div id="dialerView" class="view">
+  <div class="hud-header">
+    <div class="hud-header-row">
+      <div class="hud-brand">
+        <div class="hud-logo-icon">📞</div>
+        <div class="hud-title">Freedom<span>CRM</span></div>
+      </div>
+      <div class="hud-actions">
+        <button class="icon-btn" onclick="openSearch()" title="Search">🔍</button>
+        <button class="icon-btn" onclick="toggleTheme()" id="dialerThemeBtn">🌙</button>
+        <button class="icon-btn" onclick="endDialSession()" title="End Session">⏹</button>
+      </div>
+    </div>
+    <div class="hud-header-row" style="margin-bottom:0;">
+      <div class="state-switcher">
+        <button class="switcher-pill" id="pill-AZ" onclick="switchState('AZ')">🌵 AZ</button>
+        <button class="switcher-pill" id="pill-VA" onclick="switchState('VA')">🏛 VA</button>
+        <button class="switcher-pill" id="pill-OH" onclick="switchState('OH')">🌊 OH</button>
+      </div>
+      <div class="hud-counter" id="leadCounter">— / —</div>
+    </div>
+  </div>
+
+  <div class="stats-bar">
+    <div class="stat-chip">📞 <strong id="statCalls">0</strong></div>
+    <div class="stat-chip">✅ <strong id="statSales">0</strong></div>
+    <div class="stat-chip">🚫 <strong id="statDCID">0</strong></div>
+    <div class="stat-chip">📅 <strong id="statCallbacks">0</strong></div>
+    <div class="stat-chip">📵 <strong id="statWrong">0</strong></div>
+  </div>
+
+  <div class="tab-nav">
+    <button class="tab-btn active" data-tab="dial" onclick="switchTab('dial')">📞 Dial</button>
+    <button class="tab-btn" data-tab="callbacks" onclick="switchTab('callbacks')">📅 My Callbacks</button>
+    <button class="tab-btn" data-tab="leaderboard" onclick="switchTab('leaderboard')">🏆 Leaderboard</button>
+  </div>
+
+  <div class="cb-alerts" id="cbAlerts"></div>
+
+  <div class="dialer-body">
+    <div class="tab-panel active" id="tab-dial">
+      <div class="nav-row">
+        <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Back</button>
+      </div>
+      <div id="dialContent"><div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div></div>
+    </div>
+
+    <div class="tab-panel" id="tab-callbacks">
+      <div id="callbacksContent"><div class="empty-state"><div class="spinner"></div></div></div>
+    </div>
+
+    <div class="tab-panel" id="tab-leaderboard">
+      <div id="leaderboardContent"><div class="empty-state"><div class="spinner"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     ADMIN DASHBOARD VIEW
+══════════════════════════════════════════════════ -->
+<div id="adminView" class="view">
+  <div class="hud-header">
+    <div class="hud-header-row">
+      <div class="hud-brand">
+        <div class="hud-logo-icon" style="background:linear-gradient(135deg,#ff9f0a,#ff453a);">👑</div>
+        <div class="hud-title">Admin <span>Dashboard</span></div>
+      </div>
+      <div class="hud-actions">
+        <button class="icon-btn" onclick="toggleTheme()" id="adminThemeBtn">🌙</button>
+        <button class="icon-btn" onclick="doLogout()" title="Sign out">🚪</button>
+      </div>
+    </div>
+  </div>
+  <div class="admin-wrap">
+    <div class="admin-tabs">
+      <button class="admin-tab active" data-range="today" onclick="switchAdminRange('today')">Today</button>
+      <button class="admin-tab" data-range="week" onclick="switchAdminRange('week')">This Week</button>
+      <button class="admin-tab" data-range="month" onclick="switchAdminRange('month')">This Month</button>
+      <button class="admin-tab" data-range="ytd" onclick="switchAdminRange('ytd')">YTD</button>
+      <button class="admin-tab" data-range="all" onclick="switchAdminRange('all')">All Time</button>
+      <button class="admin-refresh" onclick="loadAdminData()">↻ Refresh</button>
+    </div>
+    <div id="adminContent"><div class="empty-state"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     MODALS
+══════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="dcidModal">
+  <div class="modal-card">
+    <div class="modal-title">🚫 Mark as DCID</div>
+    <div class="modal-sub" id="dcidModalSub">Lead name</div>
+    <div class="field-group">
+      <label class="field-label">Reason for Do Not Call *</label>
+      <textarea class="text-input" id="dcidReason" rows="4" placeholder="Why is this a do-not-call?" style="resize:vertical;font-family:inherit;"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('dcidModal')">Cancel</button>
+      <button class="modal-btn modal-btn-danger" onclick="confirmDCID()">Confirm DCID</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="soldModal">
+  <div class="modal-card">
+    <div class="modal-title">✅ Mark as Sold</div>
+    <div class="modal-sub" id="soldModalSub">Lead name</div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Monthly Premium ($)</label>
+        <input class="text-input" id="soldPremium" type="number" placeholder="75">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Carrier</label>
+        <input class="text-input" id="soldCarrier" placeholder="Carrier name">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">First Draft Date</label>
+        <input class="text-input" id="soldFirstDraft" type="date">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Recurring Draft Date</label>
+        <input class="text-input" id="soldRecurringDraft" placeholder="e.g. 15th">
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Reason for Policy</label>
+      <textarea class="text-input" id="soldReason" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Notes</label>
+      <textarea class="text-input" id="soldNotes" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('soldModal')">Cancel</button>
+      <button class="modal-btn modal-btn-confirm" onclick="confirmSold()">Confirm Sale</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="callbackModal">
+  <div class="modal-card">
+    <div class="modal-title">📅 Schedule Callback</div>
+    <div class="modal-sub" id="callbackModalSub">Lead name</div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Date *</label>
+        <input class="text-input" id="cbDate" type="date">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Time *</label>
+        <input class="text-input" id="cbTime" type="time">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('callbackModal')">Cancel</button>
+      <button class="modal-btn modal-btn-confirm" onclick="confirmCallback()">Schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- Script Tool Iframe Modal -->
+<div class="script-iframe-modal" id="scriptIframeModal">
+  <div class="script-iframe-header">
+    <button class="script-iframe-close" onclick="closeScriptTool()">← Back to Dialer</button>
+    <div class="script-iframe-title">📋 The Basics — FE Script</div>
+  </div>
+  <iframe id="scriptIframe" class="script-iframe" src="" title="The Basics"></iframe>
+</div>
+
+<!-- Search Overlay -->
+<div class="search-overlay" id="searchOverlay">
+  <div class="search-header">
+    <button class="script-iframe-close" onclick="closeSearch()">← Close</button>
+    <input class="search-input" id="searchInput" placeholder="Search by name or phone…" oninput="doSearch()">
+  </div>
+  <div class="search-body" id="searchBody">
+    <div class="empty-state">
+      <div class="empty-icon">🔍</div>
+      <div class="empty-title">Search all states</div>
+      <div class="empty-msg">Enter a name or phone number (2+ characters)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Undo bar (dynamic) -->
+<div id="undoContainer"></div>
+
+<!-- Milestone banner -->
+<div class="milestone-banner" id="milestoneBanner"></div>
+
+<script>
+// ══════════════════════════════════════════════════
+// CONFIG — paste your Apps Script Web App URL here
+// ══════════════════════════════════════════════════
+const CONFIG = {
+  APPS_SCRIPT_URL: 'REPLACE_WITH_YOUR_APPS_SCRIPT_WEB_APP_URL',
+  AGENT_USER: 'Get',
+  AGENT_PASS: 'Money',
+  ADMIN_USER: 'BOSS',
+  ADMIN_PASS: 'L1FE',
+  SCRIPT_TOOL_URL: 'https://trepin3.github.io/The-Basics/',
+  BATCH_SIZE: 5,
+  STATE_TIMEZONES: { AZ: 'America/Phoenix', VA: 'America/New_York', OH: 'America/New_York' },
+  STATE_NAMES: { AZ: 'Arizona', VA: 'Virginia', OH: 'Ohio' },
+  TCPA_START_HOUR: 8,
+  TCPA_END_HOUR: 21
+};
+
+// ══════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════
+const state = {
+  role: null, // 'agent' or 'admin'
+  agentName: '',
+  currentState: '',
+  leads: [],
+  currentIdx: 0,
+  history: [], // stack of previously viewed leads
+  seenIds: new Set(), // session dedup
+  callStart: null,
+  callEnd: null,
+  timerId: null,
+  callDuration: '',
+  stats: { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 },
+  cardState: 'default', // 'default' | 'incall' | 'postcall'
+  pendingUndo: null,
+  cbAlertsShown: new Set(),
+  myCallbacks: [],
+  cbPollTimer: null,
+  lbPollTimer: null,
+  timeUpdateTimer: null,
+  adminRange: 'today',
+  activeTab: 'dial'
+};
+
+// ══════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', function() {
+  // Restore theme
+  const saved = localStorage.getItem('fcrm_theme');
+  if (saved === 'dark') applyTheme('dark');
+  // Restore agent name
+  const savedName = localStorage.getItem('fcrm_agent');
+  if (savedName) document.getElementById('agentNameInput').value = savedName;
+  show('loginView');
+  document.getElementById('loginUser').focus();
+});
+
+function show(id) {
+  ['loginView', 'nameView', 'pickerView', 'dialerView', 'adminView'].forEach(v => {
+    const el = document.getElementById(v);
+    if (el) el.style.display = (v === id) ? 'block' : 'none';
+  });
+  window.scrollTo(0, 0);
+}
+
+// ══════════════════════════════════════════════════
+// LOGIN
+// ══════════════════════════════════════════════════
+function doLogin() {
+  const user = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value.trim();
+  const err = document.getElementById('loginError');
+  if (user === CONFIG.AGENT_USER && pass === CONFIG.AGENT_PASS) {
+    state.role = 'agent';
+    err.style.display = 'none';
+    show('nameView');
+    document.getElementById('agentNameInput').focus();
+  } else if (user === CONFIG.ADMIN_USER && pass === CONFIG.ADMIN_PASS) {
+    state.role = 'admin';
+    err.style.display = 'none';
+    show('adminView');
+    loadAdminData();
+  } else {
+    err.style.display = 'block';
+    document.getElementById('loginPass').value = '';
+    document.getElementById('loginPass').focus();
+  }
+}
+
+function submitAgentName() {
+  const name = document.getElementById('agentNameInput').value.trim();
+  if (!name) return;
+  state.agentName = name;
+  localStorage.setItem('fcrm_agent', name);
+  document.getElementById('pickerGreeting').textContent = 'Welcome, ' + name;
+
+  // Preselect saved state
+  const savedState = localStorage.getItem('fcrm_state');
+  document.querySelectorAll('.state-tile').forEach(t => t.classList.remove('saved'));
+  if (savedState && document.querySelector('[data-state="' + savedState + '"]')) {
+    document.querySelector('[data-state="' + savedState + '"]').classList.add('saved');
+  }
+  show('pickerView');
+}
+
+function clearSaved() {
+  localStorage.removeItem('fcrm_agent');
+  localStorage.removeItem('fcrm_state');
+  document.getElementById('agentNameInput').value = '';
+  alert('Saved info cleared.');
+}
+
+function doLogout() {
+  // Release all locks if agent
+  if (state.role === 'agent' && state.agentName) {
+    api('POST', { action: 'releaseAll', agent: state.agentName }).catch(() => {});
+  }
+  stopTimers();
+  state.role = null;
+  state.currentState = '';
+  state.leads = [];
+  state.currentIdx = 0;
+  state.history = [];
+  state.seenIds.clear();
+  state.stats = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPass').value = '';
+  document.getElementById('loginError').style.display = 'none';
+  show('loginView');
+  document.getElementById('loginUser').focus();
+}
+
+function endDialSession() {
+  if (!confirm('End your dial session? All your locked leads will be released.')) return;
+  doLogout();
+}
+
+// ══════════════════════════════════════════════════
+// THEME
+// ══════════════════════════════════════════════════
+function toggleTheme() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  applyTheme(dark ? 'light' : 'dark');
+}
+function applyTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode);
+  localStorage.setItem('fcrm_theme', mode);
+  const icon = mode === 'dark' ? '☀️' : '🌙';
+  ['themeBtn', 'nameThemeBtn', 'pickerThemeBtn', 'dialerThemeBtn', 'adminThemeBtn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.textContent = icon;
+  });
+}
+
+// ══════════════════════════════════════════════════
+// STATE PICKER
+// ══════════════════════════════════════════════════
+function pickState(stateCode) {
+  localStorage.setItem('fcrm_state', stateCode);
+  state.currentState = stateCode;
+  updateStateSwitcher();
+  show('dialerView');
+  startTimers();
+  loadLeads();
+}
+
+function switchState(stateCode) {
+  if (stateCode === state.currentState) return;
+  // Release current locks first
+  if (state.agentName) {
+    api('POST', { action: 'releaseAll', agent: state.agentName }).catch(() => {});
+  }
+  localStorage.setItem('fcrm_state', stateCode);
+  state.currentState = stateCode;
+  state.leads = [];
+  state.currentIdx = 0;
+  state.history = [];
+  state.seenIds.clear();
+  updateStateSwitcher();
+  loadLeads();
+}
+
+function updateStateSwitcher() {
+  ['AZ', 'VA', 'OH'].forEach(s => {
+    const p = document.getElementById('pill-' + s);
+    if (p) p.classList.toggle('active', s === state.currentState);
+  });
+}
+
+// ══════════════════════════════════════════════════
+// TIMERS
+// ══════════════════════════════════════════════════
+function startTimers() {
+  stopTimers();
+  state.timeUpdateTimer = setInterval(updateLocalTime, 60000);
+  state.cbPollTimer = setInterval(checkCallbackAlerts, 60000);
+  // Also fetch initial callbacks
+  loadMyCallbacks();
+  // Leaderboard polling only when tab is active
+  state.lbPollTimer = setInterval(() => { if (state.activeTab === 'leaderboard') loadLeaderboard(); }, 60000);
+}
+function stopTimers() {
+  [state.timeUpdateTimer, state.cbPollTimer, state.lbPollTimer].forEach(t => t && clearInterval(t));
+  if (state.callTimerId) clearInterval(state.callTimerId);
+}
+
+// ══════════════════════════════════════════════════
+// TABS
+// ══════════════════════════════════════════════════
+function switchTab(tab) {
+  state.activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+  if (tab === 'callbacks') loadMyCallbacks();
+  if (tab === 'leaderboard') loadLeaderboard();
+}
+
+// ══════════════════════════════════════════════════
+// LOAD LEADS
+// ══════════════════════════════════════════════════
+async function loadLeads() {
+  document.getElementById('dialContent').innerHTML = '<div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div>';
+  try {
+    const data = await api('GET', { action: 'getLeads', state: state.currentState, agent: state.agentName });
+    if (data.error) throw new Error(data.error);
+    const fresh = (data.leads || []).filter(l => !state.seenIds.has(leadKey(l)));
+    state.leads = fresh;
+    state.currentIdx = 0;
+    if (fresh.length === 0) {
+      renderEmpty();
+    } else {
+      renderLead();
+    }
+  } catch (e) {
+    renderError('Unable to load leads. ' + e.message);
+  }
+}
+
+function leadKey(l) {
+  return l.state + '|' + l.rowIndex + '|' + l.phone;
+}
+
+function renderEmpty() {
+  document.getElementById('dialContent').innerHTML =
+    '<div class="empty-state"><div class="empty-icon">🎉</div><div class="empty-title">All caught up!</div>' +
+    '<div class="empty-msg">No leads available for ' + CONFIG.STATE_NAMES[state.currentState] + ' right now.<br>Try another state, or check back soon.</div>' +
+    '<button class="login-btn" style="max-width:220px;margin-top:20px;" onclick="loadLeads()">↻ Reload</button></div>';
+  document.getElementById('leadCounter').textContent = '0 / 0';
+}
+
+function renderError(msg) {
+  document.getElementById('dialContent').innerHTML =
+    '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Something went wrong</div>' +
+    '<div class="empty-msg">' + msg + '</div>' +
+    '<button class="login-btn" style="max-width:220px;margin-top:20px;background:var(--danger);" onclick="loadLeads()">↻ Retry</button></div>';
+}
+
+// ══════════════════════════════════════════════════
+// RENDER LEAD
+// ══════════════════════════════════════════════════
+function renderLead() {
+  if (!state.leads[state.currentIdx]) {
+    // Batch exhausted — fetch more
+    loadLeads();
+    return;
+  }
+  const lead = state.leads[state.currentIdx];
+  state.seenIds.add(leadKey(lead));
+  document.getElementById('leadCounter').textContent = 'Lead ' + (state.currentIdx + 1) + ' of ' + state.leads.length;
+  document.getElementById('backBtn').disabled = state.history.length === 0;
+  state.cardState = 'default';
+  state.callStart = null;
+  state.callEnd = null;
+  state.callDuration = '';
+
+  const localTime = getLeadLocalTime(lead.state);
+  const tcpa = checkTCPA(lead.state);
+  const phoneClean = String(lead.phone || '').replace(/\D/g, '');
+  const phoneDisplay = formatPhone(lead.phone);
+
+  const flag = lead._flag ? '<div class="lead-flag">' + lead._flag + '</div>' : '';
+
+  const html = `
+    ${flag}
+    <div class="lead-card">
+      <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
+      <div class="lead-phone-wrap">
+        <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
+        <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
+      </div>
+      <div class="lead-details">
+        ${lead.age ? '<div class="detail-row"><span class="detail-key">Age</span><span class="detail-val">' + escapeHtml(String(lead.age)) + '</span></div>' : ''}
+        ${lead.dob ? '<div class="detail-row"><span class="detail-key">DOB</span><span class="detail-val">' + escapeHtml(String(lead.dob)) + '</span></div>' : ''}
+        ${lead.beneficiary ? '<div class="detail-row"><span class="detail-key">Beneficiary</span><span class="detail-val">' + escapeHtml(lead.beneficiary) + '</span></div>' : ''}
+        ${lead.hobby ? '<div class="detail-row"><span class="detail-key">Hobby</span><span class="detail-val">' + escapeHtml(lead.hobby) + '</span></div>' : ''}
+        ${lead.lead_type ? '<div class="detail-row"><span class="detail-key">Lead Type</span><span class="detail-val">' + escapeHtml(lead.lead_type) + '</span></div>' : ''}
+        ${lead.address ? '<div class="detail-row"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
+        ${lead.city ? '<div class="detail-row"><span class="detail-key">City</span><span class="detail-val">' + escapeHtml(lead.city) + ', ' + escapeHtml(lead.state) + '</span></div>' : ''}
+        ${lead.email ? '<div class="detail-row"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
+      </div>
+      <div id="callActionArea">
+        ${tcpa.blocked
+          ? `<button class="call-primary-btn disabled" disabled>📞 ${tcpa.reason}</button>`
+          : `<a class="call-primary-btn" href="tel:+${phoneClean}" onclick="startCall()">📞 Call</a>`
+        }
+        <button class="script-tool-btn" onclick="openScriptTool()">📋 Open Script Tool</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('dialContent').innerHTML = html;
+}
+
+function formatPhone(p) {
+  const c = String(p || '').replace(/\D/g, '');
+  if (c.length === 11 && c[0] === '1') {
+    return '(' + c.slice(1, 4) + ') ' + c.slice(4, 7) + '-' + c.slice(7);
+  }
+  if (c.length === 10) {
+    return '(' + c.slice(0, 3) + ') ' + c.slice(3, 6) + '-' + c.slice(6);
+  }
+  return p;
+}
+
+function getLeadLocalTime(stateCode) {
+  const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
+  try {
+    return new Date().toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return '—'; }
+}
+
+function checkTCPA(stateCode) {
+  const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
+  try {
+    const hourStr = new Date().toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false });
+    const hour = parseInt(hourStr, 10);
+    if (hour < CONFIG.TCPA_START_HOUR) return { blocked: true, reason: 'Too early to call' };
+    if (hour >= CONFIG.TCPA_END_HOUR) return { blocked: true, reason: 'Too late to call' };
+    return { blocked: false };
+  } catch (e) { return { blocked: false }; }
+}
+
+function updateLocalTime() {
+  const lead = state.leads[state.currentIdx];
+  if (!lead || state.activeTab !== 'dial') return;
+  // Just re-render if TCPA status changed
+  renderLead();
+}
+
+// ══════════════════════════════════════════════════
+// CALL FLOW
+// ══════════════════════════════════════════════════
+function startCall() {
+  state.cardState = 'incall';
+  state.callStart = new Date().toISOString();
+  const startMs = Date.now();
+  const area = document.getElementById('callActionArea');
+  area.innerHTML = `
+    <div class="in-call-timer">
+      <div class="in-call-label">☎️ In Call</div>
+      <div class="in-call-time" id="callTime">00:00</div>
+    </div>
+    <button class="done-btn" onclick="doneCall()">✓ Done — Log Outcome</button>
+  `;
+  if (state.callTimerId) clearInterval(state.callTimerId);
+  state.callTimerId = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startMs) / 1000);
+    const m = Math.floor(elapsed / 60), s = elapsed % 60;
+    const t = document.getElementById('callTime');
+    if (t) t.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    state.callDuration = String(m) + ':' + String(s).padStart(2, '0');
+  }, 500);
+}
+
+function doneCall() {
+  if (state.callTimerId) { clearInterval(state.callTimerId); state.callTimerId = null; }
+  state.callEnd = new Date().toISOString();
+  state.cardState = 'postcall';
+  state.stats.calls++;
+  updateStats();
+  checkCallMilestones();
+
+  const area = document.getElementById('callActionArea');
+  area.innerHTML = `
+    <div class="action-grid">
+      <button class="action-btn action-next" onclick="nextLead()">→ Next</button>
+      <button class="action-btn action-sold" onclick="openSold()">✅ Sold</button>
+      <button class="action-btn action-dcid" onclick="openDCID()">🚫 DCID</button>
+      <button class="action-btn action-wrong" onclick="markWrong()">📵 Wrong #</button>
+      <button class="action-btn action-callback" onclick="openCallback()">📅 Schedule Callback</button>
+    </div>
+    <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
+  `;
+}
+
+// ══════════════════════════════════════════════════
+// NEXT LEAD
+// ══════════════════════════════════════════════════
+function nextLead() {
+  const lead = state.leads[state.currentIdx];
+  // Push to history stack
+  state.history.push(lead);
+  if (state.history.length > 20) state.history.shift();
+
+  // Fire release-lock POST (with call log)
+  api('POST', {
+    action: 'next',
+    state: lead.state,
+    rowIndex: lead.rowIndex,
+    agent: state.agentName,
+    callStart: state.callStart,
+    callEnd: state.callEnd,
+    callDuration: state.callDuration
+  }).catch(() => {});
+
+  advanceLead();
+}
+
+function advanceLead() {
+  state.currentIdx++;
+  if (state.currentIdx >= state.leads.length) {
+    loadLeads();
+  } else {
+    renderLead();
+  }
+}
+
+function goBackLead() {
+  if (state.history.length === 0) return;
+  const prev = state.history.pop();
+  prev._flag = '⚠️ Previously viewed — may be in progress by another agent';
+  state.leads.splice(state.currentIdx, 0, prev);
+  renderLead();
+}
+
+// ══════════════════════════════════════════════════
+// DCID
+// ══════════════════════════════════════════════════
+function openDCID() {
+  const lead = state.leads[state.currentIdx];
+  document.getElementById('dcidModalSub').textContent = lead.name;
+  document.getElementById('dcidReason').value = '';
+  openModal('dcidModal');
+}
+
+function confirmDCID() {
+  const reason = document.getElementById('dcidReason').value.trim();
+  if (!reason) { alert('Please enter a reason.'); return; }
+  closeModal('dcidModal');
+  const lead = state.leads[state.currentIdx];
+  scheduleUndoAction({
+    label: '🚫 DCID: ' + lead.name,
+    onCommit: () => {
+      api('POST', {
+        action: 'dcid',
+        state: lead.state,
+        rowIndex: lead.rowIndex,
+        reason: reason,
+        agent: state.agentName,
+        callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
+      }).catch(() => {});
+      state.stats.dcid++; updateStats();
+    }
+  });
+  advanceLead();
+}
+
+// ══════════════════════════════════════════════════
+// SOLD
+// ══════════════════════════════════════════════════
+function openSold() {
+  const lead = state.leads[state.currentIdx];
+  document.getElementById('soldModalSub').textContent = lead.name;
+  ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason', 'soldNotes'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  openModal('soldModal');
+}
+
+function confirmSold() {
+  const premium = document.getElementById('soldPremium').value.trim();
+  const carrier = document.getElementById('soldCarrier').value.trim();
+  if (!premium || !carrier) { alert('Premium and carrier are required.'); return; }
+  closeModal('soldModal');
+  const lead = state.leads[state.currentIdx];
+  const payload = {
+    action: 'sold',
+    state: lead.state,
+    rowIndex: lead.rowIndex,
+    agent: state.agentName,
+    premium: premium,
+    carrier: carrier,
+    firstDraft: document.getElementById('soldFirstDraft').value,
+    recurringDraft: document.getElementById('soldRecurringDraft').value,
+    reason: document.getElementById('soldReason').value,
+    notes: document.getElementById('soldNotes').value,
+    callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
+  };
+  scheduleUndoAction({
+    label: '✅ Sold: ' + lead.name,
+    onCommit: () => {
+      api('POST', payload).catch(() => {});
+      state.stats.sales++; updateStats();
+      checkSaleMilestone();
+    }
+  });
+  advanceLead();
+}
+
+// ══════════════════════════════════════════════════
+// WRONG NUMBER
+// ══════════════════════════════════════════════════
+function markWrong() {
+  const lead = state.leads[state.currentIdx];
+  scheduleUndoAction({
+    label: '📵 Wrong #: ' + lead.name,
+    onCommit: () => {
+      api('POST', {
+        action: 'wrong',
+        state: lead.state,
+        rowIndex: lead.rowIndex,
+        agent: state.agentName,
+        callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
+      }).catch(() => {});
+      state.stats.wrong++; updateStats();
+    }
+  });
+  advanceLead();
+}
+
+// ══════════════════════════════════════════════════
+// CALLBACK
+// ══════════════════════════════════════════════════
+function openCallback() {
+  const lead = state.leads[state.currentIdx];
+  document.getElementById('callbackModalSub').textContent = lead.name;
+  document.getElementById('cbDate').value = '';
+  document.getElementById('cbTime').value = '';
+  openModal('callbackModal');
+}
+
+function confirmCallback() {
+  const date = document.getElementById('cbDate').value;
+  const time = document.getElementById('cbTime').value;
+  if (!date || !time) { alert('Date and time required.'); return; }
+  closeModal('callbackModal');
+  const lead = state.leads[state.currentIdx];
+  api('POST', {
+    action: 'callback',
+    state: lead.state,
+    rowIndex: lead.rowIndex,
+    agent: state.agentName,
+    callbackDate: date,
+    callbackTime: time,
+    callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
+  }).catch(() => {});
+  state.stats.callbacks++; updateStats();
+  advanceLead();
+}
+
+// ══════════════════════════════════════════════════
+// UNDO SYSTEM
+// ══════════════════════════════════════════════════
+function scheduleUndoAction(opts) {
+  // Cancel any pending
+  if (state.pendingUndo) commitPendingUndo();
+  state.pendingUndo = { ...opts, committed: false };
+  showUndoBar(opts.label);
+}
+
+function showUndoBar(label) {
+  const container = document.getElementById('undoContainer');
+  container.innerHTML = `
+    <div class="undo-bar">
+      <div class="undo-msg">${escapeHtml(label)}</div>
+      <button class="undo-btn" onclick="cancelUndo()">Undo (<span id="undoSec">10</span>s)</button>
+    </div>
+  `;
+  let sec = 10;
+  const tick = setInterval(() => {
+    sec--;
+    const el = document.getElementById('undoSec');
+    if (el) el.textContent = sec;
+    if (sec <= 0) {
+      clearInterval(tick);
+      commitPendingUndo();
+    }
+  }, 1000);
+  state.pendingUndo.tickId = tick;
+}
+
+function cancelUndo() {
+  if (!state.pendingUndo) return;
+  if (state.pendingUndo.tickId) clearInterval(state.pendingUndo.tickId);
+  state.pendingUndo = null;
+  document.getElementById('undoContainer').innerHTML = '';
+  // Undo: return to previous card
+  if (state.history.length > 0) {
+    const prev = state.history.pop();
+    state.leads.splice(state.currentIdx, 0, prev);
+    state.currentIdx = state.currentIdx; // stay
+    renderLead();
+  }
+}
+
+function commitPendingUndo() {
+  if (!state.pendingUndo || state.pendingUndo.committed) return;
+  state.pendingUndo.committed = true;
+  if (state.pendingUndo.tickId) clearInterval(state.pendingUndo.tickId);
+  state.pendingUndo.onCommit();
+  state.pendingUndo = null;
+  document.getElementById('undoContainer').innerHTML = '';
+}
+
+// ══════════════════════════════════════════════════
+// STATS
+// ══════════════════════════════════════════════════
+function updateStats() {
+  document.getElementById('statCalls').textContent = state.stats.calls;
+  document.getElementById('statSales').textContent = state.stats.sales;
+  document.getElementById('statDCID').textContent = state.stats.dcid;
+  document.getElementById('statCallbacks').textContent = state.stats.callbacks;
+  document.getElementById('statWrong').textContent = state.stats.wrong;
+}
+
+// ══════════════════════════════════════════════════
+// MILESTONE BANNERS
+// ══════════════════════════════════════════════════
+function checkCallMilestones() {
+  const n = state.stats.calls;
+  let msg = null;
+  if (n === 1) msg = '📞 First call of the session! Let\'s go!';
+  else if (n === 5) msg = '🔥 5 calls! Warming up!';
+  else if (n === 10) msg = '💪 10 calls! You\'re in the zone.';
+  else if (n === 25) msg = '⚡ 25 calls! Crushing it.';
+  else if (n === 50) msg = '👀 50 calls! Your upline is noticing your work. Keep it up!';
+  else if (n === 100) msg = '🏆 100 calls! Incredible effort. Your upline is watching and impressed.';
+  else if (n > 100 && n % 50 === 0) msg = '🚀 ' + n + ' calls! Elite level output. Your upline knows who\'s putting in the work.';
+  if (msg) showMilestone(msg);
+}
+
+function checkSaleMilestone() {
+  const n = state.stats.sales;
+  const msg = n === 1 ? '💰 First sale! You\'re in the money!' : '💰 Sale #' + n + ' today! Keep closing!';
+  showMilestone(msg);
+}
+
+function showMilestone(msg) {
+  const b = document.getElementById('milestoneBanner');
+  b.textContent = msg;
+  b.classList.add('show');
+  setTimeout(() => b.classList.remove('show'), 5000);
+}
+
+// ══════════════════════════════════════════════════
+// CALLBACK DUE ALERTS
+// ══════════════════════════════════════════════════
+async function loadMyCallbacks() {
+  if (!state.agentName) return;
+  try {
+    const data = await api('GET', { action: 'myCallbacks', agent: state.agentName });
+    state.myCallbacks = data.callbacks || [];
+    renderMyCallbacks();
+    checkCallbackAlerts();
+  } catch (e) {
+    document.getElementById('callbacksContent').innerHTML =
+      '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load callbacks.</div></div>';
+  }
+}
+
+function renderMyCallbacks() {
+  const c = document.getElementById('callbacksContent');
+  if (!state.myCallbacks || state.myCallbacks.length === 0) {
+    c.innerHTML = '<div class="empty-state"><div class="empty-icon">📅</div><div class="empty-title">No callbacks scheduled</div><div class="empty-msg">Callbacks you schedule will appear here.</div></div>';
+    return;
+  }
+  const sorted = [...state.myCallbacks].sort((a, b) => cbDateTime(a) - cbDateTime(b));
+  c.innerHTML = sorted.map(cb => {
+    const dt = cbDateTime(cb);
+    const now = Date.now();
+    let status = 'upcoming', label = 'Upcoming';
+    if (dt < now - 60 * 60 * 1000) { status = 'overdue'; label = 'Overdue'; }
+    else if (dt < now + 5 * 60 * 1000) { status = 'due'; label = 'Due Now'; }
+    const phoneClean = String(cb.phone || '').replace(/\D/g, '');
+    return `
+      <div class="cb-list-item">
+        <div class="cb-item-header">
+          <div class="cb-item-name">${escapeHtml(cb.name)}</div>
+          <div class="cb-item-state">${cb.state}</div>
+        </div>
+        <div class="cb-item-when">📅 ${formatCbDate(cb)}  •  📞 ${formatPhone(cb.phone)}</div>
+        <span class="cb-item-status ${status}">${label}</span>
+        <div class="cb-item-actions">
+          <a class="cb-mini-btn call" href="tel:+${phoneClean}">📞 Call</a>
+          <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
+          <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function cbDateTime(cb) {
+  try {
+    const d = (cb.callbackDate instanceof Date) ? cb.callbackDate.toISOString().slice(0, 10) : String(cb.callbackDate);
+    const t = String(cb.callbackTime);
+    return new Date(d + 'T' + t).getTime();
+  } catch (e) { return 0; }
+}
+
+function formatCbDate(cb) {
+  try {
+    const d = new Date(cbDateTime(cb));
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return cb.callbackDate + ' ' + cb.callbackTime; }
+}
+
+function checkCallbackAlerts() {
+  const now = Date.now();
+  const container = document.getElementById('cbAlerts');
+  if (!state.myCallbacks) return;
+  const due = state.myCallbacks.filter(cb => {
+    const key = cb.state + '|' + cb.rowIndex;
+    if (state.cbAlertsShown.has(key)) return false;
+    const dt = cbDateTime(cb);
+    return dt <= now && (now - dt) < 60 * 60 * 1000; // due in last hour
+  });
+  due.forEach(cb => {
+    const key = cb.state + '|' + cb.rowIndex;
+    state.cbAlertsShown.add(key);
+    const phoneClean = String(cb.phone || '').replace(/\D/g, '');
+    const div = document.createElement('div');
+    div.className = 'cb-alert';
+    div.innerHTML = `
+      <div class="cb-alert-text">📅 Callback due: ${escapeHtml(cb.name)}</div>
+      <a class="cb-alert-call" href="tel:+${phoneClean}">📞 Call</a>
+      <button class="cb-alert-close" onclick="this.parentElement.remove()">✕</button>
+    `;
+    container.appendChild(div);
+  });
+}
+
+async function rescheduleCallback(stateCode, rowIndex) {
+  const cb = state.myCallbacks.find(c => c.state === stateCode && c.rowIndex === rowIndex);
+  if (!cb) return;
+  const newDate = prompt('New date (YYYY-MM-DD):', cb.callbackDate);
+  if (!newDate) return;
+  const newTime = prompt('New time (HH:MM 24hr):', cb.callbackTime);
+  if (!newTime) return;
+  await api('POST', { action: 'callback', state: stateCode, rowIndex, agent: state.agentName,
+    callbackDate: newDate, callbackTime: newTime, sourceTab: 'Callbacks' });
+  loadMyCallbacks();
+}
+
+async function returnCallbackToPool(stateCode, rowIndex) {
+  if (!confirm('Return this callback lead to the general pool?')) return;
+  await api('POST', { action: 'returnToPool', state: stateCode, rowIndex, sourceTab: 'Callbacks' });
+  loadMyCallbacks();
+}
+
+// ══════════════════════════════════════════════════
+// LEADERBOARD
+// ══════════════════════════════════════════════════
+async function loadLeaderboard() {
+  const c = document.getElementById('leaderboardContent');
+  try {
+    const data = await api('GET', { action: 'leaderboard' });
+    const rows = data.leaderboard || [];
+    if (rows.length === 0) {
+      c.innerHTML = '<div class="empty-state"><div class="empty-icon">🏆</div><div class="empty-title">No activity yet today</div><div class="empty-msg">Be the first!</div></div>';
+      return;
+    }
+    c.innerHTML = rows.map((r, i) => `
+      <div class="lb-row ${r.agent === state.agentName ? 'me' : ''}">
+        <div class="lb-rank ${i < 3 ? 'top' : ''}">${i + 1}</div>
+        <div class="lb-name">${escapeHtml(r.agent)}</div>
+        <div class="lb-stats">
+          <div>📞 <strong>${r.calls}</strong></div>
+          <div>✅ <strong>${r.sales}</strong></div>
+        </div>
+      </div>
+    `).join('') +
+    '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
+  } catch (e) {
+    c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load leaderboard.</div></div>';
+  }
+}
+
+// ══════════════════════════════════════════════════
+// SCRIPT TOOL IFRAME
+// ══════════════════════════════════════════════════
+function openScriptTool() {
+  const m = document.getElementById('scriptIframeModal');
+  const f = document.getElementById('scriptIframe');
+  if (!f.src || f.src === 'about:blank') f.src = CONFIG.SCRIPT_TOOL_URL;
+  m.classList.add('show');
+}
+function closeScriptTool() {
+  document.getElementById('scriptIframeModal').classList.remove('show');
+}
+
+// ══════════════════════════════════════════════════
+// SEARCH
+// ══════════════════════════════════════════════════
+function openSearch() {
+  document.getElementById('searchOverlay').classList.add('show');
+  document.getElementById('searchInput').focus();
+}
+function closeSearch() {
+  document.getElementById('searchOverlay').classList.remove('show');
+}
+
+let searchDebounce = null;
+function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  const body = document.getElementById('searchBody');
+  if (searchDebounce) clearTimeout(searchDebounce);
+  if (q.length < 2) {
+    body.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">Search all states</div><div class="empty-msg">Enter a name or phone number (2+ characters)</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  searchDebounce = setTimeout(async () => {
+    try {
+      const data = await api('GET', { action: 'search', q });
+      const results = data.results || [];
+      if (results.length === 0) {
+        body.innerHTML = '<div class="empty-state"><div class="empty-icon">🤷</div><div class="empty-title">No matches</div></div>';
+        return;
+      }
+      body.innerHTML = results.map(r => {
+        const badge = r.sourceTab === 'Callbacks' ? 'badge-callback' : 'badge-lead';
+        const badgeLabel = r.sourceTab === 'Callbacks' ? '📅 Callback' : '📞 Active';
+        const phoneClean = String(r.phone || '').replace(/\D/g, '');
+        return `
+          <div class="search-result">
+            <div class="search-result-header">
+              <div class="search-result-name">${escapeHtml(r.name)}</div>
+              <span class="search-result-badge ${badge}">${badgeLabel}</span>
+            </div>
+            <div class="search-result-phone">${formatPhone(r.phone)}</div>
+            <div class="search-result-meta">${escapeHtml(r.city || '')} ${escapeHtml(r.state || '')} ${r.callbackDate ? '• Scheduled: ' + r.callbackDate + ' ' + r.callbackTime : ''}</div>
+            <div class="search-actions-grid">
+              <a class="search-action-btn sa-call" href="tel:+${phoneClean}">📞 Call</a>
+              <button class="search-action-btn sa-sold" onclick="searchSold('${r.state}',${r.rowIndex},'${r.sourceTab}')">✅ Sold</button>
+              <button class="search-action-btn sa-dcid" onclick="searchDCID('${r.state}',${r.rowIndex},'${r.sourceTab}')">🚫 DCID</button>
+              <button class="search-action-btn sa-wrong" onclick="searchWrong('${r.state}',${r.rowIndex},'${r.sourceTab}')">📵 Wrong #</button>
+              <button class="search-action-btn sa-return" onclick="searchReturn('${r.state}',${r.rowIndex},'${r.sourceTab}')">🔄 Return</button>
+              <button class="search-action-btn sa-resched" onclick="searchResched('${r.state}',${r.rowIndex},'${r.sourceTab}')">📅 Reschedule</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {
+      body.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Search failed.</div></div>';
+    }
+  }, 400);
+}
+
+async function searchSold(s, r, tab) {
+  const premium = prompt('Monthly Premium ($):'); if (!premium) return;
+  const carrier = prompt('Carrier:'); if (!carrier) return;
+  await api('POST', { action: 'sold', state: s, rowIndex: r, sourceTab: tab, agent: state.agentName, premium, carrier });
+  alert('Marked sold.'); doSearch();
+}
+async function searchDCID(s, r, tab) {
+  const reason = prompt('DCID reason:'); if (!reason) return;
+  await api('POST', { action: 'dcid', state: s, rowIndex: r, sourceTab: tab, agent: state.agentName, reason });
+  alert('DCID recorded.'); doSearch();
+}
+async function searchWrong(s, r, tab) {
+  if (!confirm('Mark as Wrong Number?')) return;
+  await api('POST', { action: 'wrong', state: s, rowIndex: r, sourceTab: tab, agent: state.agentName });
+  alert('Wrong Number recorded.'); doSearch();
+}
+async function searchReturn(s, r, tab) {
+  if (!confirm('Return to active leads pool?')) return;
+  await api('POST', { action: 'returnToPool', state: s, rowIndex: r, sourceTab: tab });
+  alert('Returned to pool.'); doSearch();
+}
+async function searchResched(s, r, tab) {
+  const d = prompt('Date (YYYY-MM-DD):'); if (!d) return;
+  const t = prompt('Time (HH:MM 24hr):'); if (!t) return;
+  await api('POST', { action: 'callback', state: s, rowIndex: r, sourceTab: tab, agent: state.agentName, callbackDate: d, callbackTime: t });
+  alert('Rescheduled.'); doSearch();
+}
+
+// ══════════════════════════════════════════════════
+// ADMIN DASHBOARD
+// ══════════════════════════════════════════════════
+function switchAdminRange(range) {
+  state.adminRange = range;
+  document.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t.dataset.range === range));
+  loadAdminData();
+}
+
+async function loadAdminData() {
+  const c = document.getElementById('adminContent');
+  c.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  try {
+    const [stats, locks] = await Promise.all([
+      api('GET', { action: 'adminStats', range: state.adminRange }),
+      state.adminRange === 'today' ? api('GET', { action: 'adminLocks' }) : Promise.resolve({ byAgent: [] })
+    ]);
+    renderAdmin(stats, locks);
+  } catch (e) {
+    c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load: ' + e.message + '</div><button class="login-btn" style="max-width:200px;margin-top:16px;" onclick="loadAdminData()">Retry</button></div>';
+  }
+}
+
+function renderAdmin(stats, locksData) {
+  const c = document.getElementById('adminContent');
+  const perState = stats.perState || {};
+  const totals = stats.totals || {};
+  const agents = stats.agents || [];
+  const locks = locksData.byAgent || [];
+
+  let html = '';
+
+  // Aggregate totals
+  html += '<div class="admin-section"><div class="admin-section-title">Team Totals — ' + stats.range + '</div>' +
+    '<div class="admin-grid stats">' +
+    statBox('Calls', totals.calls || 0) +
+    statBox('Sales', totals.sales || 0) +
+    statBox('DCID', totals.dcid || 0) +
+    statBox('Callbacks', totals.callbacks || 0) +
+    statBox('Wrong #', totals.wrong || 0) +
+    '</div></div>';
+
+  // Per state
+  html += '<div class="admin-section"><div class="admin-section-title">Per State — Live Snapshot</div>';
+  ['AZ', 'VA', 'OH'].forEach(sc => {
+    const s = perState[sc] || {};
+    html += '<div style="margin-bottom:12px;"><div style="font-weight:800;font-size:14px;margin-bottom:6px;color:var(--text);">' + CONFIG.STATE_NAMES[sc] + ' (' + sc + ')</div>' +
+      '<div class="admin-grid stats">' +
+      statBox('Available', s.available || 0) +
+      statBox('In Progress', s.inProgress || 0) +
+      statBox('Callbacks', s.callbacks || 0) +
+      statBox('DCID', s.dcid || 0) +
+      statBox('Sold', s.sold || 0) +
+      statBox('Wrong #', s.wrong || 0) +
+      statBox('Review', s.review || 0) +
+      '</div></div>';
+  });
+  html += '</div>';
+
+  // Live locks (today only)
+  if (stats.range === 'today' && locks.length > 0) {
+    html += '<div class="admin-section"><div class="admin-section-title">🔴 Live Agent Activity</div>' +
+      '<table class="admin-table"><thead><tr><th>Agent</th><th>Locked</th><th>States</th><th></th></tr></thead><tbody>';
+    locks.forEach(l => {
+      const states = Object.entries(l.states).map(([s, n]) => s + ':' + n).join(', ');
+      html += '<tr><td><strong>' + escapeHtml(l.agent) + '</strong></td>' +
+        '<td>' + l.count + '</td>' +
+        '<td>' + states + '</td>' +
+        '<td><button class="admin-force-btn" onclick="forceReleaseAgent(\'' + escapeHtml(l.agent) + '\')">⚡ Release</button></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Per-agent breakdown
+  html += '<div class="admin-section"><div class="admin-section-title">Per Agent — ' + stats.range + '</div>';
+  if (agents.length === 0) {
+    html += '<div class="empty-state" style="padding:20px;"><div class="empty-msg">No agent activity in this range.</div></div>';
+  } else {
+    html += '<table class="admin-table"><thead><tr><th>Agent</th><th>Calls</th><th>Sales</th><th>DCID</th><th>Wrong #</th><th>Callbacks</th><th>Last Active</th></tr></thead><tbody>';
+    agents.forEach(a => {
+      html += '<tr><td><strong>' + escapeHtml(a.agent) + '</strong></td>' +
+        '<td>' + a.calls + '</td>' +
+        '<td>' + a.sales + '</td>' +
+        '<td>' + a.dcid + '</td>' +
+        '<td>' + a.wrong + '</td>' +
+        '<td>' + a.callbacks + '</td>' +
+        '<td style="font-size:11px;color:var(--text-secondary);">' + (a.lastActive || '—') + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  c.innerHTML = html;
+}
+
+function statBox(label, num) {
+  return '<div class="admin-stat"><div class="admin-stat-num">' + num + '</div><div class="admin-stat-label">' + label + '</div></div>';
+}
+
+async function forceReleaseAgent(agent) {
+  if (!confirm('Force release all locks for ' + agent + '?')) return;
+  await api('POST', { action: 'forceRelease', agent: agent });
+  loadAdminData();
+}
+
+// ══════════════════════════════════════════════════
+// MODAL HELPERS
+// ══════════════════════════════════════════════════
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// ══════════════════════════════════════════════════
+// API CLIENT — with retry
+// ══════════════════════════════════════════════════
+async function api(method, params) {
+  if (!CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL.indexOf('REPLACE') === 0) {
+    throw new Error('Apps Script URL not configured. Set CONFIG.APPS_SCRIPT_URL in index.html.');
+  }
+  const maxRetries = 3;
+  let lastErr;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      if (method === 'GET') {
+        const qs = new URLSearchParams(params).toString();
+        const res = await fetch(CONFIG.APPS_SCRIPT_URL + '?' + qs);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.json();
+      } else {
+        const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+          method: 'POST',
+          body: JSON.stringify(params),
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' } // avoids CORS preflight
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.json();
+      }
+    } catch (e) {
+      lastErr = e;
+      if (i < maxRetries - 1) await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  throw lastErr;
+}
+
+// ══════════════════════════════════════════════════
+// UTILS
+// ══════════════════════════════════════════════════
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+</script>
+</body>
+</html>
