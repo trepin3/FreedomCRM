@@ -744,16 +744,23 @@ function fmtDate(v) {
 // All Sheets stores dates as UTC midnight. When reading date-only or time-only cells,
 // we format in UTC to preserve the raw value. Only true datetimes get converted to TZ.
 
-// Dates return MM/dd/yyyy. Sheets stores Date/Time cells in the SCRIPT's timezone,
-// so we use Session.getScriptTimeZone() to read the raw value that was written.
+// Dates return MM/dd/yyyy. Sheets auto-parses cell values using the SPREADSHEET's
+// timezone (not the script's). Cache once per invocation for perf.
 
-function scriptTZ() {
-  try { return Session.getScriptTimeZone(); } catch (e) { return TZ; }
+let _cachedSheetTZ = null;
+function sheetTZ() {
+  if (_cachedSheetTZ) return _cachedSheetTZ;
+  try {
+    _cachedSheetTZ = SpreadsheetApp.openById(SHEETS.AZ).getSpreadsheetTimeZone();
+  } catch (e) {
+    try { _cachedSheetTZ = Session.getScriptTimeZone(); } catch (e2) { _cachedSheetTZ = TZ; }
+  }
+  return _cachedSheetTZ;
 }
 
 function fmtDate(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, scriptTZ(), 'MM/dd/yyyy');
+  if (v instanceof Date) return Utilities.formatDate(v, sheetTZ(), 'MM/dd/yyyy');
   const s = String(v);
   const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return isoMatch[2] + '/' + isoMatch[3] + '/' + isoMatch[1];
@@ -762,14 +769,14 @@ function fmtDate(v) {
 
 function fmtTime(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, scriptTZ(), 'HH:mm');
+  if (v instanceof Date) return Utilities.formatDate(v, sheetTZ(), 'HH:mm');
   return String(v);
 }
 
 function fmtDateTime(v) {
   if (!v && v !== 0) return '';
   if (v instanceof Date) {
-    const stz = scriptTZ();
+    const stz = sheetTZ();
     // If time is midnight in the SCRIPT's tz, treat as date-only
     const hm = Utilities.formatDate(v, stz, 'HHmmss');
     if (hm === '000000') return Utilities.formatDate(v, stz, 'MM/dd/yyyy');
