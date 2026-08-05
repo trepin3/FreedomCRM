@@ -341,12 +341,27 @@ function actionWrong(body) {
 }
 
 function actionCallback(body) {
-  return moveLead(body.state, body.rowIndex, 'Callbacks', CALLBACK_EXTRA, [
-    body.callbackDate || '',
-    body.callbackTime || '',
-    body.agent || '',
+  // Convert ISO date (YYYY-MM-DD) → US format (MM/DD/YYYY) so Sheets parses in
+  // local timezone, not UTC. Time is kept as literal text via setNumberFormat('@')
+  // below to prevent any auto-parsing.
+  const isoDate = String(body.callbackDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dateVal = isoDate ? (isoDate[2] + '/' + isoDate[3] + '/' + isoDate[1]) : (body.callbackDate || '');
+  const timeVal = body.callbackTime || '';
+  const result = moveLead(body.state, body.rowIndex, 'Callbacks', CALLBACK_EXTRA, [
+    dateVal, timeVal, body.agent || '',
     Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss')
   ], body);
+  // Force the newly-written callback date + time cells to plain text so future
+  // reads return the exact string (no timezone shifts).
+  try {
+    const cbSheet = SpreadsheetApp.openById(SHEETS[body.state]).getSheetByName('Callbacks');
+    const newRow = cbSheet.getLastRow();
+    const dateCol = LEAD_COLS.length + 1; // 1-indexed
+    const timeCol = LEAD_COLS.length + 2;
+    cbSheet.getRange(newRow, dateCol).setNumberFormat('@').setValue(dateVal);
+    cbSheet.getRange(newRow, timeCol).setNumberFormat('@').setValue(timeVal);
+  } catch (e) {}
+  return result;
 }
 
 // Move lead from Leads (or Callbacks) tab into destination tab
