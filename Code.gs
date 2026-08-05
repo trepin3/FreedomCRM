@@ -261,10 +261,13 @@ function resurrectCallbacks(ss) {
 
 function parseCallbackDateTime(dateVal, timeVal) {
   try {
+    // fmtDate returns MM/DD/YYYY — convert to ISO YYYY-MM-DD for Date parsing
     const dateStr = fmtDate(dateVal);
     const timeStr = fmtTime(timeVal);
     if (!dateStr || !timeStr) return null;
-    return new Date(dateStr + 'T' + timeStr + ':00');
+    const m = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    const iso = m ? (m[3] + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0')) : dateStr;
+    return new Date(iso + 'T' + timeStr + ':00');
   } catch (e) { return null; }
 }
 
