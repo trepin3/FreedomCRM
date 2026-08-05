@@ -305,14 +305,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
   <button class="theme-fixed" onclick="toggleTheme()" id="nameThemeBtn">🌙</button>
   <div class="login-wrap">
     <div class="login-logo">👋</div>
-    <div class="login-title">What's your <span>name</span>?</div>
-    <div class="login-sub">Used to log your calls and dispositions</div>
+    <div class="login-title">What's your full <span>name</span>?</div>
+    <div class="login-sub">First and last name — used to log your calls and dispositions</div>
     <div class="login-card">
       <div class="field-group">
-        <label class="field-label">Your Name</label>
-        <input class="text-input" id="agentNameInput" placeholder="e.g. Kepler" autocomplete="off"
+        <label class="field-label">Your Full Name</label>
+        <input class="text-input" id="agentNameInput" placeholder="e.g. Kepler Wolsey" autocomplete="name"
           onkeydown="if(event.key==='Enter')submitAgentName()">
       </div>
+      <div class="login-error" id="nameError">Please enter your first and last name.</div>
       <button class="login-btn" onclick="submitAgentName()">Continue →</button>
     </div>
   </div>
@@ -639,8 +640,19 @@ function doLogin() {
 }
 
 function submitAgentName() {
-  const name = document.getElementById('agentNameInput').value.trim();
-  if (!name) return;
+  const raw = document.getElementById('agentNameInput').value.trim().replace(/\s+/g, ' ');
+  const err = document.getElementById('nameError');
+  // Require at least 2 word tokens, each at least 2 letters
+  const parts = raw.split(' ').filter(p => /^[A-Za-z][A-Za-z'\-]{1,}$/.test(p));
+  if (parts.length < 2) {
+    err.style.display = 'block';
+    document.getElementById('agentNameInput').focus();
+    return;
+  }
+  err.style.display = 'none';
+  // Title-case each word for consistent leaderboard display
+  const name = parts.map(p => p[0].toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+  document.getElementById('agentNameInput').value = name;
   state.agentName = name;
   localStorage.setItem('fcrm_agent', name);
   document.getElementById('pickerGreeting').textContent = 'Welcome, ' + name;
