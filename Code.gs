@@ -744,13 +744,16 @@ function fmtDate(v) {
 // All Sheets stores dates as UTC midnight. When reading date-only or time-only cells,
 // we format in UTC to preserve the raw value. Only true datetimes get converted to TZ.
 
+// Dates return MM/dd/yyyy (US format).
+// Client also sends YYYY-MM-DD from HTML date inputs; convert those on read.
+
 function fmtDate(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
+  if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'MM/dd/yyyy');
   const s = String(v);
-  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
-    try { return Utilities.formatDate(new Date(s), 'UTC', 'yyyy-MM-dd'); } catch (e) {}
-  }
+  // ISO date (from client input): 2026-08-15 or 2026-08-15T...
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return isoMatch[2] + '/' + isoMatch[3] + '/' + isoMatch[1];
   return s;
 }
 
@@ -763,15 +766,18 @@ function fmtTime(v) {
 function fmtDateTime(v) {
   if (!v && v !== 0) return '';
   if (v instanceof Date) {
-    // Date-only cells (time is midnight UTC) → return date only
+    // Date-only cells (midnight UTC) → date only
     if (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 && v.getUTCSeconds() === 0) {
-      return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
+      return Utilities.formatDate(v, 'UTC', 'MM/dd/yyyy');
     }
-    return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm:ss');
+    return Utilities.formatDate(v, TZ, 'MM/dd/yyyy HH:mm:ss');
   }
   const s = String(v);
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
-    try { return Utilities.formatDate(new Date(s), TZ, 'yyyy-MM-dd HH:mm:ss'); } catch (e) {}
+    try { return Utilities.formatDate(new Date(s), TZ, 'MM/dd/yyyy HH:mm:ss'); } catch (e) {}
   }
+  // Bare ISO date without time
+  const isoDate = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDate) return isoDate[2] + '/' + isoDate[3] + '/' + isoDate[1];
   return s;
 }
