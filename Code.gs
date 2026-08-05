@@ -261,9 +261,10 @@ function resurrectCallbacks(ss) {
 
 function parseCallbackDateTime(dateVal, timeVal) {
   try {
-    const dateStr = (dateVal instanceof Date) ? Utilities.formatDate(dateVal, TZ, 'yyyy-MM-dd') : String(dateVal);
-    const timeStr = String(timeVal);
-    return new Date(dateStr + 'T' + timeStr);
+    const dateStr = fmtDate(dateVal);
+    const timeStr = fmtTime(timeVal);
+    if (!dateStr || !timeStr) return null;
+    return new Date(dateStr + 'T' + timeStr + ':00');
   } catch (e) { return null; }
 }
 
@@ -462,8 +463,8 @@ function search(query) {
             state: state,
             sourceTab: tabName,
             ...rowToObj(row.slice(0, LEAD_COLS.length)),
-            callbackDate: tabName === 'Callbacks' ? row[LEAD_COLS.length] : null,
-            callbackTime: tabName === 'Callbacks' ? row[LEAD_COLS.length + 1] : null
+            callbackDate: tabName === 'Callbacks' ? fmtDate(row[LEAD_COLS.length]) : null,
+            callbackTime: tabName === 'Callbacks' ? fmtTime(row[LEAD_COLS.length + 1]) : null
           });
         }
       });
@@ -492,8 +493,8 @@ function myCallbacks(agent) {
           state: state,
           sourceTab: 'Callbacks',
           ...rowToObj(row.slice(0, LEAD_COLS.length)),
-          callbackDate: row[LEAD_COLS.length],
-          callbackTime: row[LEAD_COLS.length + 1]
+          callbackDate: fmtDate(row[LEAD_COLS.length]),
+          callbackTime: fmtTime(row[LEAD_COLS.length + 1])
         });
       }
     });
@@ -505,52 +506,58 @@ function myCallbacks(agent) {
 // LEADERBOARD — today's top performers
 // ══════════════════════════════════════════════════════════════════
 function leaderboard() {
-  const today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  const todayStart = getRangeCutoff('today');
   const agentStats = {};
+  const ensureAgent = (a) => {
+    agentStats[a] = agentStats[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
+  };
 
   Object.keys(SHEETS).forEach(state => {
     const ss = SpreadsheetApp.openById(SHEETS[state]);
 
-    // Count sales today
-    const soldSheet = ss.getSheetByName('Sold');
-    const soldRows = soldSheet.getLastRow();
-    if (soldRows >= 2) {
-      const cols = LEAD_COLS.concat(SOLD_EXTRA);
-      const soldData = soldSheet.getRange(2, 1, soldRows - 1, cols.length).getValues();
-      const soldDateIdx = LEAD_COLS.length + 6; // Sold Date
-      const soldAgentIdx = LEAD_COLS.length + 7; // Sold Agent
-      soldData.forEach(row => {
-        const d = String(row[soldDateIdx]);
-        if (d.indexOf(today) === 0) {
-          const a = row[soldAgentIdx];
-          if (!a) return;
-          agentStats[a] = agentStats[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
-          agentStats[a].sales++;
-        }
-      });
-    }
-
-    // Count calls today (Leads tab Last Call Start)
-    const leadsSheet = ss.getSheetByName('Leads');
-    const leadsRows = leadsSheet.getLastRow();
-    if (leadsRows >= 2) {
-      const leadsData = leadsSheet.getRange(2, 1, leadsRows - 1, LEAD_COLS.length).getValues();
+    // Count calls today across ALL tabs (Last Call Agent + Last Call Start)
+    ['Leads', 'DCID', 'Sold', 'Wrong Numbers', 'Callbacks'].forEach(tabName => {
+      const sheet = ss.getSheetByName(tabName);
+      const rows = sheet.getLastRow();
+      if (rows < 2) return;
+      const cols = sheet.getLastColumn();
+      const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
       const startIdx = LEAD_COLS.indexOf('Last Call Start');
-      const lastAgentIdx = LEAD_COLS.indexOf('Last Call Agent');
-      leadsData.forEach(row => {
-        const d = String(row[startIdx]);
-        if (d.indexOf(today) === 0) {
-          const a = row[lastAgentIdx];
-          if (!a) return;
-          agentStats[a] = agentStats[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
-          agentStats[a].calls++;
+      const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
+      data.forEach(row => {
+        if (dateInRange(row[startIdx], todayStart) && row[agentIdx]) {
+          ensureAgent(row[agentIdx]);
+          agentStats[row[agentIdx]].calls++;
         }
       });
-    }
+    });
+
+    // Count sales today (Sold tab, Sold Date + Sold Agent)
+    countAgentDisp(ss, 'Sold', LEAD_COLS.length + 6, LEAD_COLS.length + 7, todayStart, agentStats, 'sales', ensureAgent);
+    // Count DCID today
+    countAgentDisp(ss, 'DCID', LEAD_COLS.length + 1, LEAD_COLS.length + 2, todayStart, agentStats, 'dcid', ensureAgent);
+    // Count Wrong # today
+    countAgentDisp(ss, 'Wrong Numbers', LEAD_COLS.length, LEAD_COLS.length + 1, todayStart, agentStats, 'wrong', ensureAgent);
+    // Count Callbacks scheduled today
+    countAgentDisp(ss, 'Callbacks', LEAD_COLS.length + 3, LEAD_COLS.length + 2, todayStart, agentStats, 'callbacks', ensureAgent);
   });
 
   const rows = Object.values(agentStats).sort((a, b) => b.sales - a.sales || b.calls - a.calls);
   return { leaderboard: rows };
+}
+
+function countAgentDisp(ss, tabName, dateColIdx, agentColIdx, cutoff, agentStats, key, ensureAgent) {
+  const sheet = ss.getSheetByName(tabName);
+  const rows = sheet.getLastRow();
+  if (rows < 2) return;
+  const cols = sheet.getLastColumn();
+  const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
+  data.forEach(row => {
+    if (dateInRange(row[dateColIdx], cutoff) && row[agentColIdx]) {
+      ensureAgent(row[agentColIdx]);
+      agentStats[row[agentColIdx]][key]++;
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -569,17 +576,28 @@ function adminStats(range) {
       callbacks: 0, dcid: 0, sold: 0, wrong: 0, review: 0
     };
 
+    // Count status in Leads tab (available vs In Progress)
     const leadsSheet = ss.getSheetByName('Leads');
     const lr = leadsSheet.getLastRow();
     if (lr >= 2) {
       const data = leadsSheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
       const statusIdx = LEAD_COLS.indexOf('Status');
-      const startIdx = LEAD_COLS.indexOf('Last Call Start');
-      const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
       data.forEach(row => {
         if (row[statusIdx] === 'In Progress') s.inProgress++;
         else s.available++;
-        // Count calls in range
+      });
+    }
+
+    // Count calls in range across ALL tabs — captures calls that ended in Sold/DCID/Wrong/Callback
+    ['Leads', 'DCID', 'Sold', 'Wrong Numbers', 'Callbacks'].forEach(tabName => {
+      const sheet = ss.getSheetByName(tabName);
+      const rows = sheet.getLastRow();
+      if (rows < 2) return;
+      const cols = sheet.getLastColumn();
+      const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
+      const startIdx = LEAD_COLS.indexOf('Last Call Start');
+      const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
+      data.forEach(row => {
         const d = row[startIdx];
         if (d && dateInRange(d, cutoff)) {
           totals.calls++;
@@ -587,12 +605,12 @@ function adminStats(range) {
           if (a) {
             agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
             agents[a].calls++;
-            const dStr = String(d);
+            const dStr = fmtDateTime(d);
             if (!agents[a].lastActive || dStr > agents[a].lastActive) agents[a].lastActive = dStr;
           }
         }
       });
-    }
+    });
 
     s.callbacks = countInRange(ss, 'Callbacks', LEAD_COLS.length + 3, cutoff, totals, agents, 'callbacks', LEAD_COLS.length + 2);
     s.dcid = countInRange(ss, 'DCID', LEAD_COLS.length + 1, cutoff, totals, agents, 'dcid', LEAD_COLS.length + 2);
@@ -628,7 +646,7 @@ function countInRange(ss, tabName, dateColIdx, cutoff, totals, agents, agentKey,
       if (a) {
         agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
         agents[a][agentKey]++;
-        const dStr = String(d);
+        const dStr = fmtDateTime(d);
         if (!agents[a].lastActive || dStr > agents[a].lastActive) agents[a].lastActive = dStr;
       }
     }
@@ -680,7 +698,7 @@ function adminLocks() {
           rowIndex: i + 2,
           name: row[nameIdx],
           agent: row[lockedByIdx],
-          lockedAt: row[lockedAtIdx]
+          lockedAt: fmtDateTime(row[lockedAtIdx])
         });
       }
     });
@@ -699,11 +717,13 @@ function adminLocks() {
 // ══════════════════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════════════════
+const DATE_COLS = new Set(['DOB', 'Date Added', 'Last Call Start', 'Last Call End', 'Locked At']);
 function rowToObj(row) {
   const obj = {};
   LEAD_COLS.forEach((col, i) => {
     const key = col.replace(/\s+/g, '_').toLowerCase();
-    obj[key] = row[i];
+    // Format Date-type columns as strings so JSON doesn't serialize them as ISO
+    obj[key] = DATE_COLS.has(col) ? fmtDateTime(row[i]) : row[i];
   });
   return obj;
 }
@@ -714,3 +734,25 @@ function shuffle(arr) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
 }
+
+// Format Sheets Date value → 'yyyy-MM-dd' string (empty if null/blank)
+function fmtDate(v) {
+  if (!v && v !== 0) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
+  return String(v);
+}
+// Format Sheets Time value → 'HH:mm' string
+function fmtTime(v) {
+  if (!v && v !== 0) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'HH:mm');
+  return String(v);
+}
+// Format Sheets Date value → 'yyyy-MM-dd HH:mm:ss' string
+function fmtDateTime(v) {
+  if (!v && v !== 0) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm:ss');
+  return String(v);
+}
+
+// Also update parseCallbackDateTime to handle Date objects properly
+// (already handles Date at top with formatDate)
