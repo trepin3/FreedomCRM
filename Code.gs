@@ -742,17 +742,24 @@ function fmtDate(v) {
   return String(v);
 }
 // Format Sheets Time value → 'HH:mm' string
+// Time-only cells in Sheets have year 1899 and store the clock value in UTC
+// so we read in UTC to get the raw hour/minute regardless of script timezone
 function fmtTime(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'HH:mm');
+  if (v instanceof Date) {
+    if (v.getFullYear() < 1900) return Utilities.formatDate(v, 'UTC', 'HH:mm');
+    return Utilities.formatDate(v, TZ, 'HH:mm');
+  }
   return String(v);
 }
 // Format Sheets Date value → 'yyyy-MM-dd HH:mm:ss' string
+// Handles both Date objects and ISO strings (like the ones the client sends for callStart/callEnd)
 function fmtDateTime(v) {
   if (!v && v !== 0) return '';
   if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm:ss');
-  return String(v);
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    try { return Utilities.formatDate(new Date(s), TZ, 'yyyy-MM-dd HH:mm:ss'); } catch (e) {}
+  }
+  return s;
 }
-
-// Also update parseCallbackDateTime to handle Date objects properly
-// (already handles Date at top with formatDate)
