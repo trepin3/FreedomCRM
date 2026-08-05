@@ -741,22 +741,34 @@ function fmtDate(v) {
   if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
   return String(v);
 }
-// Format Sheets Time value → 'HH:mm' string
-// Time-only cells in Sheets have year 1899 and store the clock value in UTC
-// so we read in UTC to get the raw hour/minute regardless of script timezone
+// All Sheets stores dates as UTC midnight. When reading date-only or time-only cells,
+// we format in UTC to preserve the raw value. Only true datetimes get converted to TZ.
+
+function fmtDate(v) {
+  if (!v && v !== 0) return '';
+  if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    try { return Utilities.formatDate(new Date(s), 'UTC', 'yyyy-MM-dd'); } catch (e) {}
+  }
+  return s;
+}
+
 function fmtTime(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) {
-    if (v.getFullYear() < 1900) return Utilities.formatDate(v, 'UTC', 'HH:mm');
-    return Utilities.formatDate(v, TZ, 'HH:mm');
-  }
+  if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'HH:mm');
   return String(v);
 }
-// Format Sheets Date value → 'yyyy-MM-dd HH:mm:ss' string
-// Handles both Date objects and ISO strings (like the ones the client sends for callStart/callEnd)
+
 function fmtDateTime(v) {
   if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm:ss');
+  if (v instanceof Date) {
+    // Date-only cells (time is midnight UTC) → return date only
+    if (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 && v.getUTCSeconds() === 0) {
+      return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
+    }
+    return Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm:ss');
+  }
   const s = String(v);
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
     try { return Utilities.formatDate(new Date(s), TZ, 'yyyy-MM-dd HH:mm:ss'); } catch (e) {}
