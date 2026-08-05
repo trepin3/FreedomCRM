@@ -464,32 +464,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
     <div class="modal-sub" id="soldModalSub">Lead name</div>
     <div class="field-row">
       <div class="field-group">
-        <label class="field-label">Monthly Premium ($)</label>
-        <input class="text-input" id="soldPremium" type="number" placeholder="75">
+        <label class="field-label">Monthly Premium ($) *</label>
+        <input class="text-input" id="soldPremium" type="number" placeholder="75" required>
       </div>
       <div class="field-group">
-        <label class="field-label">Carrier</label>
-        <input class="text-input" id="soldCarrier" placeholder="Carrier name">
+        <label class="field-label">Carrier *</label>
+        <input class="text-input" id="soldCarrier" placeholder="Carrier name" required>
       </div>
     </div>
     <div class="field-row">
       <div class="field-group">
-        <label class="field-label">First Draft Date</label>
-        <input class="text-input" id="soldFirstDraft" type="date">
+        <label class="field-label">First Draft Date *</label>
+        <input class="text-input" id="soldFirstDraft" type="date" required>
       </div>
       <div class="field-group">
-        <label class="field-label">Recurring Draft Date</label>
-        <input class="text-input" id="soldRecurringDraft" placeholder="e.g. 15th">
+        <label class="field-label">Recurring Draft Date *</label>
+        <input class="text-input" id="soldRecurringDraft" placeholder="e.g. 15th" required>
       </div>
     </div>
     <div class="field-group">
-      <label class="field-label">Reason for Policy</label>
-      <textarea class="text-input" id="soldReason" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
+      <label class="field-label">Reason for Policy *</label>
+      <textarea class="text-input" id="soldReason" rows="2" style="resize:vertical;font-family:inherit;" required></textarea>
     </div>
     <div class="field-group">
-      <label class="field-label">Notes</label>
+      <label class="field-label">Notes (optional)</label>
       <textarea class="text-input" id="soldNotes" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
     </div>
+    <div class="login-error" id="soldError" style="margin-top:6px;">All fields marked * are required.</div>
     <div class="modal-actions">
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('soldModal')">Cancel</button>
       <button class="modal-btn modal-btn-confirm" onclick="confirmSold()">Confirm Sale</button>
@@ -1034,15 +1035,36 @@ function openSold() {
   const lead = state.leads[state.currentIdx];
   document.getElementById('soldModalSub').textContent = lead.name;
   ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason', 'soldNotes'].forEach(id => {
-    document.getElementById(id).value = '';
+    const el = document.getElementById(id);
+    el.value = '';
+    el.style.borderColor = ''; // reset any prior red highlight
   });
+  document.getElementById('soldError').style.display = 'none';
   openModal('soldModal');
 }
 
 function confirmSold() {
-  const premium = document.getElementById('soldPremium').value.trim();
-  const carrier = document.getElementById('soldCarrier').value.trim();
-  if (!premium || !carrier) { alert('Premium and carrier are required.'); return; }
+  const required = ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason'];
+  const values = {};
+  let missing = [];
+  required.forEach(id => {
+    const el = document.getElementById(id);
+    const v = el.value.trim();
+    values[id] = v;
+    if (!v) {
+      el.style.borderColor = 'var(--danger)';
+      missing.push(id);
+    } else {
+      el.style.borderColor = '';
+    }
+  });
+  const errEl = document.getElementById('soldError');
+  if (missing.length) {
+    errEl.style.display = 'block';
+    document.getElementById(missing[0]).focus();
+    return;
+  }
+  errEl.style.display = 'none';
   closeModal('soldModal');
   const lead = state.leads[state.currentIdx];
   const payload = {
@@ -1050,11 +1072,11 @@ function confirmSold() {
     state: lead.state,
     rowIndex: lead.rowIndex,
     agent: state.agentName,
-    premium: premium,
-    carrier: carrier,
-    firstDraft: document.getElementById('soldFirstDraft').value,
-    recurringDraft: document.getElementById('soldRecurringDraft').value,
-    reason: document.getElementById('soldReason').value,
+    premium: values.soldPremium,
+    carrier: values.soldCarrier,
+    firstDraft: values.soldFirstDraft,
+    recurringDraft: values.soldRecurringDraft,
+    reason: values.soldReason,
     notes: document.getElementById('soldNotes').value,
     callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
   };
