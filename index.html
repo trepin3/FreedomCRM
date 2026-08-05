@@ -1249,18 +1249,36 @@ function renderMyCallbacks() {
   }).join('');
 }
 
+// Backend returns dates as MM/DD/YYYY. Convert to ISO for reliable parsing.
+function toISODate(s) {
+  if (!s) return '';
+  const str = String(s);
+  const mdy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (mdy) return mdy[3] + '-' + mdy[1].padStart(2,'0') + '-' + mdy[2].padStart(2,'0');
+  const iso = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[0];
+  return '';
+}
 function cbDateTime(cb) {
   try {
-    const d = (cb.callbackDate instanceof Date) ? cb.callbackDate.toISOString().slice(0, 10) : String(cb.callbackDate);
-    const t = String(cb.callbackTime);
+    const d = toISODate(cb.callbackDate);
+    const t = String(cb.callbackTime || '00:00');
+    if (!d) return 0;
     return new Date(d + 'T' + t).getTime();
   } catch (e) { return 0; }
 }
 
 function formatCbDate(cb) {
   try {
-    const d = new Date(cbDateTime(cb));
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const dt = cbDateTime(cb);
+    if (!dt) return String(cb.callbackDate || '') + ' ' + String(cb.callbackTime || '');
+    const d = new Date(dt);
+    // MM/DD/YYYY at H:MM AM/PM
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const yy = d.getFullYear();
+    const timeStr = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return mm + '/' + dd + '/' + yy + ' at ' + timeStr;
   } catch (e) { return cb.callbackDate + ' ' + cb.callbackTime; }
 }
 
