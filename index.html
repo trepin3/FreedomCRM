@@ -519,6 +519,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
   </div>
 </div>
 
+<!-- Lead View Modal (used from callback list + banner alerts) -->
+<div class="script-iframe-modal" id="leadViewModal">
+  <div class="script-iframe-header">
+    <button class="script-iframe-close" onclick="closeLeadView()">← Back</button>
+    <div class="script-iframe-title" id="leadViewTitle">Lead</div>
+  </div>
+  <div style="flex:1;overflow-y:auto;padding:16px 14px 40px;max-width:600px;width:100%;margin:0 auto;background:var(--bg);">
+    <div id="leadViewContent"></div>
+  </div>
+</div>
+
 <!-- Script Tool Iframe Modal -->
 <div class="script-iframe-modal" id="scriptIframeModal">
   <div class="script-iframe-header">
@@ -906,7 +917,14 @@ function checkTCPA(stateCode) {
 function updateLocalTime() {
   const lead = state.leads[state.currentIdx];
   if (!lead || state.activeTab !== 'dial') return;
-  // Just re-render if TCPA status changed
+  // Never re-render mid-call or post-call; only refresh time on default state
+  if (state.cardState !== 'default') {
+    // Just update the live local time text in-place without wiping card state
+    document.querySelectorAll('.lead-localtime').forEach(el => {
+      el.textContent = '🕐 ' + CONFIG.STATE_NAMES[lead.state] + ': ' + getLeadLocalTime(lead.state);
+    });
+    return;
+  }
   renderLead();
 }
 
@@ -1116,30 +1134,61 @@ function markWrong() {
 // CALLBACK
 // ══════════════════════════════════════════════════
 function openCallback() {
-  const lead = state.leads[state.currentIdx];
-  document.getElementById('callbackModalSub').textContent = lead.name;
-  document.getElementById('cbDate').value = '';
-  document.getElementById('cbTime').value = '';
-  openModal('callbackModal');
+  openCallbackModalFor({ source: 'dial', lead: state.leads[state.currentIdx], sourceTab: 'Leads' });
 }
 
-function confirmCallback() {
+async function confirmCallback() {
   const date = document.getElementById('cbDate').value;
   const time = document.getElementById('cbTime').value;
   if (!date || !time) { alert('Date and time required.'); return; }
   closeModal('callbackModal');
-  const lead = state.leads[state.currentIdx];
-  api('POST', {
+  const ctx = state.callbackContext || { source: 'dial' };
+  const lead = ctx.lead || state.leads[state.currentIdx];
+  const payload = {
     action: 'callback',
     state: lead.state,
     rowIndex: lead.rowIndex,
+    sourceTab: ctx.sourceTab || 'Leads',
     agent: state.agentName,
     callbackDate: date,
     callbackTime: time,
     callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
-  }).catch(() => {});
-  state.stats.callbacks++; updateStats();
-  advanceLead();
+  };
+  api('POST', payload).catch(() => {});
+  // Refresh callback cache so the due-alert loop knows about it
+  setTimeout(loadMyCallbacks, 1500);
+  if (ctx.source === 'reschedule') {
+    // Optimistically update local cache so UI reflects change immediately
+    const idx = state.myCallbacks.findIndex(c => c.state === lead.state && c.rowIndex === lead.rowIndex);
+    if (idx >= 0) { state.myCallbacks[idx].callbackDate = date; state.myCallbacks[idx].callbackTime = time; }
+    renderMyCallbacks();
+  } else if (ctx.source === 'leadView') {
+    // Scheduled from View Lead modal — close it and refresh
+    closeLeadView();
+  } else {
+    state.stats.callbacks++; updateStats();
+    advanceLead();
+  }
+  state.callbackContext = null;
+}
+
+// Opens the same callback modal from any context (dial, reschedule, leadView)
+function openCallbackModalFor(context) {
+  state.callbackContext = context;
+  const lead = context.lead;
+  document.getElementById('callbackModalSub').textContent = lead.name || 'Lead';
+  // Pre-fill from existing callback if rescheduling
+  document.getElementById('cbDate').value = context.date ? isoDateFromDisplay(context.date) : '';
+  document.getElementById('cbTime').value = context.time || '';
+  openModal('callbackModal');
+}
+
+function isoDateFromDisplay(s) {
+  // Convert MM/DD/YYYY (display) → YYYY-MM-DD for date input
+  const m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return m[3] + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0');
+  const iso = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? iso[0] : '';
 }
 
 // ══════════════════════════════════════════════════
@@ -1259,7 +1308,9 @@ function renderMyCallbacks() {
     return;
   }
   const sorted = [...state.myCallbacks].sort((a, b) => cbDateTime(a) - cbDateTime(b));
-  c.innerHTML = sorted.map(cb => {
+  // Cache sorted list so openCbFromList can find the right lead by index
+  state.myCallbacksSorted = sorted;
+  c.innerHTML = sorted.map((cb, i) => {
     const dt = cbDateTime(cb);
     const now = Date.now();
     let status = 'upcoming', label = 'Upcoming';
@@ -1275,7 +1326,8 @@ function renderMyCallbacks() {
         <div class="cb-item-when">📅 ${formatCbDate(cb)}  •  📞 ${formatPhone(cb.phone)}</div>
         <span class="cb-item-status ${status}">${label}</span>
         <div class="cb-item-actions">
-          <a class="cb-mini-btn call" href="tel:+${phoneClean}">📞 Call</a>
+          <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
+          <a class="cb-mini-btn" href="tel:+${phoneClean}">📞 Call</a>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
         </div>
@@ -1330,10 +1382,15 @@ function checkCallbackAlerts() {
     const key = cb.state + '|' + cb.rowIndex;
     state.cbAlertsShown.add(key);
     const phoneClean = String(cb.phone || '').replace(/\D/g, '');
+    const cbId = key.replace(/[^a-zA-Z0-9]/g, '_');
+    // Stash the lead on the state so the View button can pull it back
+    state.cbAlertsLeads = state.cbAlertsLeads || {};
+    state.cbAlertsLeads[cbId] = cb;
     const div = document.createElement('div');
     div.className = 'cb-alert';
     div.innerHTML = `
       <div class="cb-alert-text">📅 Callback due: ${escapeHtml(cb.name)}</div>
+      <button class="cb-alert-call" onclick="openCbFromAlert('${cbId}')" style="margin-right:4px;">👁️ View</button>
       <a class="cb-alert-call" href="tel:+${phoneClean}">📞 Call</a>
       <button class="cb-alert-close" onclick="this.parentElement.remove()">✕</button>
     `;
@@ -1341,16 +1398,25 @@ function checkCallbackAlerts() {
   });
 }
 
-async function rescheduleCallback(stateCode, rowIndex) {
+function openCbFromList(i) {
+  const cb = (state.myCallbacksSorted || state.myCallbacks || [])[i];
+  if (cb) openLeadView(cb, 'Callbacks');
+}
+function openCbFromAlert(cbId) {
+  const cb = (state.cbAlertsLeads || {})[cbId];
+  if (cb) openLeadView(cb, 'Callbacks');
+}
+
+function rescheduleCallback(stateCode, rowIndex) {
   const cb = state.myCallbacks.find(c => c.state === stateCode && c.rowIndex === rowIndex);
   if (!cb) return;
-  const newDate = prompt('New date (YYYY-MM-DD):', cb.callbackDate);
-  if (!newDate) return;
-  const newTime = prompt('New time (HH:MM 24hr):', cb.callbackTime);
-  if (!newTime) return;
-  await api('POST', { action: 'callback', state: stateCode, rowIndex, agent: state.agentName,
-    callbackDate: newDate, callbackTime: newTime, sourceTab: 'Callbacks' });
-  loadMyCallbacks();
+  openCallbackModalFor({
+    source: 'reschedule',
+    lead: cb,
+    sourceTab: 'Callbacks',
+    date: cb.callbackDate,
+    time: cb.callbackTime
+  });
 }
 
 async function returnCallbackToPool(stateCode, rowIndex) {
@@ -1384,6 +1450,147 @@ async function loadLeaderboard() {
     '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
   } catch (e) {
     c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load leaderboard.</div></div>';
+  }
+}
+
+// ══════════════════════════════════════════════════
+// LEAD VIEW MODAL (from callback list + banner alerts)
+// Shows lead like the dialer card. sourceTab='Callbacks' so dispositions
+// move the lead out of the Callbacks tab.
+// ══════════════════════════════════════════════════
+let leadViewCallTimerId = null;
+let leadViewState = null; // { lead, sourceTab, cardState, callStart, callEnd, callDuration }
+
+function openLeadView(lead, sourceTab) {
+  leadViewState = {
+    lead: lead,
+    sourceTab: sourceTab || 'Callbacks',
+    cardState: 'default',
+    callStart: null, callEnd: null, callDuration: ''
+  };
+  document.getElementById('leadViewTitle').textContent = lead.name || 'Lead';
+  renderLeadView();
+  document.getElementById('leadViewModal').classList.add('show');
+}
+function closeLeadView() {
+  if (leadViewCallTimerId) { clearInterval(leadViewCallTimerId); leadViewCallTimerId = null; }
+  document.getElementById('leadViewModal').classList.remove('show');
+  leadViewState = null;
+}
+function renderLeadView() {
+  if (!leadViewState) return;
+  const lead = leadViewState.lead;
+  const localTime = getLeadLocalTime(lead.state);
+  const tcpa = checkTCPA(lead.state);
+  const phoneClean = String(lead.phone || '').replace(/\D/g, '');
+  const phoneDisplay = formatPhone(lead.phone);
+  const cs = leadViewState.cardState;
+
+  let actionHTML = '';
+  if (cs === 'default') {
+    actionHTML = (tcpa.blocked
+        ? `<button class="call-primary-btn disabled" disabled>📞 ${tcpa.reason}</button>`
+        : `<a class="call-primary-btn" href="tel:+${phoneClean}" onclick="startLeadViewCall()">📞 Call</a>`)
+      + `<button class="script-tool-btn" onclick="openScriptTool()">📋 Open Script Tool</button>`;
+  } else if (cs === 'incall') {
+    actionHTML = `
+      <div class="in-call-timer">
+        <div class="in-call-label">☎️ In Call</div>
+        <div class="in-call-time" id="lvCallTime">00:00</div>
+      </div>
+      <button class="done-btn" onclick="doneLeadViewCall()">✓ Done — Log Outcome</button>
+      <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
+    `;
+  } else if (cs === 'postcall') {
+    actionHTML = `
+      <div class="action-grid">
+        <button class="action-btn action-sold" onclick="leadViewDo('sold')">✅ Sold</button>
+        <button class="action-btn action-dcid" onclick="leadViewDo('dcid')">🚫 DCID</button>
+        <button class="action-btn action-wrong" onclick="leadViewDo('wrong')">📵 Wrong #</button>
+        <button class="action-btn action-callback" onclick="leadViewDo('reschedule')">📅 Reschedule</button>
+      </div>
+      <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
+    `;
+  }
+
+  document.getElementById('leadViewContent').innerHTML = `
+    <div class="lead-card">
+      <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
+      <div class="lead-phone-wrap">
+        <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
+        <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
+      </div>
+      <div class="lead-details">
+        ${lead.age ? '<div class="detail-row"><span class="detail-key">Age</span><span class="detail-val">' + escapeHtml(String(lead.age)) + '</span></div>' : ''}
+        ${lead.dob ? '<div class="detail-row"><span class="detail-key">DOB</span><span class="detail-val">' + escapeHtml(String(lead.dob)) + '</span></div>' : ''}
+        ${lead.beneficiary ? '<div class="detail-row"><span class="detail-key">Beneficiary</span><span class="detail-val">' + escapeHtml(lead.beneficiary) + '</span></div>' : ''}
+        ${lead.hobby ? '<div class="detail-row"><span class="detail-key">Hobby</span><span class="detail-val">' + escapeHtml(lead.hobby) + '</span></div>' : ''}
+        ${lead.lead_type ? '<div class="detail-row"><span class="detail-key">Lead Type</span><span class="detail-val">' + escapeHtml(lead.lead_type) + '</span></div>' : ''}
+        ${lead.address ? '<div class="detail-row"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
+        ${lead.city ? '<div class="detail-row"><span class="detail-key">City</span><span class="detail-val">' + escapeHtml(lead.city) + ', ' + escapeHtml(lead.state) + '</span></div>' : ''}
+        ${lead.email ? '<div class="detail-row"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
+        ${lead.callbackDate ? '<div class="detail-row"><span class="detail-key">Callback</span><span class="detail-val">' + escapeHtml(lead.callbackDate) + ' ' + escapeHtml(lead.callbackTime || '') + '</span></div>' : ''}
+      </div>
+      ${actionHTML}
+    </div>
+  `;
+}
+function startLeadViewCall() {
+  if (!leadViewState) return;
+  leadViewState.cardState = 'incall';
+  leadViewState.callStart = new Date().toISOString();
+  const startMs = Date.now();
+  renderLeadView();
+  if (leadViewCallTimerId) clearInterval(leadViewCallTimerId);
+  leadViewCallTimerId = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startMs) / 1000);
+    const m = Math.floor(elapsed / 60), s = elapsed % 60;
+    const t = document.getElementById('lvCallTime');
+    if (t) t.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    leadViewState.callDuration = String(m) + ':' + String(s).padStart(2, '0');
+  }, 500);
+}
+function doneLeadViewCall() {
+  if (leadViewCallTimerId) { clearInterval(leadViewCallTimerId); leadViewCallTimerId = null; }
+  leadViewState.callEnd = new Date().toISOString();
+  leadViewState.cardState = 'postcall';
+  state.stats.calls++; updateStats();
+  checkCallMilestones();
+  renderLeadView();
+}
+function leadViewDo(action) {
+  const lv = leadViewState;
+  if (!lv) return;
+  const common = {
+    state: lv.lead.state, rowIndex: lv.lead.rowIndex, sourceTab: lv.sourceTab,
+    agent: state.agentName,
+    callStart: lv.callStart, callEnd: lv.callEnd, callDuration: lv.callDuration
+  };
+  if (action === 'sold') {
+    // Show a lightweight prompt for Sold fields (reuse the existing Sold modal is hard here)
+    const premium = prompt('Monthly Premium ($):'); if (!premium) return;
+    const carrier = prompt('Carrier:'); if (!carrier) return;
+    const firstDraft = prompt('First Draft Date (YYYY-MM-DD):') || '';
+    const recurringDraft = prompt('Recurring Draft Date (e.g. 15th):') || '';
+    const reason = prompt('Reason for Policy:') || '';
+    api('POST', Object.assign({ action: 'sold', premium, carrier, firstDraft, recurringDraft, reason, notes: '' }, common)).catch(() => {});
+    state.stats.sales++; updateStats(); checkSaleMilestone();
+    closeLeadView(); loadMyCallbacks();
+  } else if (action === 'dcid') {
+    const reason = prompt('DCID reason:'); if (!reason) return;
+    api('POST', Object.assign({ action: 'dcid', reason }, common)).catch(() => {});
+    state.stats.dcid++; updateStats();
+    closeLeadView(); loadMyCallbacks();
+  } else if (action === 'wrong') {
+    if (!confirm('Mark as Wrong Number?')) return;
+    api('POST', Object.assign({ action: 'wrong' }, common)).catch(() => {});
+    state.stats.wrong++; updateStats();
+    closeLeadView(); loadMyCallbacks();
+  } else if (action === 'reschedule') {
+    openCallbackModalFor({
+      source: 'leadView', lead: lv.lead, sourceTab: lv.sourceTab,
+      date: lv.lead.callbackDate, time: lv.lead.callbackTime
+    });
   }
 }
 
@@ -1483,11 +1690,17 @@ async function searchReturn(s, r, tab) {
   await api('POST', { action: 'returnToPool', state: s, rowIndex: r, sourceTab: tab });
   alert('Returned to pool.'); doSearch();
 }
-async function searchResched(s, r, tab) {
-  const d = prompt('Date (YYYY-MM-DD):'); if (!d) return;
-  const t = prompt('Time (HH:MM 24hr):'); if (!t) return;
-  await api('POST', { action: 'callback', state: s, rowIndex: r, sourceTab: tab, agent: state.agentName, callbackDate: d, callbackTime: t });
-  alert('Rescheduled.'); doSearch();
+function searchResched(s, r, tab) {
+  // Build a lead-like object from the search result cache so modal shows the name
+  const nameEl = document.querySelector('.search-result-name'); // fallback for label
+  openCallbackModalFor({
+    source: 'reschedule',
+    lead: { state: s, rowIndex: r, name: (nameEl ? nameEl.textContent : 'Lead') },
+    sourceTab: tab
+  });
+  // After modal confirm, doSearch() re-fetches
+  const origPost = api;
+  // no override needed; confirmCallback handles POST; user can refresh search after
 }
 
 // ══════════════════════════════════════════════════
