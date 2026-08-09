@@ -396,7 +396,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
   <div class="dialer-body">
     <div class="tab-panel active" id="tab-dial">
       <div class="nav-row">
-        <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Back</button>
+        <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Prior Lead</button>
       </div>
       <div id="dialContent"><div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div></div>
     </div>
@@ -842,7 +842,7 @@ function renderLead() {
   const lead = state.leads[state.currentIdx];
   state.seenIds.add(leadKey(lead));
   document.getElementById('leadCounter').textContent = 'Lead ' + (state.currentIdx + 1) + ' of ' + state.leads.length;
-  document.getElementById('backBtn').disabled = state.history.length === 0;
+  document.getElementById('backBtn').disabled = state.currentIdx === 0;
   state.cardState = 'default';
   state.callStart = null;
   state.callEnd = null;
@@ -979,9 +979,6 @@ function doneCall() {
 // ══════════════════════════════════════════════════
 function nextLead() {
   const lead = state.leads[state.currentIdx];
-  // Push to history stack
-  state.history.push(lead);
-  if (state.history.length > 20) state.history.shift();
 
   // Fire release-lock POST (with call log)
   api('POST', {
@@ -1007,10 +1004,8 @@ function advanceLead() {
 }
 
 function goBackLead() {
-  if (state.history.length === 0) return;
-  const prev = state.history.pop();
-  prev._flag = '⚠️ Previously viewed — may be in progress by another agent';
-  state.leads.splice(state.currentIdx, 0, prev);
+  if (state.currentIdx === 0) return;
+  state.currentIdx--;
   renderLead();
 }
 
@@ -1197,7 +1192,14 @@ function isoDateFromDisplay(s) {
 function scheduleUndoAction(opts) {
   // Cancel any pending
   if (state.pendingUndo) commitPendingUndo();
-  state.pendingUndo = { ...opts, committed: false };
+  // Snapshot the currentIdx + call state BEFORE the caller advances
+  const snapshot = {
+    prevIdx: state.currentIdx,
+    callStart: state.callStart,
+    callEnd: state.callEnd,
+    callDuration: state.callDuration
+  };
+  state.pendingUndo = { ...opts, committed: false, snapshot: snapshot };
   showUndoBar(opts.label);
 }
 
@@ -1225,15 +1227,35 @@ function showUndoBar(label) {
 function cancelUndo() {
   if (!state.pendingUndo) return;
   if (state.pendingUndo.tickId) clearInterval(state.pendingUndo.tickId);
+  const restored = state.pendingUndo;
   state.pendingUndo = null;
   document.getElementById('undoContainer').innerHTML = '';
-  // Undo: return to previous card
-  if (state.history.length > 0) {
-    const prev = state.history.pop();
-    state.leads.splice(state.currentIdx, 0, prev);
-    state.currentIdx = state.currentIdx; // stay
+  // Restore currentIdx + call state so the just-dispositioned lead shows again
+  const snap = restored.snapshot;
+  if (snap && typeof snap.prevIdx === 'number') {
+    state.currentIdx = snap.prevIdx;
+    state.callStart = snap.callStart;
+    state.callEnd = snap.callEnd;
+    state.callDuration = snap.callDuration;
     renderLead();
+    showPostCallActions();
   }
+}
+
+function showPostCallActions() {
+  state.cardState = 'postcall';
+  const area = document.getElementById('callActionArea');
+  if (!area) return;
+  area.innerHTML = `
+    <div class="action-grid">
+      <button class="action-btn action-next" onclick="nextLead()">→ Next</button>
+      <button class="action-btn action-sold" onclick="openSold()">✅ Sold</button>
+      <button class="action-btn action-dcid" onclick="openDCID()">🚫 DCID</button>
+      <button class="action-btn action-wrong" onclick="markWrong()">📵 Wrong #</button>
+      <button class="action-btn action-callback" onclick="openCallback()">📅 Schedule Callback</button>
+    </div>
+    <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
+  `;
 }
 
 function commitPendingUndo() {
