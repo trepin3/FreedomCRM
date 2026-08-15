@@ -97,6 +97,43 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 
 /* ── DIALER CONTENT ── */
 .dialer-body{max-width:600px;margin:0 auto;padding:16px 14px 100px;}
+
+/* ── LEAD RAIL ──
+   The claimed batch, listed beside the card. Sits in the dead space left of the
+   centred column on wide screens; collapses behind a toggle below that. */
+.rail-toggle{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
+.rail-toggle:active{transform:scale(0.97);}
+.rail-count{background:var(--primary);color:#fff;font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;}
+.lead-rail{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;display:flex;flex-direction:column;}
+.rail-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;}
+.rail-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);}
+.rail-close{display:none;width:28px;height:28px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:15px;cursor:pointer;font-family:inherit;}
+.rail-list{overflow-y:auto;padding:6px;}
+.rail-item{width:100%;text-align:left;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;border:none;background:transparent;cursor:pointer;font-family:inherit;transition:background 0.15s;}
+.rail-item:hover{background:var(--input-bg);}
+.rail-item.current{background:rgba(0,113,227,0.1);box-shadow:inset 0 0 0 1.5px var(--primary);}
+.rail-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:var(--input-bg);color:var(--text-secondary);font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;}
+.rail-item.current .rail-num{background:var(--primary);color:#fff;}
+.rail-item.seen .rail-num{background:rgba(48,209,88,0.16);color:var(--success);}
+.rail-body{flex:1;min-width:0;display:block;}
+.rail-name{display:block;font-size:13px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rail-meta{display:block;font-size:11px;color:var(--text-secondary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rail-item.seen .rail-name{color:var(--text-secondary);font-weight:700;}
+.rail-empty{padding:18px 14px;text-align:center;font-size:12px;font-weight:600;color:var(--text-secondary);}
+
+/* Wide: pinned in the gap beside the card */
+@media(min-width:1150px){
+  .rail-toggle{display:none;}
+  .lead-rail{position:fixed;top:var(--rail-top,230px);bottom:24px;width:252px;left:max(16px,calc(50% - 574px));z-index:30;}
+}
+/* Narrow: a sheet over the page */
+@media(max-width:1149px){
+  .lead-rail{position:fixed;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:120;border-radius:0;transform:translateX(-102%);transition:transform 0.22s ease;}
+  body.rail-open .lead-rail{transform:none;}
+  .rail-close{display:flex;align-items:center;justify-content:center;}
+  .rail-scrim{position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:119;opacity:0;pointer-events:none;transition:opacity 0.22s;}
+  body.rail-open .rail-scrim{opacity:1;pointer-events:auto;}
+}
 .tab-panel{display:none;}
 .tab-panel.active{display:block;}
 
@@ -104,6 +141,36 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .lead-card{background:var(--card);border-radius:var(--radius);padding:20px;border:1px solid var(--border);box-shadow:var(--shadow-lg);}
 .lead-flag{padding:8px 12px;background:rgba(255,159,10,0.1);border:1px solid var(--warning);border-radius:var(--radius-sm);color:var(--warning);font-size:12px;font-weight:700;margin-bottom:12px;text-align:center;}
 .lead-name{font-size:24px;font-weight:800;color:var(--text);letter-spacing:-0.4px;margin-bottom:4px;line-height:1.2;}
+.lead-header-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;}
+.lead-header-row .lead-name{margin-bottom:0;flex:1;min-width:0;word-break:break-word;}
+/* Callback calendar picker */
+.cal-wrap{background:var(--input-bg);border-radius:var(--radius);padding:12px;margin-bottom:4px;}
+.cal-nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+.cal-nav-btn{width:32px;height:32px;border-radius:50%;border:none;background:var(--card);color:var(--text);font-size:18px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+.cal-nav-btn:hover:not(:disabled){background:var(--border);}
+.cal-nav-btn:active{transform:scale(0.9);}
+.cal-nav-btn:disabled{opacity:0.3;cursor:not-allowed;}
+.cal-month-label{font-size:15px;font-weight:800;color:var(--text);letter-spacing:-0.2px;}
+.cal-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:4px;}
+.cal-weekday{font-size:10px;font-weight:800;color:var(--text-secondary);text-align:center;padding:4px 0;text-transform:uppercase;letter-spacing:0.5px;}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text);background:var(--card);border-radius:8px;border:none;cursor:pointer;font-family:inherit;transition:all 0.15s;padding:0;}
+.cal-day:hover:not(:disabled){background:var(--border);}
+.cal-day:active:not(:disabled){transform:scale(0.94);}
+.cal-day:disabled{opacity:0.25;cursor:not-allowed;color:var(--text-secondary);}
+.cal-day.other-month{opacity:0.35;background:transparent;}
+.cal-day.today{flex-direction:column;gap:0;line-height:1;padding-top:3px;}
+.cal-day.today:not(.selected){border:2px solid var(--primary);color:var(--primary);}
+.cal-day-today-label{font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;color:var(--primary);margin-bottom:2px;}
+.cal-day.today.selected .cal-day-today-label{color:#fff;}
+.cal-day.selected{background:var(--primary);color:#fff;font-weight:800;}
+.cal-day.selected:hover{background:var(--primary-dark);}
+.lead-cb-btn{flex-shrink:0;padding:12px 14px;border-radius:var(--radius);border:1.5px solid var(--warning);background:rgba(255,159,10,0.08);color:var(--warning);font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;transition:all 0.2s;}
+.lead-cb-btn:active{transform:scale(0.96);opacity:0.88;}
+.action-dial-again{background:var(--success);grid-column:span 2;}
+.action-dial-cell{background:var(--success);}
+.action-next-span{background:var(--warning);grid-column:span 2;}
+.dial-again-hint{font-size:11px;font-weight:700;opacity:0.9;margin-top:2px;}
 .lead-phone-wrap{margin:12px 0 16px;}
 .lead-phone{display:inline-flex;align-items:center;gap:6px;font-size:22px;font-weight:700;color:var(--primary);text-decoration:none;padding:6px 12px;background:rgba(0,113,227,0.08);border-radius:10px;}
 .lead-localtime{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:6px;}
@@ -132,7 +199,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .action-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .action-btn{padding:14px 10px;border-radius:var(--radius);border:none;color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:6px;}
 .action-btn:active{transform:scale(0.96);}
-.action-next{background:var(--success);}
+.action-next{background:var(--warning);}
 .action-sold{background:var(--primary);}
 .action-dcid{background:var(--danger);}
 .action-wrong{background:var(--text-secondary);}
@@ -393,10 +460,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 
   <div class="cb-alerts" id="cbAlerts"></div>
 
+  <div class="rail-scrim" onclick="toggleLeadRail(false)"></div>
+  <aside class="lead-rail" id="leadRail">
+    <div class="rail-head">
+      <span class="rail-title">My Leads</span>
+      <button class="rail-close" onclick="toggleLeadRail(false)">&#10005;</button>
+    </div>
+    <div class="rail-list" id="railList"></div>
+  </aside>
+
   <div class="dialer-body">
     <div class="tab-panel active" id="tab-dial">
       <div class="nav-row">
         <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Prior Lead</button>
+        <button class="rail-toggle" onclick="toggleLeadRail()">&#9776; My Leads <span class="rail-count" id="railCount">0</span></button>
       </div>
       <div id="dialContent"><div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div></div>
     </div>
@@ -502,15 +579,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
   <div class="modal-card">
     <div class="modal-title">📅 Schedule Callback</div>
     <div class="modal-sub" id="callbackModalSub">Lead name</div>
-    <div class="field-row">
-      <div class="field-group">
-        <label class="field-label">Date *</label>
-        <input class="text-input" id="cbDate" type="date">
-      </div>
-      <div class="field-group">
-        <label class="field-label">Time *</label>
-        <input class="text-input" id="cbTime" type="time">
-      </div>
+    <div id="cbCalendar"></div>
+    <input type="hidden" id="cbDate">
+    <div class="field-group" style="margin-top:12px;">
+      <label class="field-label">Time *</label>
+      <input class="text-input" id="cbTime" type="time" style="text-align:center;font-size:16px;cursor:pointer;"
+        onclick="try{this.showPicker&&this.showPicker()}catch(e){}"
+        onfocus="try{this.showPicker&&this.showPicker()}catch(e){}">
     </div>
     <div class="modal-actions">
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('callbackModal')">Cancel</button>
@@ -768,14 +843,17 @@ function updateStateSwitcher() {
 function startTimers() {
   stopTimers();
   state.timeUpdateTimer = setInterval(updateLocalTime, 60000);
-  state.cbPollTimer = setInterval(checkCallbackAlerts, 60000);
+  // Poll for due callbacks every 10 seconds so alerts fire within ~10s of the callback time
+  state.cbPollTimer = setInterval(checkCallbackAlerts, 10000);
+  // Refresh the callbacks cache from the server every 2 min so new callbacks land quickly
+  state.cbRefreshTimer = setInterval(loadMyCallbacks, 120000);
   // Also fetch initial callbacks
   loadMyCallbacks();
   // Leaderboard polling only when tab is active
   state.lbPollTimer = setInterval(() => { if (state.activeTab === 'leaderboard') loadLeaderboard(); }, 60000);
 }
 function stopTimers() {
-  [state.timeUpdateTimer, state.cbPollTimer, state.lbPollTimer].forEach(t => t && clearInterval(t));
+  [state.timeUpdateTimer, state.cbPollTimer, state.cbRefreshTimer, state.lbPollTimer].forEach(t => t && clearInterval(t));
   if (state.callTimerId) clearInterval(state.callTimerId);
 }
 
@@ -798,7 +876,14 @@ async function loadLeads() {
   try {
     const data = await api('GET', { action: 'getLeads', state: state.currentState, agent: state.agentName });
     if (data.error) throw new Error(data.error);
-    const fresh = (data.leads || []).filter(l => !state.seenIds.has(leadKey(l)));
+    const returned = data.leads || [];
+    let fresh = returned.filter(l => !state.seenIds.has(leadKey(l)));
+    // If the server returned leads but we've already seen them all this session,
+    // reset dedup and reshuffle so agents can loop through the pool again
+    if (fresh.length === 0 && returned.length > 0) {
+      state.seenIds.clear();
+      fresh = returned;
+    }
     state.leads = fresh;
     state.currentIdx = 0;
     if (fresh.length === 0) {
@@ -811,6 +896,13 @@ async function loadLeads() {
   }
 }
 
+// Manual reload from the empty-state button — always clear dedup first so the
+// user is guaranteed to see anything the API returns
+function reloadLeads() {
+  state.seenIds.clear();
+  loadLeads();
+}
+
 function leadKey(l) {
   return l.state + '|' + l.rowIndex + '|' + l.phone;
 }
@@ -819,7 +911,7 @@ function renderEmpty() {
   document.getElementById('dialContent').innerHTML =
     '<div class="empty-state"><div class="empty-icon">🎉</div><div class="empty-title">All caught up!</div>' +
     '<div class="empty-msg">No leads available for ' + CONFIG.STATE_NAMES[state.currentState] + ' right now.<br>Try another state, or check back soon.</div>' +
-    '<button class="login-btn" style="max-width:220px;margin-top:20px;" onclick="loadLeads()">↻ Reload</button></div>';
+    '<button class="login-btn" style="max-width:220px;margin-top:20px;" onclick="reloadLeads()">↻ Reload</button></div>';
   document.getElementById('leadCounter').textContent = '0 / 0';
 }
 
@@ -858,7 +950,10 @@ function renderLead() {
   const html = `
     ${flag}
     <div class="lead-card">
-      <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
+      <div class="lead-header-row">
+        <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
+        <button class="lead-cb-btn" onclick="openCallback()">📅 Schedule Callback</button>
+      </div>
       <div class="lead-phone-wrap">
         <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
@@ -883,6 +978,79 @@ function renderLead() {
     </div>
   `;
   document.getElementById('dialContent').innerHTML = html;
+  renderLeadRail();
+}
+
+// ── Lead rail ────────────────────────────────────────────────────────────────
+// A lead is "worked" once it has actually been dialed or dispositioned.
+// seenIds is the load-time dedup set — merely opening a lead puts it there, so
+// it would tick every lead you browsed past.
+function leadWorked(l) {
+  if (!l) return false;
+  if (l._worked) return true;
+  const a = state.dialAttempts || {};
+  return (a[l.state + '|' + l.rowIndex] || 0) > 0;
+}
+
+function markWorked() {
+  const l = state.leads[state.currentIdx];
+  if (l) l._worked = true;
+}
+function renderLeadRail() {
+  const list = document.getElementById('railList');
+  const count = document.getElementById('railCount');
+  if (!list) return;
+  const leads = state.leads || [];
+  if (count) count.textContent = leads.length;
+
+  if (!leads.length) {
+    list.innerHTML = '<div class="rail-empty">No leads claimed yet.</div>';
+    return;
+  }
+
+  list.innerHTML = leads.map(function(l, i) {
+    const cur  = i === state.currentIdx;
+    const seen = !cur && leadWorked(l);
+    const city = [l.city, l.state].filter(Boolean).join(', ');
+    return '<button class="rail-item' + (cur ? ' current' : '') + (seen ? ' seen' : '') + '" ' +
+             'onclick="jumpToLead(' + i + ')">' +
+             '<span class="rail-num">' + (seen ? '&#10003;' : (i + 1)) + '</span>' +
+             '<span class="rail-body">' +
+               '<span class="rail-name">' + escapeHtml(l.name || 'Unknown') + '</span>' +
+               '<span class="rail-meta">' + escapeHtml(city || formatPhone(l.phone)) + '</span>' +
+             '</span>' +
+           '</button>';
+  }).join('');
+
+  positionRail();
+  const cur = list.querySelector('.rail-item.current');
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function jumpToLead(i) {
+  if (i === state.currentIdx) { toggleLeadRail(false); return; }
+  // Mid-call or mid-disposition, jumping would drop the outcome silently.
+  if (state.cardState !== 'default' &&
+      !confirm('You have a call in progress on this lead. Leave without dispositioning it?')) return;
+  if (state.timerId) stopTimers();
+  state.currentIdx = i;
+  renderLead();
+  toggleLeadRail(false);
+}
+
+// The header, state switcher, stats and tabs are all sticky and their combined
+// height varies, so measure rather than hardcode an offset.
+function positionRail() {
+  const tabs = document.querySelector('.tab-nav');
+  if (!tabs) return;
+  const bottom = Math.round(tabs.getBoundingClientRect().bottom);
+  document.documentElement.style.setProperty('--rail-top', Math.max(bottom + 14, 80) + 'px');
+}
+window.addEventListener('resize', positionRail);
+
+function toggleLeadRail(force) {
+  const open = (typeof force === 'boolean') ? force : !document.body.classList.contains('rail-open');
+  document.body.classList.toggle('rail-open', open);
 }
 
 function formatPhone(p) {
@@ -934,6 +1102,13 @@ function updateLocalTime() {
 function startCall() {
   state.cardState = 'incall';
   state.callStart = new Date().toISOString();
+  // Bump session dial-attempt counter for the current lead
+  const lead = state.leads[state.currentIdx];
+  if (lead) {
+    const key = lead.state + '|' + lead.rowIndex;
+    state.dialAttempts = state.dialAttempts || {};
+    state.dialAttempts[key] = (state.dialAttempts[key] || 0) + 1;
+  }
   const startMs = Date.now();
   const area = document.getElementById('callActionArea');
   area.innerHTML = `
@@ -961,23 +1136,74 @@ function doneCall() {
   updateStats();
   checkCallMilestones();
 
+  renderPostCallGrid();
+}
+
+// Builds the post-call action grid. Swaps Next↔Dial Again after 3rd dial.
+function renderPostCallGrid() {
   const area = document.getElementById('callActionArea');
+  if (!area) return;
+  const lead = state.leads[state.currentIdx];
+  const key = lead ? (lead.state + '|' + lead.rowIndex) : '';
+  const attempts = (state.dialAttempts && state.dialAttempts[key]) || 0;
+
+  const nextBtn = `<button class="action-btn action-next" onclick="nextLead()">→ Next</button>`;
+  const soldBtn = `<button class="action-btn action-sold" onclick="openSold()">✅ Sold</button>`;
+  const dcidBtn = `<button class="action-btn action-dcid" onclick="openDCID()">🚫 DCID</button>`;
+  const wrongBtn = `<button class="action-btn action-wrong" onclick="markWrong()">📵 Wrong #</button>`;
+  const dialSpanBtn = `<button class="action-btn action-dial-again" onclick="dialAgain()">📞 Dial Again <span class="dial-again-hint" id="dialAgainHint"></span></button>`;
+  const dialCellBtn = `<button class="action-btn action-dial-cell" onclick="dialAgain()">Dial Again</button>`;
+  const nextSpanBtn = `<button class="action-btn action-next-span" onclick="nextLead()">→ Next</button>`;
+
+  let grid;
+  if (attempts >= 3) {
+    // Swap: Dial Again takes Next's top-left cell, Next spans the bottom
+    grid = `${dialCellBtn}${soldBtn}${dcidBtn}${wrongBtn}${nextSpanBtn}`;
+  } else {
+    grid = `${nextBtn}${soldBtn}${dcidBtn}${wrongBtn}${dialSpanBtn}`;
+  }
+
   area.innerHTML = `
-    <div class="action-grid">
-      <button class="action-btn action-next" onclick="nextLead()">→ Next</button>
-      <button class="action-btn action-sold" onclick="openSold()">✅ Sold</button>
-      <button class="action-btn action-dcid" onclick="openDCID()">🚫 DCID</button>
-      <button class="action-btn action-wrong" onclick="markWrong()">📵 Wrong #</button>
-      <button class="action-btn action-callback" onclick="openCallback()">📅 Schedule Callback</button>
-    </div>
+    <div class="action-grid">${grid}</div>
     <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
   `;
+  updateDialAgainHint();
+}
+
+// ══════════════════════════════════════════════════
+// DIAL AGAIN — encourages 3 dial attempts before moving on
+// ══════════════════════════════════════════════════
+function dialAgain() {
+  const lead = state.leads[state.currentIdx];
+  if (!lead) return;
+  const phoneClean = String(lead.phone || '').replace(/\D/g, '');
+  // Trigger native phone dialer
+  window.location.href = 'tel:+' + phoneClean;
+  // Restart the in-call state; startCall bumps the attempt counter
+  startCall();
+}
+
+// Updates the hint text on the Dial Again button — best practice: 3 dials.
+// After the 3rd attempt the button gets swapped for the compact cell layout
+// (which has no hint span), so this only runs when the hint span exists.
+function updateDialAgainHint() {
+  const hintEl = document.getElementById('dialAgainHint');
+  if (!hintEl) return;
+  const lead = state.leads[state.currentIdx];
+  if (!lead) return;
+  const key = lead.state + '|' + lead.rowIndex;
+  const attempts = (state.dialAttempts && state.dialAttempts[key]) || 0;
+  const remaining = 3 - attempts;
+  if (remaining > 1) hintEl.textContent = ' — ' + remaining + ' attempts left';
+  else if (remaining === 1) hintEl.textContent = ' — 1 more attempt';
+  else hintEl.textContent = '';
 }
 
 // ══════════════════════════════════════════════════
 // NEXT LEAD
 // ══════════════════════════════════════════════════
 function nextLead() {
+  markWorked();
   const lead = state.leads[state.currentIdx];
 
   // Fire release-lock POST (with call log)
@@ -1020,6 +1246,7 @@ function openDCID() {
 }
 
 function confirmDCID() {
+  markWorked();
   const reason = document.getElementById('dcidReason').value.trim();
   if (!reason) { alert('Please enter a reason.'); return; }
   closeModal('dcidModal');
@@ -1057,6 +1284,7 @@ function openSold() {
 }
 
 function confirmSold() {
+  markWorked();
   const required = ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason'];
   const values = {};
   let missing = [];
@@ -1108,6 +1336,7 @@ function confirmSold() {
 // WRONG NUMBER
 // ══════════════════════════════════════════════════
 function markWrong() {
+  markWorked();
   const lead = state.leads[state.currentIdx];
   scheduleUndoAction({
     label: '📵 Wrong #: ' + lead.name,
@@ -1135,7 +1364,8 @@ function openCallback() {
 async function confirmCallback() {
   const date = document.getElementById('cbDate').value;
   const time = document.getElementById('cbTime').value;
-  if (!date || !time) { alert('Date and time required.'); return; }
+  if (!date) { alert('Please pick a date on the calendar.'); return; }
+  if (!time) { alert('Please enter a time.'); return; }
   closeModal('callbackModal');
   const ctx = state.callbackContext || { source: 'dial' };
   const lead = ctx.lead || state.leads[state.currentIdx];
@@ -1173,8 +1403,22 @@ function openCallbackModalFor(context) {
   const lead = context.lead;
   document.getElementById('callbackModalSub').textContent = lead.name || 'Lead';
   // Pre-fill from existing callback if rescheduling
-  document.getElementById('cbDate').value = context.date ? isoDateFromDisplay(context.date) : '';
+  const iso = context.date ? isoDateFromDisplay(context.date) : '';
+  const now = new Date();
+  if (iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    state.calSelected = new Date(y, m - 1, d);
+    state.calYear = y;
+    state.calMonth = m - 1;
+    document.getElementById('cbDate').value = iso;
+  } else {
+    state.calSelected = null;
+    state.calYear = now.getFullYear();
+    state.calMonth = now.getMonth();
+    document.getElementById('cbDate').value = '';
+  }
   document.getElementById('cbTime').value = context.time || '';
+  renderCallbackCalendar();
   openModal('callbackModal');
 }
 
@@ -1184,6 +1428,71 @@ function isoDateFromDisplay(s) {
   if (m) return m[3] + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0');
   const iso = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   return iso ? iso[0] : '';
+}
+
+// ── Callback calendar picker ──
+function renderCallbackCalendar() {
+  const container = document.getElementById('cbCalendar');
+  if (!container) return;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const y = state.calYear, m = state.calMonth;
+  const firstDay = new Date(y, m, 1);
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const startWeekday = firstDay.getDay();
+  const prevMonthDays = new Date(y, m, 0).getDate();
+
+  const weekdayHtml = weekdays.map(d => `<div class="cal-weekday">${d}</div>`).join('');
+  let cellsHtml = '';
+
+  // Leading (prev month, disabled)
+  for (let i = startWeekday - 1; i >= 0; i--) {
+    cellsHtml += `<button class="cal-day other-month" disabled>${prevMonthDays - i}</button>`;
+  }
+  // Current month
+  for (let d = 1; d <= daysInMonth; d++) {
+    const cellDate = new Date(y, m, d);
+    const isPast = cellDate < today;
+    const isToday = cellDate.getTime() === today.getTime();
+    const isSelected = state.calSelected &&
+      state.calSelected.getFullYear() === y &&
+      state.calSelected.getMonth() === m &&
+      state.calSelected.getDate() === d;
+    let cls = 'cal-day';
+    if (isToday) cls += ' today';
+    if (isSelected) cls += ' selected';
+    const inner = isToday ? `<span class="cal-day-today-label">Today</span><span>${d}</span>` : String(d);
+    cellsHtml += `<button class="${cls}" ${isPast ? 'disabled' : ''} onclick="selectCalDay(${d})">${inner}</button>`;
+  }
+
+  const canGoPrev = (y > today.getFullYear()) || (y === today.getFullYear() && m > today.getMonth());
+  container.innerHTML = `
+    <div class="cal-wrap">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" onclick="calNav(-1)" ${canGoPrev ? '' : 'disabled'}>‹</button>
+        <div class="cal-month-label">${monthNames[m]} ${y}</div>
+        <button class="cal-nav-btn" onclick="calNav(1)">›</button>
+      </div>
+      <div class="cal-weekdays">${weekdayHtml}</div>
+      <div class="cal-grid">${cellsHtml}</div>
+    </div>
+  `;
+}
+
+function calNav(dir) {
+  state.calMonth += dir;
+  if (state.calMonth < 0) { state.calMonth = 11; state.calYear--; }
+  if (state.calMonth > 11) { state.calMonth = 0; state.calYear++; }
+  renderCallbackCalendar();
+}
+
+function selectCalDay(d) {
+  state.calSelected = new Date(state.calYear, state.calMonth, d);
+  const iso = state.calYear + '-' + String(state.calMonth + 1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+  document.getElementById('cbDate').value = iso;
+  renderCallbackCalendar();
 }
 
 // ══════════════════════════════════════════════════
@@ -1244,18 +1553,7 @@ function cancelUndo() {
 
 function showPostCallActions() {
   state.cardState = 'postcall';
-  const area = document.getElementById('callActionArea');
-  if (!area) return;
-  area.innerHTML = `
-    <div class="action-grid">
-      <button class="action-btn action-next" onclick="nextLead()">→ Next</button>
-      <button class="action-btn action-sold" onclick="openSold()">✅ Sold</button>
-      <button class="action-btn action-dcid" onclick="openDCID()">🚫 DCID</button>
-      <button class="action-btn action-wrong" onclick="markWrong()">📵 Wrong #</button>
-      <button class="action-btn action-callback" onclick="openCallback()">📅 Schedule Callback</button>
-    </div>
-    <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
-  `;
+  renderPostCallGrid();
 }
 
 function commitPendingUndo() {
