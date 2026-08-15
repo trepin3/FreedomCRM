@@ -100,17 +100,202 @@ function setupTabs(ss, stateCode) {
 // ══════════════════════════════════════════════════════════════════
 // doGet — API entry for GET requests
 // ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// AUTH — Google Sign-In, sessions, allowlist, activity log
+//
+// The page cannot be trusted: it is static, public, and anyone can call this
+// endpoint directly. So identity is never taken from a parameter — it is proven
+// by a Google-signed token, then carried in a session token this script signs.
+// ══════════════════════════════════════════════════════════════════
+
+const GOOGLE_CLIENT_ID = '416228276690-41m3pskc2ga2he06jvgusp23j1fvaepk.apps.googleusercontent.com';
+const SESSION_HOURS    = 12;
+const AGENTS_SHEET     = 'Agents';
+const ACTIVITY_SHEET   = 'ActivityLog';
+const SEED_ADMIN       = 'kepler.benefic.ins@gmail.com';
+// Auth data is not per-state, so it gets its own spreadsheet — kept out of the
+// lead books entirely. setupAuth() creates it once and records the id here.
+function authSS_() {
+  const id = PropertiesService.getScriptProperties().getProperty('AUTH_SHEET_ID');
+  if (!id) throw new Error('Auth spreadsheet missing — run setupAuth() once from the editor.');
+  return SpreadsheetApp.openById(id);
+}
+
+// Run once from the editor: creates the sheets, seeds the admin, mints the secret.
+function setupAuth() {
+  const props = PropertiesService.getScriptProperties();
+
+  // Create the auth spreadsheet on first run only; re-running is safe.
+  let id = props.getProperty('AUTH_SHEET_ID');
+  let ss;
+  if (id) {
+    ss = SpreadsheetApp.openById(id);
+  } else {
+    ss = SpreadsheetApp.create('FreedomCRM \u2014 Auth & Activity');
+    id = ss.getId();
+    props.setProperty('AUTH_SHEET_ID', id);
+    const first = ss.getSheets()[0];
+    if (first && first.getName() === 'Sheet1') first.setName(AGENTS_SHEET);
+  }
+
+  let agents = ss.getSheetByName(AGENTS_SHEET);
+  if (!agents) agents = ss.insertSheet(AGENTS_SHEET);
+  if (agents.getLastRow() === 0) {
+    agents.appendRow(['Email', 'Display Name', 'Role', 'Status', 'Last Login']);
+    agents.setFrozenRows(1);
+  }
+  const emails = agents.getLastRow() > 1
+    ? agents.getRange(2, 1, agents.getLastRow() - 1, 1).getValues().map(function(r) {
+        return String(r[0]).trim().toLowerCase();
+      })
+    : [];
+  if (emails.indexOf(SEED_ADMIN) === -1) {
+    agents.appendRow([SEED_ADMIN, 'Kepler Wolsey', 'admin', 'active', '']);
+  }
+
+  let log = ss.getSheetByName(ACTIVITY_SHEET);
+  if (!log) {
+    log = ss.insertSheet(ACTIVITY_SHEET);
+    log.appendRow(['Timestamp', 'Email', 'Name', 'Role', 'Action', 'Detail', 'State']);
+    log.setFrozenRows(1);
+  }
+
+  if (!props.getProperty('SESSION_SECRET')) {
+    props.setProperty('SESSION_SECRET', Utilities.getUuid() + Utilities.getUuid());
+  }
+
+  const msg = 'Auth ready.\nAdmin seeded: ' + SEED_ADMIN + '\nSpreadsheet: ' + ss.getUrl();
+  Logger.log(msg);
+  return msg;
+}
+
+function sessionSecret_() {
+  const v = PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
+  if (!v) throw new Error('SESSION_SECRET missing — run setupAuth() once from the editor.');
+  return v;
+}
+
+// Google signs the ID token; we verify it and, critically, that it was minted
+// for THIS app. Without the aud check any valid Google token would be accepted.
+function verifyGoogleToken_(idToken) {
+  if (!idToken) return null;
+  const res = UrlFetchApp.fetch(
+    'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
+    { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) return null;
+
+  let info;
+  try { info = JSON.parse(res.getContentText()); } catch (e) { return null; }
+
+  if (info.aud !== GOOGLE_CLIENT_ID) return null;
+  if (String(info.email_verified) !== 'true') return null;
+  if (Number(info.exp) * 1000 < Date.now()) return null;
+  if (!info.email) return null;
+
+  return { email: String(info.email).trim().toLowerCase(), name: info.name || info.email };
+}
+
+function findAgent_(email) {
+  const sh = authSS_().getSheetByName(AGENTS_SHEET);
+  if (!sh || sh.getLastRow() < 2) return null;
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toLowerCase() === email) {
+      return {
+        row: i + 2,
+        email: email,
+        name: String(rows[i][1] || '').trim(),
+        role: String(rows[i][2] || 'agent').trim().toLowerCase(),
+        status: String(rows[i][3] || 'active').trim().toLowerCase()
+      };
+    }
+  }
+  return null;
+}
+
+function signSession_(payload) {
+  const body = Utilities.base64EncodeWebSafe(JSON.stringify(payload));
+  const sig  = Utilities.base64EncodeWebSafe(
+    Utilities.computeHmacSha256Signature(body, sessionSecret_()));
+  return body + '.' + sig;
+}
+
+function verifySession_(token) {
+  if (!token || token.indexOf('.') === -1) return null;
+  const parts = token.split('.');
+  const expected = Utilities.base64EncodeWebSafe(
+    Utilities.computeHmacSha256Signature(parts[0], sessionSecret_()));
+  if (parts[1] !== expected) return null;               // tampered or forged
+
+  let payload;
+  try {
+    payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString());
+  } catch (e) { return null; }
+  if (!payload || !payload.e || Number(payload.x) < Date.now()) return null;
+
+  // Re-read the sheet so disabling an agent takes effect immediately rather
+  // than whenever their token happens to expire.
+  const agent = findAgent_(payload.e);
+  if (!agent || agent.status !== 'active') return null;
+
+  return { email: agent.email, name: agent.name || payload.n, role: agent.role };
+}
+
+function actionLogin_(body) {
+  const g = verifyGoogleToken_(body && body.idToken);
+  if (!g) return { error: 'Google sign-in could not be verified.' };
+
+  const agent = findAgent_(g.email);
+  if (!agent)                      return { error: 'That account is not on the agent list.' };
+  if (agent.status !== 'active')   return { error: 'That account has been disabled.' };
+
+  const sh = authSS_().getSheetByName(AGENTS_SHEET);
+  sh.getRange(agent.row, 5).setValue(Utilities.formatDate(new Date(), TZ, 'MM/dd/yyyy HH:mm:ss'));
+
+  const name = agent.name || g.name;
+  logActivity_({ email: agent.email, name: name, role: agent.role }, 'login', '');
+
+  return {
+    token: signSession_({ e: agent.email, n: name, r: agent.role,
+                          x: Date.now() + SESSION_HOURS * 3600 * 1000 }),
+    email: agent.email, name: name, role: agent.role
+  };
+}
+
+function logActivity_(user, action, detail, stateCode) {
+  try {
+    const sh = authSS_().getSheetByName(ACTIVITY_SHEET);
+    if (!sh) return;
+    sh.appendRow([
+      Utilities.formatDate(new Date(), TZ, 'MM/dd/yyyy HH:mm:ss'),
+      user.email, user.name, user.role, action, detail || '', stateCode || ''
+    ]);
+  } catch (e) { /* logging must never break a request */ }
+}
+
 function doGet(e) {
   try {
     const action = (e.parameter.action || 'getLeads');
+
+    const user = verifySession_(e.parameter.s);
+    if (!user) return jsonOut({ error: 'auth_required' });
+
+    const isAdmin = user.role === 'admin';
+    if ((action === 'adminStats' || action === 'adminLocks') && !isAdmin) {
+      return jsonOut({ error: 'admin_only' });
+    }
+
     let result;
     switch (action) {
-      case 'getLeads': result = getLeads(e.parameter.state, e.parameter.agent); break;
-      case 'search': result = search(e.parameter.q); break;
-      case 'myCallbacks': result = myCallbacks(e.parameter.agent); break;
+      // The agent is whoever the token says, never e.parameter.agent.
+      case 'getLeads':    result = getLeads(e.parameter.state, user.name);
+                          logActivity_(user, 'getLeads', '', e.parameter.state); break;
+      case 'search':      result = search(e.parameter.q); break;
+      case 'myCallbacks': result = myCallbacks(user.name); break;
       case 'leaderboard': result = leaderboard(); break;
-      case 'adminStats': result = adminStats(e.parameter.range); break;
-      case 'adminLocks': result = adminLocks(); break;
+      case 'adminStats':  result = adminStats(e.parameter.range); break;
+      case 'adminLocks':  result = adminLocks(); break;
       default: result = { error: 'unknown action: ' + action };
     }
     return jsonOut(result);
@@ -126,6 +311,15 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
+
+    // Chicken and egg: this is how you get a session in the first place.
+    if (action === 'login') return jsonOut(actionLogin_(body));
+
+    const user = verifySession_(body.s);
+    if (!user) return jsonOut({ error: 'auth_required' });
+    body.agent = user.name;          // ignore whatever the client claimed
+    logActivity_(user, action, body.rowIndex ? ('row ' + body.rowIndex) : '', body.state);
+
     let result;
     switch (action) {
       case 'next': result = actionNext(body); break;

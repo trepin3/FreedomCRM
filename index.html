@@ -47,6 +47,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(255,69,58,0.1);border:1.5px solid var(--danger);border-radius:var(--radius-sm);font-size:14px;font-weight:600;color:var(--danger);text-align:center;}
 .login-hint{text-align:center;margin-top:14px;font-size:12px;color:var(--text-secondary);}
 .login-hint a{color:var(--primary);text-decoration:none;font-weight:600;cursor:pointer;}
+.admin-only{display:none;}
+body.is-admin .admin-only{display:flex;}
+.admin-jump{position:fixed;top:14px;right:120px;z-index:60;}
 .theme-fixed{position:fixed;top:16px;right:16px;z-index:200;width:36px;height:36px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:var(--shadow);}
 
 /* ── STATE PICKER ── */
@@ -104,11 +107,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .rail-toggle{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
 .rail-toggle:active{transform:scale(0.97);}
 .rail-count{background:var(--primary);color:#fff;font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;}
+body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !important;}
 .lead-rail{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;display:flex;flex-direction:column;}
 .rail-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;}
 .rail-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);}
 .rail-close{display:none;width:28px;height:28px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:15px;cursor:pointer;font-family:inherit;}
-.rail-list{overflow-y:auto;padding:6px;}
+.rail-list{overflow-y:auto;min-height:0;padding:6px;}
 .rail-item{width:100%;text-align:left;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;border:none;background:transparent;cursor:pointer;font-family:inherit;transition:background 0.15s;}
 .rail-item:hover{background:var(--input-bg);}
 .rail-item.current{background:rgba(0,113,227,0.1);box-shadow:inset 0 0 0 1.5px var(--primary);}
@@ -124,7 +128,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 /* Wide: pinned in the gap beside the card */
 @media(min-width:1150px){
   .rail-toggle{display:none;}
-  .lead-rail{position:fixed;top:var(--rail-top,230px);bottom:24px;width:252px;left:max(16px,calc(50% - 574px));z-index:30;}
+  .lead-rail{position:fixed;top:var(--rail-top,230px);width:252px;left:max(16px,calc(50% - 574px));z-index:20;max-height:calc(100vh - var(--rail-top,230px) - 24px);}
 }
 /* Narrow: a sheet over the page */
 @media(max-width:1149px){
@@ -174,11 +178,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .lead-phone-wrap{margin:12px 0 16px;}
 .lead-phone{display:inline-flex;align-items:center;gap:6px;font-size:22px;font-weight:700;color:var(--primary);text-decoration:none;padding:6px 12px;background:rgba(0,113,227,0.08);border-radius:10px;}
 .lead-localtime{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:6px;}
-.lead-details{background:var(--input-bg);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;}
-.detail-row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px;}
-.detail-row:last-child{border-bottom:none;}
-.detail-key{color:var(--text-secondary);font-weight:600;}
-.detail-val{color:var(--text);font-weight:700;text-align:right;max-width:60%;word-break:break-word;}
+/* Label above value, in pairs. Right-aligned values sat a long way from their
+   label, so the eye had to travel to match them up mid-call. */
+.cb-time-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;align-items:start;}
+.cb-day-panel{background:var(--input-bg);border-radius:var(--radius-sm);padding:6px;max-height:132px;overflow-y:auto;}
+.cb-day-item{display:flex;align-items:baseline;gap:7px;padding:5px 6px;border-radius:6px;}
+.cb-day-item + .cb-day-item{margin-top:2px;}
+.cb-day-time{font-size:12px;font-weight:800;color:var(--primary);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.cb-day-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cb-day-item.clash{background:rgba(255,159,10,0.14);box-shadow:inset 0 0 0 1px var(--warning);}
+.cb-day-item.clash .cb-day-time{color:var(--warning);}
+.cb-day-empty{padding:14px 6px;text-align:center;font-size:11.5px;font-weight:600;color:var(--text-secondary);line-height:1.45;}
+@media(max-width:480px){.cb-time-row{grid-template-columns:1fr;}}
+.lead-details{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px;}
+.detail-row{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:9px 12px;background:var(--input-bg);min-width:0;}
+.detail-row.wide{grid-column:1 / -1;}
+.detail-key{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-secondary);}
+.detail-val{font-size:15px;font-weight:800;color:var(--text);text-align:left;max-width:100%;word-break:break-word;line-height:1.3;}
 
 /* Call buttons */
 .call-primary-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:20px;border-radius:var(--radius);border:none;background:var(--success);color:#fff;font-size:20px;font-weight:800;cursor:pointer;text-decoration:none;font-family:inherit;transition:all 0.2s;box-shadow:0 6px 16px rgba(48,209,88,0.35);margin-bottom:10px;}
@@ -333,6 +349,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
   .in-call-time{font-size:32px;}
 }
 </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -346,19 +363,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
     <div class="login-title">Freedom<span>CRM</span></div>
     <div class="login-sub">Lead Dialer &amp; Management</div>
     <div class="login-card">
-      <div class="field-group">
-        <label class="field-label">Username</label>
-        <input class="text-input" id="loginUser" placeholder="Enter username" autocomplete="off"
-          onkeydown="if(event.key==='Enter')document.getElementById('loginPass').focus()">
-      </div>
-      <div class="field-group">
-        <label class="field-label">Password</label>
-        <input class="text-input" type="password" id="loginPass" placeholder="Enter password"
-          onkeydown="if(event.key==='Enter')doLogin()">
-      </div>
-      <div class="login-error" id="loginError">Incorrect username or password.</div>
-      <button class="login-btn" onclick="doLogin()">Sign In →</button>
-      <div class="login-hint">
+      <div class="login-sub" style="margin-bottom:14px;">Sign in with the Google account you use for work.</div>
+      <div id="gsiButton" style="display:flex;justify-content:center;"></div>
+      <div class="login-error" id="loginError">That account is not on the agent list. Ask an admin to add you.</div>
+      <div class="login-hint" style="margin-top:12px;">
         <a onclick="clearSaved()">Clear saved info</a>
       </div>
     </div>
@@ -492,6 +500,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
      ADMIN DASHBOARD VIEW
 ══════════════════════════════════════════════════ -->
 <div id="adminView" class="view">
+  <button class="mini-btn admin-jump" onclick="goToCrm()" title="Open the dialer">→ Open CRM</button>
   <div class="hud-header">
     <div class="hud-header-row">
       <div class="hud-brand">
@@ -500,7 +509,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
       </div>
       <div class="hud-actions">
         <button class="icon-btn" onclick="toggleTheme()" id="adminThemeBtn">🌙</button>
-        <button class="icon-btn" onclick="doLogout()" title="Sign out">🚪</button>
+        <button class="icon-btn admin-only" onclick="goToAdmin()" title="Admin view">🛡️</button>
+      <button class="icon-btn" onclick="doLogout()" title="Sign out">🚪</button>
       </div>
     </div>
   </div>
@@ -581,11 +591,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
     <div class="modal-sub" id="callbackModalSub">Lead name</div>
     <div id="cbCalendar"></div>
     <input type="hidden" id="cbDate">
-    <div class="field-group" style="margin-top:12px;">
-      <label class="field-label">Time *</label>
-      <input class="text-input" id="cbTime" type="time" style="text-align:center;font-size:16px;cursor:pointer;"
-        onclick="try{this.showPicker&&this.showPicker()}catch(e){}"
-        onfocus="try{this.showPicker&&this.showPicker()}catch(e){}">
+    <div class="cb-time-row">
+      <div class="field-group">
+        <label class="field-label">Time *</label>
+        <input class="text-input" id="cbTime" type="time" style="text-align:center;font-size:16px;cursor:pointer;"
+          onclick="try{this.showPicker&&this.showPicker()}catch(e){}"
+          onfocus="try{this.showPicker&&this.showPicker()}catch(e){}"
+          oninput="renderDayCallbacks()">
+      </div>
+      <div class="field-group">
+        <label class="field-label" id="cbDayLabel">Already booked</label>
+        <div class="cb-day-panel" id="cbDayPanel"></div>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('callbackModal')">Cancel</button>
@@ -641,10 +658,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 // ══════════════════════════════════════════════════
 const CONFIG = {
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxp5bPBH45WwdR33oP-We7hEgYP37US2_wcmm-ZsLeuVSuo4jeJU9yXwyzH2t4f5uaa/exec',
-  AGENT_USER: 'Get',
-  AGENT_PASS: 'Money',
-  ADMIN_USER: 'BOSS',
-  ADMIN_PASS: 'L1FE',
+  // Same client as Agent-HUD-Workstation — both are served from trepin3.github.io,
+  // so the authorised origin already covers this app.
+  GOOGLE_CLIENT_ID: '416228276690-41m3pskc2ga2he06jvgusp23j1fvaepk.apps.googleusercontent.com',
+  ADMIN_EMAILS: ['kepler.benefic.ins@gmail.com'],   // UI routing only — the backend decides for real
   SCRIPT_TOOL_URL: 'https://trepin3.github.io/The-Basics/',
   BATCH_SIZE: 5,
   STATE_TIMEZONES: { AZ: 'America/Phoenix', VA: 'America/New_York', OH: 'America/New_York' },
@@ -659,6 +676,8 @@ const CONFIG = {
 const state = {
   role: null, // 'agent' or 'admin'
   agentName: '',
+  agentEmail: '',
+  authToken: '',
   currentState: '',
   leads: [],
   currentIdx: 0,
@@ -690,8 +709,9 @@ document.addEventListener('DOMContentLoaded', function() {
   // Restore agent name
   const savedName = localStorage.getItem('fcrm_agent');
   if (savedName) document.getElementById('agentNameInput').value = savedName;
-  show('loginView');
-  document.getElementById('loginUser').focus();
+  document.body.classList.add('on-dial');   // dial is the default tab
+  initGoogleSignIn();
+  if (!restoreSession()) show('loginView');
 });
 
 function show(id) {
@@ -705,25 +725,95 @@ function show(id) {
 // ══════════════════════════════════════════════════
 // LOGIN
 // ══════════════════════════════════════════════════
-function doLogin() {
-  const user = document.getElementById('loginUser').value.trim();
-  const pass = document.getElementById('loginPass').value.trim();
+// ══════════════════════════════════════════════════
+// GOOGLE SIGN-IN
+// ══════════════════════════════════════════════════
+// The page cannot decide who you are — it only carries proof. Apps Script
+// re-verifies the token on every request; anything decided here is UI routing.
+
+function initGoogleSignIn() {
+  if (!window.google || !google.accounts || !google.accounts.id) {
+    return setTimeout(initGoogleSignIn, 200);   // GIS script still loading
+  }
+  google.accounts.id.initialize({
+    client_id: CONFIG.GOOGLE_CLIENT_ID,
+    callback: onGoogleCredential
+  });
+  const host = document.getElementById('gsiButton');
+  if (host) {
+    google.accounts.id.renderButton(host, {
+      theme: document.documentElement.getAttribute('data-theme') === 'dark' ? 'filled_black' : 'outline',
+      size: 'large', width: 280, text: 'signin_with', shape: 'pill'
+    });
+  }
+}
+
+function decodeJwt(token) {
+  try {
+    const p = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(decodeURIComponent(escape(atob(p))));
+  } catch (e) { return null; }
+}
+
+async function onGoogleCredential(res) {
+  const idToken = res && res.credential;
+  const claims = decodeJwt(idToken);
+  if (!claims || !claims.email) return showLoginError('Could not read that Google account.');
+
+  // Trade the Google token for a session the backend signed. If the backend has
+  // not been updated yet, fall through and run on the verified Google profile so
+  // the app keeps working — but auth is NOT enforced until Code.gs ships.
+  let session = null;
+  try {
+    const out = await api('POST', { action: 'login', idToken: idToken });
+    if (out && out.error) return showLoginError(out.error);
+    if (out && out.token) session = out;
+  } catch (e) { /* backend not updated yet */ }
+
+  state.authToken = session ? session.token : '';
+  state.agentEmail = (session && session.email) || claims.email;
+  state.agentName  = (session && session.name)  || claims.name || claims.email;
+  state.role       = (session && session.role)  ||
+                     (CONFIG.ADMIN_EMAILS.indexOf(String(claims.email).toLowerCase()) >= 0 ? 'admin' : 'agent');
+
+  localStorage.setItem('fcrm_session', state.authToken || '');
+  localStorage.setItem('fcrm_agent', state.agentName);
+  localStorage.setItem('fcrm_email', state.agentEmail);
+  localStorage.setItem('fcrm_role', state.role);
+
+  enterAfterSignIn();
+}
+
+function showLoginError(msg) {
   const err = document.getElementById('loginError');
-  if (user === CONFIG.AGENT_USER && pass === CONFIG.AGENT_PASS) {
-    state.role = 'agent';
-    err.style.display = 'none';
-    show('nameView');
-    document.getElementById('agentNameInput').focus();
-  } else if (user === CONFIG.ADMIN_USER && pass === CONFIG.ADMIN_PASS) {
-    state.role = 'admin';
-    err.style.display = 'none';
+  if (err) { err.textContent = msg; err.style.display = 'block'; }
+}
+
+// Admins land on the admin view; the CRM is one button away.
+function enterAfterSignIn() {
+  document.querySelectorAll('.who-name').forEach(function(el) { el.textContent = state.agentName; });
+  document.body.classList.toggle('is-admin', state.role === 'admin');
+  if (state.role === 'admin') {
     show('adminView');
     loadAdminData();
   } else {
-    err.style.display = 'block';
-    document.getElementById('loginPass').value = '';
-    document.getElementById('loginPass').focus();
+    show('pickerView');
   }
+}
+
+function goToCrm()   { show('pickerView'); }
+function goToAdmin() { if (state.role === 'admin') { show('adminView'); loadAdminData(); } }
+
+function restoreSession() {
+  const name = localStorage.getItem('fcrm_agent');
+  const email = localStorage.getItem('fcrm_email');
+  if (!name || !email) return false;
+  state.authToken  = localStorage.getItem('fcrm_session') || '';
+  state.agentName  = name;
+  state.agentEmail = email;
+  state.role       = localStorage.getItem('fcrm_role') || 'agent';
+  enterAfterSignIn();
+  return true;
 }
 
 function submitAgentName() {
@@ -761,6 +851,10 @@ function clearSaved() {
 }
 
 function doLogout() {
+  state.authToken = ''; state.agentEmail = ''; state.role = null;
+  ['fcrm_session','fcrm_email','fcrm_role'].forEach(function(k){ localStorage.removeItem(k); });
+  if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+  document.body.classList.remove('is-admin');
   // Release all locks if agent
   if (state.role === 'agent' && state.agentName) {
     api('POST', { action: 'releaseAll', agent: state.agentName }).catch(() => {});
@@ -773,11 +867,10 @@ function doLogout() {
   state.history = [];
   state.seenIds.clear();
   state.stats = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
-  document.getElementById('loginUser').value = '';
-  document.getElementById('loginPass').value = '';
-  document.getElementById('loginError').style.display = 'none';
+  const err = document.getElementById('loginError');
+  if (err) err.style.display = 'none';
   show('loginView');
-  document.getElementById('loginUser').focus();
+  initGoogleSignIn();   // re-render the button; GIS clears it when the view hides
 }
 
 function endDialSession() {
@@ -862,6 +955,8 @@ function stopTimers() {
 // ══════════════════════════════════════════════════
 function switchTab(tab) {
   state.activeTab = tab;
+  document.body.classList.toggle('on-dial', tab === 'dial');
+  if (tab !== 'dial') toggleLeadRail(false);   // never leave the sheet open behind another tab
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
   if (tab === 'callbacks') loadMyCallbacks();
@@ -964,9 +1059,9 @@ function renderLead() {
         ${lead.beneficiary ? '<div class="detail-row"><span class="detail-key">Beneficiary</span><span class="detail-val">' + escapeHtml(lead.beneficiary) + '</span></div>' : ''}
         ${lead.hobby ? '<div class="detail-row"><span class="detail-key">Hobby</span><span class="detail-val">' + escapeHtml(lead.hobby) + '</span></div>' : ''}
         ${lead.lead_type ? '<div class="detail-row"><span class="detail-key">Lead Type</span><span class="detail-val">' + escapeHtml(lead.lead_type) + '</span></div>' : ''}
-        ${lead.address ? '<div class="detail-row"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
+        ${lead.address ? '<div class="detail-row wide"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
         ${lead.city ? '<div class="detail-row"><span class="detail-key">City</span><span class="detail-val">' + escapeHtml(lead.city) + ', ' + escapeHtml(lead.state) + '</span></div>' : ''}
-        ${lead.email ? '<div class="detail-row"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
+        ${lead.email ? '<div class="detail-row wide"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
       </div>
       <div id="callActionArea">
         ${tcpa.blocked
@@ -1038,15 +1133,28 @@ function jumpToLead(i) {
   toggleLeadRail(false);
 }
 
-// The header, state switcher, stats and tabs are all sticky and their combined
-// height varies, so measure rather than hardcode an offset.
+// .hud-header is sticky so its bottom is stable once pinned; .tab-nav is not and
+// scrolls away. Take whichever sits lower right now — tabs at the top of the
+// page, the pinned header once scrolled — and recompute as that changes.
 function positionRail() {
-  const tabs = document.querySelector('.tab-nav');
-  if (!tabs) return;
-  const bottom = Math.round(tabs.getBoundingClientRect().bottom);
-  document.documentElement.style.setProperty('--rail-top', Math.max(bottom + 14, 80) + 'px');
+  const header = document.querySelector('.hud-header');
+  const tabs   = document.querySelector('.tab-nav');
+  if (!header) return;
+  const bottom = Math.max(
+    header.getBoundingClientRect().bottom,
+    tabs ? tabs.getBoundingClientRect().bottom : 0
+  );
+  document.documentElement.style.setProperty('--rail-top', Math.round(Math.max(bottom + 12, 80)) + 'px');
 }
-window.addEventListener('resize', positionRail);
+
+let railTick = false;
+function queueRailPosition() {
+  if (railTick) return;
+  railTick = true;
+  requestAnimationFrame(function() { railTick = false; positionRail(); });
+}
+window.addEventListener('resize', queueRailPosition);
+window.addEventListener('scroll', queueRailPosition, { passive: true });
 
 function toggleLeadRail(force) {
   const open = (typeof force === 'boolean') ? force : !document.body.classList.contains('rail-open');
@@ -1419,6 +1527,7 @@ function openCallbackModalFor(context) {
   }
   document.getElementById('cbTime').value = context.time || '';
   renderCallbackCalendar();
+  renderDayCallbacks();
   openModal('callbackModal');
 }
 
@@ -1488,11 +1597,55 @@ function calNav(dir) {
   renderCallbackCalendar();
 }
 
+// The agent's own callbacks for the selected day. state.myCallbacks is fetched
+// with agent=state.agentName, so it is already scoped to them server-side.
+function renderDayCallbacks() {
+  const panel = document.getElementById('cbDayPanel');
+  const label = document.getElementById('cbDayLabel');
+  if (!panel) return;
+
+  const iso = (document.getElementById('cbDate') || {}).value || '';
+  if (!iso) {
+    label.textContent = 'Already booked';
+    panel.innerHTML = '<div class="cb-day-empty">Pick a date to see what you already have booked.</div>';
+    return;
+  }
+
+  const picked = (document.getElementById('cbTime') || {}).value || '';
+  const day = (state.myCallbacks || [])
+    .filter(function(cb) { return toISODate(cb.callbackDate) === iso; })
+    .sort(function(a, b) { return cbDateTime(a) - cbDateTime(b); });
+
+  const [y, m, d] = iso.split('-').map(Number);
+  const nice = new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  label.textContent = 'Booked ' + nice + (day.length ? ' (' + day.length + ')' : '');
+
+  if (!day.length) {
+    panel.innerHTML = '<div class="cb-day-empty">Nothing booked this day.</div>';
+    return;
+  }
+
+  panel.innerHTML = day.map(function(cb) {
+    const t = String(cb.callbackTime || '');
+    const clash = picked && t === picked;
+    let shown = t;
+    try {
+      const [hh, mm] = t.split(':').map(Number);
+      shown = new Date(2000, 0, 1, hh, mm).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    } catch (e) {}
+    return '<div class="cb-day-item' + (clash ? ' clash' : '') + '">' +
+             '<span class="cb-day-time">' + escapeHtml(shown) + '</span>' +
+             '<span class="cb-day-name">' + escapeHtml(cb.name || 'Lead') + '</span>' +
+           '</div>';
+  }).join('');
+}
+
 function selectCalDay(d) {
   state.calSelected = new Date(state.calYear, state.calMonth, d);
   const iso = state.calYear + '-' + String(state.calMonth + 1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
   document.getElementById('cbDate').value = iso;
   renderCallbackCalendar();
+  renderDayCallbacks();
 }
 
 // ══════════════════════════════════════════════════
@@ -1846,9 +1999,9 @@ function renderLeadView() {
         ${lead.beneficiary ? '<div class="detail-row"><span class="detail-key">Beneficiary</span><span class="detail-val">' + escapeHtml(lead.beneficiary) + '</span></div>' : ''}
         ${lead.hobby ? '<div class="detail-row"><span class="detail-key">Hobby</span><span class="detail-val">' + escapeHtml(lead.hobby) + '</span></div>' : ''}
         ${lead.lead_type ? '<div class="detail-row"><span class="detail-key">Lead Type</span><span class="detail-val">' + escapeHtml(lead.lead_type) + '</span></div>' : ''}
-        ${lead.address ? '<div class="detail-row"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
+        ${lead.address ? '<div class="detail-row wide"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
         ${lead.city ? '<div class="detail-row"><span class="detail-key">City</span><span class="detail-val">' + escapeHtml(lead.city) + ', ' + escapeHtml(lead.state) + '</span></div>' : ''}
-        ${lead.email ? '<div class="detail-row"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
+        ${lead.email ? '<div class="detail-row wide"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
         ${lead.callbackDate ? '<div class="detail-row"><span class="detail-key">Callback</span><span class="detail-val">' + escapeHtml(lead.callbackDate) + ' ' + escapeHtml(lead.callbackTime || '') + '</span></div>' : ''}
       </div>
       ${actionHTML}
@@ -2145,6 +2298,7 @@ async function api(method, params) {
   let lastErr;
   for (let i = 0; i < maxRetries; i++) {
     try {
+      if (state.authToken) params = Object.assign({}, params, { s: state.authToken });
       if (method === 'GET') {
         const qs = new URLSearchParams(params).toString();
         const res = await fetch(CONFIG.APPS_SCRIPT_URL + '?' + qs);
