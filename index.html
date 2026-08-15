@@ -97,6 +97,43 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 
 /* ── DIALER CONTENT ── */
 .dialer-body{max-width:600px;margin:0 auto;padding:16px 14px 100px;}
+
+/* ── LEAD RAIL ──
+   The claimed batch, listed beside the card. Sits in the dead space left of the
+   centred column on wide screens; collapses behind a toggle below that. */
+.rail-toggle{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
+.rail-toggle:active{transform:scale(0.97);}
+.rail-count{background:var(--primary);color:#fff;font-size:11px;font-weight:800;padding:1px 7px;border-radius:20px;}
+.lead-rail{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;display:flex;flex-direction:column;}
+.rail-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;}
+.rail-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);}
+.rail-close{display:none;width:28px;height:28px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:15px;cursor:pointer;font-family:inherit;}
+.rail-list{overflow-y:auto;padding:6px;}
+.rail-item{width:100%;text-align:left;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;border:none;background:transparent;cursor:pointer;font-family:inherit;transition:background 0.15s;}
+.rail-item:hover{background:var(--input-bg);}
+.rail-item.current{background:rgba(0,113,227,0.1);box-shadow:inset 0 0 0 1.5px var(--primary);}
+.rail-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:var(--input-bg);color:var(--text-secondary);font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;}
+.rail-item.current .rail-num{background:var(--primary);color:#fff;}
+.rail-item.seen .rail-num{background:rgba(48,209,88,0.16);color:var(--success);}
+.rail-body{flex:1;min-width:0;display:block;}
+.rail-name{display:block;font-size:13px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rail-meta{display:block;font-size:11px;color:var(--text-secondary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rail-item.seen .rail-name{color:var(--text-secondary);font-weight:700;}
+.rail-empty{padding:18px 14px;text-align:center;font-size:12px;font-weight:600;color:var(--text-secondary);}
+
+/* Wide: pinned in the gap beside the card */
+@media(min-width:1150px){
+  .rail-toggle{display:none;}
+  .lead-rail{position:fixed;top:var(--rail-top,230px);bottom:24px;width:252px;left:max(16px,calc(50% - 574px));z-index:30;}
+}
+/* Narrow: a sheet over the page */
+@media(max-width:1149px){
+  .lead-rail{position:fixed;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:120;border-radius:0;transform:translateX(-102%);transition:transform 0.22s ease;}
+  body.rail-open .lead-rail{transform:none;}
+  .rail-close{display:flex;align-items:center;justify-content:center;}
+  .rail-scrim{position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:119;opacity:0;pointer-events:none;transition:opacity 0.22s;}
+  body.rail-open .rail-scrim{opacity:1;pointer-events:auto;}
+}
 .tab-panel{display:none;}
 .tab-panel.active{display:block;}
 
@@ -423,10 +460,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 
   <div class="cb-alerts" id="cbAlerts"></div>
 
+  <div class="rail-scrim" onclick="toggleLeadRail(false)"></div>
+  <aside class="lead-rail" id="leadRail">
+    <div class="rail-head">
+      <span class="rail-title">My Leads</span>
+      <button class="rail-close" onclick="toggleLeadRail(false)">&#10005;</button>
+    </div>
+    <div class="rail-list" id="railList"></div>
+  </aside>
+
   <div class="dialer-body">
     <div class="tab-panel active" id="tab-dial">
       <div class="nav-row">
         <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Prior Lead</button>
+        <button class="rail-toggle" onclick="toggleLeadRail()">&#9776; My Leads <span class="rail-count" id="railCount">0</span></button>
       </div>
       <div id="dialContent"><div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div></div>
     </div>
@@ -931,6 +978,79 @@ function renderLead() {
     </div>
   `;
   document.getElementById('dialContent').innerHTML = html;
+  renderLeadRail();
+}
+
+// ── Lead rail ────────────────────────────────────────────────────────────────
+// A lead is "worked" once it has actually been dialed or dispositioned.
+// seenIds is the load-time dedup set — merely opening a lead puts it there, so
+// it would tick every lead you browsed past.
+function leadWorked(l) {
+  if (!l) return false;
+  if (l._worked) return true;
+  const a = state.dialAttempts || {};
+  return (a[l.state + '|' + l.rowIndex] || 0) > 0;
+}
+
+function markWorked() {
+  const l = state.leads[state.currentIdx];
+  if (l) l._worked = true;
+}
+function renderLeadRail() {
+  const list = document.getElementById('railList');
+  const count = document.getElementById('railCount');
+  if (!list) return;
+  const leads = state.leads || [];
+  if (count) count.textContent = leads.length;
+
+  if (!leads.length) {
+    list.innerHTML = '<div class="rail-empty">No leads claimed yet.</div>';
+    return;
+  }
+
+  list.innerHTML = leads.map(function(l, i) {
+    const cur  = i === state.currentIdx;
+    const seen = !cur && leadWorked(l);
+    const city = [l.city, l.state].filter(Boolean).join(', ');
+    return '<button class="rail-item' + (cur ? ' current' : '') + (seen ? ' seen' : '') + '" ' +
+             'onclick="jumpToLead(' + i + ')">' +
+             '<span class="rail-num">' + (seen ? '&#10003;' : (i + 1)) + '</span>' +
+             '<span class="rail-body">' +
+               '<span class="rail-name">' + escapeHtml(l.name || 'Unknown') + '</span>' +
+               '<span class="rail-meta">' + escapeHtml(city || formatPhone(l.phone)) + '</span>' +
+             '</span>' +
+           '</button>';
+  }).join('');
+
+  positionRail();
+  const cur = list.querySelector('.rail-item.current');
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function jumpToLead(i) {
+  if (i === state.currentIdx) { toggleLeadRail(false); return; }
+  // Mid-call or mid-disposition, jumping would drop the outcome silently.
+  if (state.cardState !== 'default' &&
+      !confirm('You have a call in progress on this lead. Leave without dispositioning it?')) return;
+  if (state.timerId) stopTimers();
+  state.currentIdx = i;
+  renderLead();
+  toggleLeadRail(false);
+}
+
+// The header, state switcher, stats and tabs are all sticky and their combined
+// height varies, so measure rather than hardcode an offset.
+function positionRail() {
+  const tabs = document.querySelector('.tab-nav');
+  if (!tabs) return;
+  const bottom = Math.round(tabs.getBoundingClientRect().bottom);
+  document.documentElement.style.setProperty('--rail-top', Math.max(bottom + 14, 80) + 'px');
+}
+window.addEventListener('resize', positionRail);
+
+function toggleLeadRail(force) {
+  const open = (typeof force === 'boolean') ? force : !document.body.classList.contains('rail-open');
+  document.body.classList.toggle('rail-open', open);
 }
 
 function formatPhone(p) {
@@ -1083,6 +1203,7 @@ function updateDialAgainHint() {
 // NEXT LEAD
 // ══════════════════════════════════════════════════
 function nextLead() {
+  markWorked();
   const lead = state.leads[state.currentIdx];
 
   // Fire release-lock POST (with call log)
@@ -1125,6 +1246,7 @@ function openDCID() {
 }
 
 function confirmDCID() {
+  markWorked();
   const reason = document.getElementById('dcidReason').value.trim();
   if (!reason) { alert('Please enter a reason.'); return; }
   closeModal('dcidModal');
@@ -1162,6 +1284,7 @@ function openSold() {
 }
 
 function confirmSold() {
+  markWorked();
   const required = ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason'];
   const values = {};
   let missing = [];
@@ -1213,6 +1336,7 @@ function confirmSold() {
 // WRONG NUMBER
 // ══════════════════════════════════════════════════
 function markWrong() {
+  markWorked();
   const lead = state.leads[state.currentIdx];
   scheduleUndoAction({
     label: '📵 Wrong #: ' + lead.name,
