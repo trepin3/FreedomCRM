@@ -1510,6 +1510,16 @@ function migrateLeadSchema() {
 
   Object.keys(SHEETS).forEach(function(state) {
     const ss = SpreadsheetApp.openById(SHEETS[state]);
+
+    // Already migrated? A new-schema Leads tab starts with 'Lead ID'. Re-reading
+    // it through the old column map would produce garbage, so stop here instead.
+    const current = ss.getSheetByName('Leads');
+    if (current && current.getLastColumn() > 0 &&
+        String(current.getRange(1, 1).getValue()).trim() === 'Lead ID') {
+      report.push(state + ': already migrated, skipped');
+      return;
+    }
+
     const rows = [];
     let seq = 0;
 
@@ -1555,7 +1565,7 @@ function migrateLeadSchema() {
         rows.push(row);
       });
 
-      sheet.setName(tabName === 'Leads' ? 'Leads_old' : tabName + '_old');
+      renameUnique_(ss, sheet, tabName + '_old');
     });
 
     const fresh = ss.insertSheet('Leads');
@@ -1571,6 +1581,33 @@ function migrateLeadSchema() {
   });
 
   const msg = 'Migrated — ' + report.join(', ') + '. Old tabs kept with an _old suffix.';
+  Logger.log(msg);
+  return msg;
+}
+
+// Rename without ever colliding — a half-finished earlier run may have
+// already taken the plain name.
+function renameUnique_(ss, sheet, base) {
+  let name = base, n = 2;
+  while (ss.getSheetByName(name)) { name = base + '_' + n; n++; }
+  sheet.setName(name);
+  return name;
+}
+
+// What state is each spreadsheet actually in? Read-only.
+function inspectSheets() {
+  const out = [];
+  Object.keys(SHEETS).forEach(function(state) {
+    const ss = SpreadsheetApp.openById(SHEETS[state]);
+    const tabs = ss.getSheets().map(function(sh) {
+      return sh.getName() + '(' + Math.max(0, sh.getLastRow() - 1) + ')';
+    });
+    const leads = ss.getSheetByName('Leads');
+    const migrated = !!(leads && leads.getLastColumn() > 0 &&
+      String(leads.getRange(1, 1).getValue()).trim() === 'Lead ID');
+    out.push(state + ': ' + (migrated ? 'MIGRATED' : 'not migrated') + ' — ' + tabs.join(', '));
+  });
+  const msg = out.join('\n');
   Logger.log(msg);
   return msg;
 }
