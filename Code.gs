@@ -555,6 +555,34 @@ function logActivity_(user, action, detail, stateCode) {
   } catch (e) { /* logging must never break a request */ }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// User management — shared by doGet and doPost
+// ══════════════════════════════════════════════════════════════════
+// These arrive as POSTs from the team portal, but answering on both verbs
+// costs nothing and means a caller can't miss by picking the wrong one.
+// Returns null when `action` isn't one of ours, so the caller falls through.
+const USER_ACTIONS_ = ['createUser', 'reassignUser', 'disableUser', 'promoteUser',
+                       'demoteUser', 'revokeUser', 'pauseUser', 'resumeUser'];
+
+function userAction_(user, action, body) {
+  if (USER_ACTIONS_.indexOf(action) === -1) return null;
+
+  const me = userByEmail_(user.email);
+  if (!me) return { error: 'No user record.' };
+  body = body || {};
+
+  switch (action) {
+    case 'createUser':   return createUser_(me, body);
+    case 'reassignUser': return reassignUser_(me, body.userId, body.parentId);
+    case 'disableUser':  return disableUser_(me, body.userId);
+    case 'promoteUser':  return promoteUser_(me, body.userId);
+    case 'demoteUser':   return demoteUser_(me, body.userId);
+    case 'revokeUser':   return revokeUser_(me, body.userId);
+    case 'pauseUser':    return setPaused_(me, body.userId, true);
+    case 'resumeUser':   return setPaused_(me, body.userId, false);
+  }
+}
+
 function doGet(e) {
   try {
     const action = (e.parameter.action || 'getLeads');
@@ -569,18 +597,10 @@ function doGet(e) {
       return jsonOut({ error: 'not_permitted' });
     }
 
-    const me = userByEmail_(user.email);
+    const ua = userAction_(user, action, e.parameter);
+    if (ua) return jsonOut(ua);
+
     let result;
-    switch (action) {
-      case 'createUser':   return jsonOut(me ? createUser_(me, body)                        : { error: 'No user record.' });
-      case 'reassignUser': return jsonOut(me ? reassignUser_(me, body.userId, body.parentId) : { error: 'No user record.' });
-      case 'disableUser':  return jsonOut(me ? disableUser_(me, body.userId)                 : { error: 'No user record.' });
-      case 'promoteUser':  return jsonOut(me ? promoteUser_(me, body.userId)                 : { error: 'No user record.' });
-      case 'demoteUser':   return jsonOut(me ? demoteUser_(me, body.userId)                  : { error: 'No user record.' });
-      case 'revokeUser':   return jsonOut(me ? revokeUser_(me, body.userId)                  : { error: 'No user record.' });
-      case 'pauseUser':    return jsonOut(me ? setPaused_(me, body.userId, true)             : { error: 'No user record.' });
-      case 'resumeUser':   return jsonOut(me ? setPaused_(me, body.userId, false)            : { error: 'No user record.' });
-    }
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
       case 'getLeads':    result = getLeads(e.parameter.state, user.name);
@@ -633,6 +653,9 @@ function doPost(e) {
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
     logActivity_(user, action, body.rowIndex ? ('row ' + body.rowIndex) : '', body.state);
+
+    const ua = userAction_(user, action, body);
+    if (ua) return jsonOut(ua);
 
     let result;
     switch (action) {
