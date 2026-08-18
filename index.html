@@ -325,6 +325,27 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 /* Admin dashboard */
 .team-add{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;box-shadow:var(--shadow);}
 .team-add-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);margin-bottom:10px;}
+.up-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;}
+.up-paste{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  resize:vertical;margin-bottom:10px;}
+.up-hint{font-size:12px;color:var(--text-secondary);margin:-4px 0 10px;}
+.up-hint a{color:var(--accent);cursor:pointer;text-decoration:underline;}
+.up-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-bottom:12px;}
+.up-map-item{display:flex;align-items:center;gap:8px;font-size:12px;}
+.up-map-item .col{flex:0 0 96px;color:var(--text-secondary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.up-map-item select{flex:1;min-width:0;padding:6px 8px;font-size:12px;}
+.up-preview{border:1px solid var(--border);border-radius:8px;overflow-x:auto;margin-bottom:12px;}
+.up-preview table{border-collapse:collapse;font-size:12px;white-space:nowrap;}
+.up-preview th,.up-preview td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left;}
+.up-preview th{background:var(--input-bg);font-weight:600;}
+.up-count{font-size:12px;color:var(--text-secondary);margin-bottom:10px;}
+.up-warn{color:#c47f00;}
+.batch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px;}
+.batch-row.removed{opacity:.55;}
+.batch-meta{color:var(--text-secondary);font-size:12px;}
+@media(max-width:760px){.up-row{grid-template-columns:1fr;}}
 .team-add-row{display:grid;grid-template-columns:1.4fr 1.2fr 0.8fr 1.2fr auto;gap:8px;align-items:center;}
 .team-add-btn{background:var(--primary);color:#fff;border-color:var(--primary);padding:9px 18px;}
 .team-msg{font-size:12px;font-weight:700;margin-top:9px;display:none;}
@@ -547,6 +568,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="admin-tabs" style="margin-bottom:16px;">
       <button class="admin-tab active" id="secStats" onclick="switchAdminSection('stats')">📊 Stats</button>
       <button class="admin-tab" id="secTeam" onclick="switchAdminSection('team')">👥 Team</button>
+      <button class="admin-tab" id="secUpload" onclick="switchAdminSection('upload')">📥 Upload</button>
     </div>
 
     <div id="adminTeamPanel" style="display:none;">
@@ -565,6 +587,29 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <div class="team-msg" id="npMsg"></div>
       </div>
       <div id="teamTree"><div class="empty-state"><div class="spinner"></div></div></div>
+    </div>
+
+    <div id="adminUploadPanel" style="display:none;">
+      <div class="team-add">
+        <div class="team-add-title">Upload leads</div>
+        <div class="up-row">
+          <select class="text-input" id="upState"></select>
+          <select class="text-input" id="upSource" onchange="onSourceChange()"></select>
+          <select class="text-input" id="upVisibility">
+            <option value="pool">Pool — my team can dial these</option>
+            <option value="exclusive">Exclusive — only me</option>
+          </select>
+        </div>
+        <div class="up-hint" id="upSourceHint"></div>
+        <textarea class="text-input up-paste" id="upPaste" rows="7"
+          placeholder="Paste your CSV here, including the header row."
+          oninput="parseUpload()"></textarea>
+        <div id="upMapping"></div>
+        <div class="team-msg" id="upMsg"></div>
+        <button class="mini-btn team-add-btn" id="upBtn" onclick="submitUpload()" disabled>Upload</button>
+      </div>
+      <div class="team-add-title" style="margin:22px 0 8px;">Your batches</div>
+      <div id="upBatches"><div class="empty-state">Nothing uploaded yet.</div></div>
     </div>
 
     <div id="adminStatsPanel">
@@ -2255,13 +2300,235 @@ function switchAdminRange(range) {
 // filtering to get wrong.
 let teamCache = { me: null, users: [] };
 
+const UPLOAD_FIELDS = ['Name','Phone','Email','Address','City','Lead Type',
+  'Beneficiary','Hobby','Age','DOB'];
+let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [] };
+
+// Split a CSV line honouring quoted fields — addresses contain commas.
+function splitCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') q = false;
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',' || c === '\t') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(function(x) { return x.trim(); });
+}
+
+// Guess which pasted column feeds which field, so the common case needs no clicks.
+function guessColumn(headers, field) {
+  const want = {
+    'Name': ['name','full name','first name','fullname','lead name','contact'],
+    'Phone': ['phone','phone number','mobile','cell','number','telephone'],
+    'Email': ['email','e-mail','email address'],
+    'Address': ['address','street','address1','address 1'],
+    'City': ['city','town'],
+    'Lead Type': ['lead type','type','product'],
+    'Beneficiary': ['beneficiary','bene'],
+    'Hobby': ['hobby','hobbies','interest'],
+    'Age': ['age'],
+    'DOB': ['dob','date of birth','birthdate','birth date','birthday']
+  }[field] || [];
+  for (let w = 0; w < want.length; w++) {
+    for (let i = 0; i < headers.length; i++) {
+      if (headers[i].trim().toLowerCase() === want[w]) return i;
+    }
+  }
+  return -1;
+}
+
+function parseUpload() {
+  const raw = (document.getElementById('upPaste').value || '').trim();
+  const box = document.getElementById('upMapping');
+  const btn = document.getElementById('upBtn');
+  if (!raw) {
+    uploadState.headers = []; uploadState.rows = [];
+    box.innerHTML = ''; btn.disabled = true;
+    return;
+  }
+  const lines = raw.split(/\r?\n/).filter(function(l) { return l.trim(); });
+  uploadState.headers = splitCsvLine(lines[0]);
+  uploadState.rows = lines.slice(1).map(splitCsvLine);
+  uploadState.map = {};
+  UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = guessColumn(uploadState.headers, f); });
+  renderMapping();
+}
+
+function renderMapping() {
+  const box = document.getElementById('upMapping');
+  const hs = uploadState.headers;
+  if (!hs.length) { box.innerHTML = ''; return; }
+
+  const opts = function(sel) {
+    return '<option value="-1">— skip —</option>' + hs.map(function(h, i) {
+      return '<option value="' + i + '"' + (i === sel ? ' selected' : '') + '>' +
+             escapeHtml(h || ('Column ' + (i + 1))) + '</option>';
+    }).join('');
+  };
+
+  const map = UPLOAD_FIELDS.map(function(f) {
+    const req = (f === 'Name' || f === 'Phone') ? ' *' : '';
+    return '<div class="up-map-item"><span class="col">' + f + req + '</span>' +
+           '<select class="text-input" onchange="setMap(\'' + f + '\', this.value)">' +
+           opts(uploadState.map[f]) + '</select></div>';
+  }).join('');
+
+  // Preview the first five, already mapped — this is what will actually land.
+  const shown = UPLOAD_FIELDS.filter(function(f) { return uploadState.map[f] >= 0; });
+  const head = shown.map(function(f) { return '<th>' + f + '</th>'; }).join('');
+  const body = uploadState.rows.slice(0, 5).map(function(r) {
+    return '<tr>' + shown.map(function(f) {
+      return '<td>' + escapeHtml(r[uploadState.map[f]] || '') + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+
+  const usable = uploadState.rows.filter(function(r) {
+    return (r[uploadState.map['Name']] || '').trim() &&
+           String(r[uploadState.map['Phone']] || '').replace(/\D/g, '');
+  }).length;
+  const short = uploadState.rows.length - usable;
+
+  box.innerHTML =
+    '<div class="up-map">' + map + '</div>' +
+    (shown.length ? '<div class="up-preview"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>' : '') +
+    '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
+    (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') + '</div>';
+
+  document.getElementById('upBtn').disabled = usable === 0;
+}
+
+function setMap(field, idx) {
+  uploadState.map[field] = Number(idx);
+  renderMapping();
+}
+
+async function loadUpload() {
+  const sel = document.getElementById('upState');
+  if (!sel.options.length) {
+    sel.innerHTML = Object.keys(CONFIG.STATE_NAMES).map(function(k) {
+      return '<option value="' + k + '">' + CONFIG.STATE_NAMES[k] + '</option>';
+    }).join('');
+  }
+  const data = await api('GET', { action: 'listSources' });
+  uploadState.sources = (data && data.sources) || [];
+  uploadState.pending = (data && data.pending) || [];
+
+  document.getElementById('upSource').innerHTML =
+    '<option value="">Lead source…</option>' +
+    uploadState.sources.map(function(x) {
+      return '<option value="' + escapeHtml(x.name) + '">' + escapeHtml(x.name) + '</option>';
+    }).join('') +
+    '<option value="__other">Other…</option>';
+
+  const hint = document.getElementById('upSourceHint');
+  hint.innerHTML = uploadState.pending.length
+    ? uploadState.pending.length + ' source(s) awaiting your approval: ' +
+      uploadState.pending.map(function(p) {
+        return '<a onclick="decideSource(\'' + escapeHtml(p.name).replace(/'/g, "\\'") + '\', \'approve\')">approve ' +
+               escapeHtml(p.name) + '</a>';
+      }).join(' · ')
+    : '';
+  loadBatches();
+}
+
+async function onSourceChange() {
+  const sel = document.getElementById('upSource');
+  if (sel.value !== '__other') return;
+  const name = prompt('New lead source name:');
+  sel.value = '';
+  if (!name) return;
+  const out = await api('POST', { action: 'addSource', name: name });
+  const hint = document.getElementById('upSourceHint');
+  if (out && out.error) { hint.textContent = out.error; return; }
+  hint.textContent = out.status === 'approved'
+    ? 'Added "' + out.name + '".'
+    : 'Sent "' + out.name + '" to the admin for approval. Pick another source for now.';
+  await loadUpload();
+  if (out.status === 'approved') document.getElementById('upSource').value = out.name;
+}
+
+async function decideSource(name, decision) {
+  const out = await api('POST', { action: 'decideSource', name: name, decision: decision });
+  if (out && out.error) return;
+  loadUpload();
+}
+
+async function submitUpload() {
+  const msg = document.getElementById('upMsg');
+  const btn = document.getElementById('upBtn');
+  const source = document.getElementById('upSource').value;
+  if (!source || source === '__other') { msg.textContent = 'Pick a lead source first.'; return; }
+
+  const rows = [];
+  uploadState.rows.forEach(function(r) {
+    const obj = {};
+    UPLOAD_FIELDS.forEach(function(f) {
+      const i = uploadState.map[f];
+      if (i >= 0 && r[i] !== undefined && String(r[i]).trim()) obj[f] = String(r[i]).trim();
+    });
+    if (obj['Name'] && obj['Phone']) rows.push(obj);
+  });
+  if (!rows.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
+
+  btn.disabled = true;
+  msg.textContent = 'Uploading ' + rows.length + ' leads…';
+  const out = await api('POST', {
+    action: 'uploadLeads',
+    state: document.getElementById('upState').value,
+    source: source,
+    visibility: document.getElementById('upVisibility').value,
+    rows: rows
+  });
+  btn.disabled = false;
+
+  if (out && out.error) { msg.textContent = out.error; return; }
+  const bits = ['Added ' + out.added + ' leads.'];
+  if (out.skippedDuplicate) bits.push(out.skippedDuplicate + ' already in your pool.');
+  if (out.skippedIncomplete) bits.push(out.skippedIncomplete + ' missing a name or phone.');
+  msg.textContent = bits.join(' ');
+  document.getElementById('upPaste').value = '';
+  parseUpload();
+  loadBatches();
+}
+
+async function loadBatches() {
+  const box = document.getElementById('upBatches');
+  const data = await api('GET', { action: 'myBatches' });
+  const list = (data && data.batches) || [];
+  if (!list.length) { box.innerHTML = '<div class="empty-state">Nothing uploaded yet.</div>'; return; }
+  box.innerHTML = list.map(function(b) {
+    const gone = b.batchStatus === 'removed';
+    return '<div class="batch-row' + (gone ? ' removed' : '') + '">' +
+      '<div><div>' + b.count + ' leads · ' + escapeHtml(b.state) + ' · ' + escapeHtml(b.source || '—') + '</div>' +
+      '<div class="batch-meta">' + escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '') +
+      (gone ? ' · removed' : '') + '</div></div>' +
+      '<button class="tiny-btn" onclick="toggleBatch(\'' + escapeHtml(b.batchId) + '\', \'' + b.state + '\', ' + (gone ? 'true' : 'false') + ')">' +
+      (gone ? 'Restore' : 'Remove') + '</button></div>';
+  }).join('');
+}
+
+async function toggleBatch(batchId, state, active) {
+  if (!active && !confirm('Pull this batch out of rotation? The leads stay in the sheet and can be restored.')) return;
+  await api('POST', { action: 'setBatchStatus', batchId: batchId, state: state, active: active });
+  loadBatches();
+}
+
 function switchAdminSection(which) {
   const team = which === 'team';
-  document.getElementById('adminTeamPanel').style.display  = team ? 'block' : 'none';
-  document.getElementById('adminStatsPanel').style.display = team ? 'none'  : 'block';
+  const upload = which === 'upload';
+  document.getElementById('adminTeamPanel').style.display   = team ? 'block' : 'none';
+  document.getElementById('adminUploadPanel').style.display = upload ? 'block' : 'none';
+  document.getElementById('adminStatsPanel').style.display  = (team || upload) ? 'none' : 'block';
   document.getElementById('secTeam').classList.toggle('active', team);
   document.getElementById('secStats').classList.toggle('active', !team);
   if (team) loadTeam();
+  if (upload) loadUpload();
 }
 
 async function loadTeam() {
