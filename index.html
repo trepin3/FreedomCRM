@@ -2328,7 +2328,22 @@ const UPLOAD_FIELDS = ['Name','First Name','Last Name','Phone','Email','Address'
   'Lead Type','Beneficiary','Hobby','Age','DOB'];
 // Composed into Name rather than stored — the sheet has one name column.
 const NAME_PARTS = { 'First Name': 1, 'Last Name': 1 };
-let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [] };
+let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [], zipCity: {} };
+
+// ZIP -> city, looked up once and kept. Vendors leave City blank far more
+// often than Zip, and the same ZIPs recur across batches, so this survives
+// reloads to keep the lookup count near zero on repeat uploads.
+function loadZipCache() {
+  try { uploadState.zipCity = JSON.parse(localStorage.getItem('fcrm_zipcity') || '{}'); }
+  catch (e) { uploadState.zipCity = {}; }
+}
+function saveZipCache() {
+  try { localStorage.setItem('fcrm_zipcity', JSON.stringify(uploadState.zipCity)); } catch (e) {}
+}
+function zip5(v) {
+  const d = String(v || '').replace(/\D/g, '');
+  return d.length >= 5 ? d.slice(0, 5) : (d.length ? d : '');
+}
 
 // Split a CSV line honouring quoted fields — addresses contain commas.
 function splitCsvLine(line) {
@@ -2478,9 +2493,68 @@ function mapRow(r) {
     obj['First Name'] = p[0];
     obj['Last Name'] = p.length > 1 ? p.slice(1).join(' ') : '';
   }
+  if (!obj['City'] && obj['Zip']) {
+    const c = uploadState.zipCity[zip5(obj['Zip'])];
+    if (c) obj['City'] = c;
+  }
   const st = rowState(r);
   if (st) obj['State'] = st;
   return obj;
+}
+
+// Rows that have a ZIP but no city, and the unique ZIPs behind them.
+function cityGaps() {
+  const zips = {};
+  let rows = 0;
+  uploadState.rows.forEach(function(r) {
+    const ci = uploadState.map['City'], zi = uploadState.map['Zip'];
+    if (zi < 0) return;
+    const city = ci >= 0 ? String(r[ci] || '').trim() : '';
+    const z = zip5(r[zi]);
+    if (city || !z) return;
+    rows++;
+    if (!uploadState.zipCity[z]) zips[z] = true;
+  });
+  return { rows: rows, zips: Object.keys(zips) };
+}
+
+async function fillCities() {
+  const gap = cityGaps();
+  const btn = document.getElementById('cityBtn');
+  const note = document.getElementById('cityMsg');
+  if (!gap.zips.length) return;
+
+  const queue = gap.zips.slice();
+  const total = queue.length;
+  let done = 0, failed = 0;
+  if (btn) btn.disabled = true;
+
+  // Six at a time — enough to be quick, gentle enough not to get throttled.
+  await Promise.all(new Array(6).fill(0).map(async function() {
+    while (queue.length) {
+      const z = queue.shift();
+      try {
+        const res = await fetch('https://api.zippopotam.us/us/' + z);
+        if (res.ok) {
+          const j = await res.json();
+          const place = j && j.places && j.places[0];
+          if (place && place['place name']) uploadState.zipCity[z] = place['place name'];
+          else failed++;
+        } else failed++;
+      } catch (e) { failed++; }
+      done++;
+      if (note) note.textContent = 'Looking up ' + done + ' of ' + total + '…';
+    }
+  }));
+
+  saveZipCache();
+  if (note) {
+    note.textContent = failed
+      ? (total - failed) + ' of ' + total + ' ZIPs matched. ' + failed + ' could not be found.'
+      : '';
+  }
+  if (btn) btn.disabled = false;
+  renderMapping();
 }
 
 function rowReady(obj) {
@@ -2621,9 +2695,23 @@ function renderMapping() {
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
     (wrongState ? '<span class="up-warn"> · ' + wrongState + ' belong to another state and will not upload</span>' : '') +
-    '</div>' + stateNotice(usable);
+    '</div>' + cityNotice() + stateNotice(usable);
 
   document.getElementById('upBtn').disabled = usable === 0;
+}
+
+// Offers to fill blank cities from their ZIPs.
+function cityNotice() {
+  const gap = cityGaps();
+  if (!gap.rows) return '';
+  if (!gap.zips.length) {
+    return '<div class="up-note">' + gap.rows + ' blank ' +
+           (gap.rows === 1 ? 'city was' : 'cities were') + ' filled in from their ZIP.</div>';
+  }
+  return '<div class="up-note">' + gap.rows + ' rows have a ZIP but no city. ' +
+         '<button type="button" class="tiny-btn" id="cityBtn" onclick="fillCities()">' +
+         'Look up ' + gap.zips.length + ' ZIP' + (gap.zips.length === 1 ? '' : 's') + '</button>' +
+         ' <span id="cityMsg"></span></div>';
 }
 
 // Names the state the file is really for, and offers to switch to it.
@@ -2665,6 +2753,7 @@ function setMap(field, idx) {
 }
 
 async function loadUpload() {
+  loadZipCache();
   const sel = document.getElementById('upState');
   if (!sel.options.length) {
     sel.innerHTML = Object.keys(CONFIG.STATE_NAMES).map(function(k) {
