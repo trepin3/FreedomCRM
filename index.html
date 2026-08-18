@@ -350,6 +350,8 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-block{font-size:12px;background:rgba(196,127,0,.10);border:1px solid rgba(196,127,0,.35);
   color:#8a5a00;border-radius:8px;padding:8px 12px;margin-bottom:10px;}
 .up-block a{color:var(--accent);cursor:pointer;text-decoration:underline;font-weight:600;}
+.up-note{font-size:12px;background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.25);
+  color:var(--text-secondary);border-radius:8px;padding:8px 12px;margin-bottom:10px;}
 .batch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px;}
 .batch-row.removed{opacity:.55;}
@@ -2322,7 +2324,7 @@ function switchAdminRange(range) {
 // filtering to get wrong.
 let teamCache = { me: null, users: [] };
 
-const UPLOAD_FIELDS = ['Name','First Name','Last Name','Phone','Email','Address','City',
+const UPLOAD_FIELDS = ['Name','First Name','Last Name','Phone','Email','Address','City','Zip',
   'Lead Type','Beneficiary','Hobby','Age','DOB'];
 // Composed into Name rather than stored — the sheet has one name column.
 const NAME_PARTS = { 'First Name': 1, 'Last Name': 1 };
@@ -2355,6 +2357,7 @@ function guessColumn(headers, field) {
     'Email': ['email','e-mail','email address'],
     'Address': ['address','street','address1','address 1','street address','addr'],
     'City': ['city','town','municipality'],
+    'Zip': ['zip','zipcode','zip code','postal','postal code','postcode'],
     'Lead Type': ['product','plan','leadtype','lead type','type'],
     'Beneficiary': ['beneficiary','bene'],
     'Hobby': ['hobby','hobbies','interest'],
@@ -2475,8 +2478,8 @@ function mapRow(r) {
     obj['First Name'] = p[0];
     obj['Last Name'] = p.length > 1 ? p.slice(1).join(' ') : '';
   }
-  const col = stateColumn();
-  if (col >= 0) obj['State'] = String(r[col] || '').trim().toUpperCase();
+  const st = rowState(r);
+  if (st) obj['State'] = st;
   return obj;
 }
 
@@ -2489,6 +2492,66 @@ function rowReady(obj) {
 // TCPA calling window is computed from the state — so this is not cosmetic.
 function rowStateOk(obj) {
   return !obj['State'] || obj['State'] === chosenState();
+}
+
+// USPS ZIP prefix ranges. Vendor state columns are routinely wrong — this
+// file had 35 rows labelled GA/TX/NC that are all Cleveland ZIPs — but the
+// ZIP itself is reliable, so it decides which sheet a lead belongs in.
+const ZIP_RANGES = [
+  ['AL',350,369],['AK',995,999],['AZ',850,865],['AR',716,729],['CA',900,961],
+  ['CO',800,816],['CT',6,6],['DE',197,199],['DC',200,205],['FL',320,349],
+  ['GA',300,319],['GA',398,399],['HI',967,968],['ID',832,838],['IL',600,629],
+  ['IN',460,479],['IA',500,528],['KS',660,679],['KY',400,427],['LA',700,714],
+  ['ME',39,49],['MD',206,219],['MA',10,27],['MI',480,499],['MN',550,567],
+  ['MS',386,397],['MO',630,658],['MT',590,599],['NE',680,693],['NV',889,898],
+  ['NH',30,38],['NJ',70,89],['NM',870,884],['NY',100,149],['NC',270,289],
+  ['ND',580,588],['OH',430,459],['OK',730,749],['OR',970,979],['PA',150,196],
+  ['RI',28,29],['SC',290,299],['SD',570,577],['TN',370,385],['TX',750,799],
+  ['TX',885,885],['UT',840,847],['VT',50,59],['VA',220,246],['WA',980,994],
+  ['WV',247,268],['WI',530,549],['WY',820,831],['CT',60,69]
+];
+
+function zipState(v) {
+  const digits = String(v || '').replace(/\D/g, '');
+  if (digits.length < 3) return '';
+  const p = Number(digits.slice(0, 3));
+  for (let i = 0; i < ZIP_RANGES.length; i++) {
+    if (p >= ZIP_RANGES[i][1] && p <= ZIP_RANGES[i][2]) return ZIP_RANGES[i][0];
+  }
+  return '';
+}
+
+function zipColumn() {
+  const hs = uploadState.headers;
+  for (let i = 0; i < hs.length; i++) {
+    const h = hs[i].trim().toLowerCase().replace(/[\s_]/g, '');
+    if (h === 'zip' || h === 'zipcode' || h === 'postalcode' || h === 'postcode') return i;
+  }
+  return -1;
+}
+
+// What state is this row really in? ZIP wins when it resolves.
+function rowState(r) {
+  const zc = zipColumn();
+  if (zc >= 0) {
+    const fromZip = zipState(r[zc]);
+    if (fromZip) return fromZip;
+  }
+  const sc = stateColumn();
+  return sc >= 0 ? String(r[sc] || '').trim().toUpperCase() : '';
+}
+
+// How many rows have a state column contradicting their own ZIP.
+function zipDisagreements() {
+  const sc = stateColumn(), zc = zipColumn();
+  if (sc < 0 || zc < 0) return 0;
+  let n = 0;
+  uploadState.rows.forEach(function(r) {
+    const fromZip = zipState(r[zc]);
+    const stated = String(r[sc] || '').trim().toUpperCase();
+    if (fromZip && stated && fromZip !== stated) n++;
+  });
+  return n;
 }
 
 // Which pasted column holds the state, if any.
@@ -2508,11 +2571,9 @@ function chosenState() {
 
 // Tally of the states actually present in the file.
 function stateTally() {
-  const col = stateColumn();
   const seen = {};
-  if (col < 0) return seen;
   uploadState.rows.forEach(function(r) {
-    const v = String(r[col] || '').trim().toUpperCase();
+    const v = rowState(r);
     if (v) seen[v] = (seen[v] || 0) + 1;
   });
   return seen;
@@ -2567,9 +2628,15 @@ function renderMapping() {
 
 // Names the state the file is really for, and offers to switch to it.
 function stateNotice(usable) {
+  const fixed = zipDisagreements();
+  const note = fixed
+    ? '<div class="up-note">' + fixed + ' row' + (fixed === 1 ? ' has a' : 's have a') +
+      ' state code that contradicts its ZIP. Going with the ZIP.</div>'
+    : '';
+
   const tally = stateTally();
   const found = Object.keys(tally).filter(function(k) { return k !== chosenState(); });
-  if (!found.length) return '';
+  if (!found.length) return note;
 
   const known = found.filter(function(k) { return !!CONFIG.STATE_NAMES[k]; });
   const label = found.map(function(k) {
@@ -2584,7 +2651,7 @@ function stateNotice(usable) {
     ? ' <a onclick="switchUploadState(\'' + known[0] + '\')">Switch to ' + CONFIG.STATE_NAMES[known[0]] + '</a>'
     : (known.length ? '' : ' We have no sheet for that state.');
 
-  return '<div class="up-block">' + head + ' It contains ' + label + '.' + fix + '</div>';
+  return note + '<div class="up-block">' + head + ' It contains ' + label + '.' + fix + '</div>';
 }
 
 function switchUploadState(code) {
