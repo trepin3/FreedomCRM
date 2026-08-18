@@ -58,6 +58,7 @@ body.is-admin .admin-only{display:flex;}
 .picker-sub{font-size:15px;color:var(--text-secondary);margin-bottom:28px;text-align:center;}
 .picker-agent{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--primary);margin-bottom:20px;}
 .state-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;width:100%;max-width:520px;}
+.state-count{font-size:11px;color:var(--text-secondary);margin-top:4px;}
 .state-tile{background:var(--card);border-radius:var(--radius);padding:24px 16px;border:2px solid var(--border);box-shadow:var(--shadow);cursor:pointer;text-align:center;transition:all 0.2s;color:var(--text);text-decoration:none;}
 .state-tile:active{transform:scale(0.96);}
 .state-tile:hover{border-color:var(--primary);}
@@ -467,22 +468,8 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="picker-agent" id="pickerGreeting">Welcome, Agent</div>
     <div class="picker-title">Which state today?</div>
     <div class="picker-sub">Select the state you'd like to work</div>
-    <div class="state-grid">
-      <div class="state-tile" data-state="AZ" onclick="pickState('AZ')">
-        <span class="state-icon">🌵</span>
-        <div class="state-code">AZ</div>
-        <div class="state-name">Arizona</div>
-      </div>
-      <div class="state-tile" data-state="VA" onclick="pickState('VA')">
-        <span class="state-icon">🏛️</span>
-        <div class="state-code">VA</div>
-        <div class="state-name">Virginia</div>
-      </div>
-      <div class="state-tile" data-state="OH" onclick="pickState('OH')">
-        <span class="state-icon">🌊</span>
-        <div class="state-code">OH</div>
-        <div class="state-name">Ohio</div>
-      </div>
+    <div class="state-grid" id="stateGrid">
+      <div class="empty-state"><div class="spinner"></div></div>
     </div>
     <div style="margin-top:24px;">
       <button class="login-btn" style="max-width:200px;background:var(--input-bg);color:var(--text);" onclick="doLogout()">Sign Out</button>
@@ -790,8 +777,42 @@ const CONFIG = {
   ADMIN_EMAILS: ['kepler.benefic.ins@gmail.com'],   // UI routing only — the backend decides for real
   SCRIPT_TOOL_URL: 'https://trepin3.github.io/The-Basics/',
   BATCH_SIZE: 5,
-  STATE_TIMEZONES: { AZ: 'America/Phoenix', VA: 'America/New_York', OH: 'America/New_York' },
-  STATE_NAMES: { AZ: 'Arizona', VA: 'Virginia', OH: 'Ohio' },
+  // Every state, because the TCPA window is computed from this. A missing
+  // entry would silently fall back to Pacific and let an agent dial at a
+  // legally wrong hour. States spanning two zones use the one holding most
+  // of the population.
+  STATE_TIMEZONES: {
+    AL:'America/Chicago', AK:'America/Anchorage', AZ:'America/Phoenix',
+    AR:'America/Chicago', CA:'America/Los_Angeles', CO:'America/Denver',
+    CT:'America/New_York', DE:'America/New_York', DC:'America/New_York',
+    FL:'America/New_York', GA:'America/New_York', HI:'Pacific/Honolulu',
+    ID:'America/Boise', IL:'America/Chicago', IN:'America/Indiana/Indianapolis',
+    IA:'America/Chicago', KS:'America/Chicago', KY:'America/New_York',
+    LA:'America/Chicago', ME:'America/New_York', MD:'America/New_York',
+    MA:'America/New_York', MI:'America/Detroit', MN:'America/Chicago',
+    MS:'America/Chicago', MO:'America/Chicago', MT:'America/Denver',
+    NE:'America/Chicago', NV:'America/Los_Angeles', NH:'America/New_York',
+    NJ:'America/New_York', NM:'America/Denver', NY:'America/New_York',
+    NC:'America/New_York', ND:'America/Chicago', OH:'America/New_York',
+    OK:'America/Chicago', OR:'America/Los_Angeles', PA:'America/New_York',
+    RI:'America/New_York', SC:'America/New_York', SD:'America/Chicago',
+    TN:'America/Chicago', TX:'America/Chicago', UT:'America/Denver',
+    VT:'America/New_York', VA:'America/New_York', WA:'America/Los_Angeles',
+    WV:'America/New_York', WI:'America/Chicago', WY:'America/Denver'
+  },
+  STATE_NAMES: {
+    AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas', CA:'California',
+    CO:'Colorado', CT:'Connecticut', DE:'Delaware', DC:'District of Columbia',
+    FL:'Florida', GA:'Georgia', HI:'Hawaii', ID:'Idaho', IL:'Illinois',
+    IN:'Indiana', IA:'Iowa', KS:'Kansas', KY:'Kentucky', LA:'Louisiana',
+    ME:'Maine', MD:'Maryland', MA:'Massachusetts', MI:'Michigan', MN:'Minnesota',
+    MS:'Mississippi', MO:'Missouri', MT:'Montana', NE:'Nebraska', NV:'Nevada',
+    NH:'New Hampshire', NJ:'New Jersey', NM:'New Mexico', NY:'New York',
+    NC:'North Carolina', ND:'North Dakota', OH:'Ohio', OK:'Oklahoma', OR:'Oregon',
+    PA:'Pennsylvania', RI:'Rhode Island', SC:'South Carolina', SD:'South Dakota',
+    TN:'Tennessee', TX:'Texas', UT:'Utah', VT:'Vermont', VA:'Virginia',
+    WA:'Washington', WV:'West Virginia', WI:'Wisconsin', WY:'Wyoming'
+  },
   TCPA_START_HOUR: 8,
   TCPA_END_HOUR: 21
 };
@@ -930,10 +951,39 @@ function enterAfterSignIn() {
     loadAdminData();
   } else {
     show('pickerView');
+  loadStates();
   }
 }
 
-function goToCrm()   { show('pickerView'); }
+function goToCrm()   { show('pickerView'); loadStates(); }
+
+// Only states holding leads this user can dial. A tile for an empty state
+// is a dead end — the agent picks it, sees nothing, and comes back.
+const STATE_ICONS = {
+  AZ:'🌵', VA:'🏛️', OH:'🌊', FL:'🌴', TX:'🤠', CA:'🌉', NY:'🗽', HI:'🌺',
+  CO:'🏔️', LA:'🎷', NV:'🎰', AK:'🐻', WA:'🌲', MI:'🚗', TN:'🎸', KY:'🐎'
+};
+
+async function loadStates() {
+  const grid = document.getElementById('stateGrid');
+  if (!grid) return;
+  const data = await api('GET', { action: 'listStates' });
+  const list = ((data && data.states) || []).filter(function(s) { return s.available > 0; });
+
+  if (!list.length) {
+    grid.innerHTML = '<div class="empty-state">No leads are available to you right now.<br>' +
+      'Upload a list, or check back once your manager assigns some.</div>';
+    return;
+  }
+  grid.innerHTML = list.map(function(s) {
+    return '<div class="state-tile" data-state="' + s.code + '" onclick="pickState(\'' + s.code + '\')">' +
+      '<span class="state-icon">' + (STATE_ICONS[s.code] || '📍') + '</span>' +
+      '<div class="state-code">' + s.code + '</div>' +
+      '<div class="state-name">' + escapeHtml(s.name) + '</div>' +
+      '<div class="state-count">' + s.available + ' ready</div>' +
+      '</div>';
+  }).join('');
+}
 function goToAdmin() {
   if (state.role !== 'admin' && state.role !== 'manager') return;
   show('adminView');
@@ -2815,7 +2865,11 @@ async function loadUpload() {
   loadZipCache();
   const sel = document.getElementById('upState');
   if (!sel.options.length) {
-    sel.innerHTML = Object.keys(CONFIG.STATE_NAMES).map(function(k) {
+    // Every state — the sheet is created on first upload, so there is no
+    // chicken-and-egg where you cannot upload to a state that has no leads.
+    sel.innerHTML = Object.keys(CONFIG.STATE_NAMES).sort(function(a, b) {
+      return CONFIG.STATE_NAMES[a].localeCompare(CONFIG.STATE_NAMES[b]);
+    }).map(function(k) {
       return '<option value="' + k + '">' + CONFIG.STATE_NAMES[k] + '</option>';
     }).join('');
   }
