@@ -323,6 +323,35 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 @keyframes spin{to{transform:rotate(360deg);}}
 
 /* Admin dashboard */
+.team-add{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;box-shadow:var(--shadow);}
+.team-add-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);margin-bottom:10px;}
+.team-add-row{display:grid;grid-template-columns:1.4fr 1.2fr 0.8fr 1.2fr auto;gap:8px;align-items:center;}
+.team-add-btn{background:var(--primary);color:#fff;border-color:var(--primary);padding:9px 18px;}
+.team-msg{font-size:12px;font-weight:700;margin-top:9px;display:none;}
+.team-msg.err{display:block;color:var(--danger);}
+.team-msg.ok{display:block;color:var(--success);}
+.team-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;box-shadow:var(--shadow);}
+.team-row.me{border-color:var(--primary);background:rgba(0,113,227,0.05);}
+.team-row.inactive{opacity:0.55;}
+.team-who{flex:1;min-width:0;}
+.team-name{font-size:14px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.team-email{font-size:11.5px;color:var(--text-secondary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.team-badge{flex-shrink:0;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:0.6px;padding:3px 8px;border-radius:20px;}
+.badge-admin{background:rgba(255,159,10,0.15);color:var(--warning);}
+.badge-manager{background:rgba(0,113,227,0.12);color:var(--primary);}
+.badge-agent{background:var(--input-bg);color:var(--text-secondary);}
+.badge-paused{background:rgba(255,159,10,0.15);color:var(--warning);}
+.badge-revoked{background:rgba(255,69,58,0.12);color:var(--danger);}
+.team-parent{flex-shrink:0;font-size:11.5px;padding:5px 8px;border-radius:7px;border:1.5px solid var(--border);background:var(--input-bg);color:var(--text);font-family:inherit;max-width:150px;}
+.team-actions{display:flex;gap:5px;flex-shrink:0;}
+.tiny-btn{padding:5px 9px;border-radius:14px;border:1.5px solid var(--border);background:var(--card);color:var(--text-secondary);font-size:10.5px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap;}
+.tiny-btn:hover{border-color:var(--primary);color:var(--primary);}
+.tiny-btn.danger:hover{border-color:var(--danger);color:var(--danger);}
+@media(max-width:760px){
+  .team-add-row{grid-template-columns:1fr;}
+  .team-row{flex-wrap:wrap;}
+  .team-parent{max-width:none;flex:1;}
+}
 .admin-wrap{max-width:900px;margin:0 auto;padding:20px 14px 60px;}
 .admin-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px;scrollbar-width:none;}
 .admin-tabs::-webkit-scrollbar{display:none;}
@@ -505,7 +534,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="hud-header-row">
       <div class="hud-brand">
         <div class="hud-logo-icon" style="background:linear-gradient(135deg,#ff9f0a,#ff453a);">👑</div>
-        <div class="hud-title">Admin <span>Dashboard</span></div>
+        <div class="hud-title" id="adminTitle">Admin <span>Dashboard</span></div>
       </div>
       <div class="hud-actions">
         <button class="icon-btn" onclick="toggleTheme()" id="adminThemeBtn">🌙</button>
@@ -515,6 +544,30 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     </div>
   </div>
   <div class="admin-wrap">
+    <div class="admin-tabs" style="margin-bottom:16px;">
+      <button class="admin-tab active" id="secStats" onclick="switchAdminSection('stats')">📊 Stats</button>
+      <button class="admin-tab" id="secTeam" onclick="switchAdminSection('team')">👥 Team</button>
+    </div>
+
+    <div id="adminTeamPanel" style="display:none;">
+      <div class="team-add">
+        <div class="team-add-title">Add someone</div>
+        <div class="team-add-row">
+          <input class="text-input" id="npEmail" placeholder="Google email" autocomplete="off">
+          <input class="text-input" id="npName" placeholder="Display name" autocomplete="off">
+          <select class="text-input" id="npRole">
+            <option value="agent">Agent</option>
+            <option value="manager">Manager</option>
+          </select>
+          <select class="text-input" id="npParent"></select>
+          <button class="mini-btn team-add-btn" onclick="submitAddPerson()">Add</button>
+        </div>
+        <div class="team-msg" id="npMsg"></div>
+      </div>
+      <div id="teamTree"><div class="empty-state"><div class="spinner"></div></div></div>
+    </div>
+
+    <div id="adminStatsPanel">
     <div class="admin-tabs">
       <button class="admin-tab active" data-range="today" onclick="switchAdminRange('today')">Today</button>
       <button class="admin-tab" data-range="week" onclick="switchAdminRange('week')">This Week</button>
@@ -525,6 +578,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     </div>
     <div id="adminContent"><div class="empty-state"><div class="spinner"></div></div></div>
   </div>
+    </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════
@@ -792,9 +846,15 @@ function showLoginError(msg) {
 // Admins land on the admin view; the CRM is one button away.
 function enterAfterSignIn() {
   document.querySelectorAll('.who-name').forEach(function(el) { el.textContent = state.agentName; });
-  document.body.classList.toggle('is-admin', state.role === 'admin');
-  if (state.role === 'admin') {
+  const leads = state.role === 'admin' || state.role === 'manager';
+  document.body.classList.toggle('is-admin', leads);
+  const title = document.getElementById('adminTitle');
+  if (title) {
+    title.innerHTML = state.role === 'admin' ? 'Admin <span>Dashboard</span>' : 'Team <span>Dashboard</span>';
+  }
+  if (leads) {
     show('adminView');
+    switchAdminSection('stats');
     loadAdminData();
   } else {
     show('pickerView');
@@ -802,7 +862,11 @@ function enterAfterSignIn() {
 }
 
 function goToCrm()   { show('pickerView'); }
-function goToAdmin() { if (state.role === 'admin') { show('adminView'); loadAdminData(); } }
+function goToAdmin() {
+  if (state.role !== 'admin' && state.role !== 'manager') return;
+  show('adminView');
+  loadAdminData();
+}
 
 function restoreSession() {
   const name = localStorage.getItem('fcrm_agent');
@@ -2183,6 +2247,145 @@ function switchAdminRange(range) {
   state.adminRange = range;
   document.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t.dataset.range === range));
   loadAdminData();
+}
+
+// ── Team ─────────────────────────────────────────────────────────────────────
+// One screen for admin and managers. The server scopes myTeam by path, so a
+// manager's tree is their branch and admin's is everyone — no client-side
+// filtering to get wrong.
+let teamCache = { me: null, users: [] };
+
+function switchAdminSection(which) {
+  const team = which === 'team';
+  document.getElementById('adminTeamPanel').style.display  = team ? 'block' : 'none';
+  document.getElementById('adminStatsPanel').style.display = team ? 'none'  : 'block';
+  document.getElementById('secTeam').classList.toggle('active', team);
+  document.getElementById('secStats').classList.toggle('active', !team);
+  if (team) loadTeam();
+}
+
+async function loadTeam() {
+  const host = document.getElementById('teamTree');
+  host.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  try {
+    const data = await api('GET', { action: 'myTeam' });
+    if (data.error) throw new Error(data.error);
+    teamCache = data;
+    renderTeam();
+  } catch (e) {
+    host.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">' +
+                     escapeHtml(e.message) + '</div></div>';
+  }
+}
+
+// Only managers and admin can take reports, and you cannot park someone under
+// an agent — so the picker lists exactly the valid destinations.
+function parentOptions(exceptId) {
+  return teamCache.users
+    .filter(function(u) { return u.role !== 'agent' && u.id !== exceptId && u.status === 'active'; })
+    .map(function(u) { return u; });
+}
+
+function renderTeam() {
+  const me = teamCache.me || {};
+  const isAdmin = me.role === 'admin';
+
+  const sel = document.getElementById('npParent');
+  if (sel) {
+    sel.innerHTML = parentOptions(null).map(function(u) {
+      return '<option value="' + u.id + '"' + (u.id === me.id ? ' selected' : '') + '>' +
+             escapeHtml(u.name) + (u.id === me.id ? ' (you)' : '') + '</option>';
+    }).join('');
+  }
+
+  const rows = teamCache.users.slice().sort(function(a, b) {
+    return (a.depth - b.depth) || a.name.localeCompare(b.name);
+  });
+
+  document.getElementById('teamTree').innerHTML = rows.map(function(u) {
+    const isMe = u.id === me.id;
+    const canTouch = !isMe && u.role !== 'admin';
+    const indent = Math.max(0, u.depth - (me.depth || 0)) * 18;
+
+    let acts = '';
+    if (canTouch) {
+      if (u.role === 'agent')  acts += '<button class="tiny-btn" onclick="teamAct(\'promoteUser\',\'' + u.id + '\')">↑ Manager</button>';
+      if (isAdmin && u.role === 'manager') acts += '<button class="tiny-btn" onclick="teamAct(\'demoteUser\',\'' + u.id + '\')">↓ Agent</button>';
+      if (isAdmin) {
+        acts += u.status === 'paused'
+          ? '<button class="tiny-btn" onclick="teamAct(\'resumeUser\',\'' + u.id + '\')">Resume</button>'
+          : '<button class="tiny-btn" onclick="teamAct(\'pauseUser\',\'' + u.id + '\')">Pause</button>';
+        acts += '<button class="tiny-btn danger" onclick="teamAct(\'revokeUser\',\'' + u.id + '\')">Revoke</button>';
+      }
+    }
+
+    const parentSel = canTouch
+      ? '<select class="team-parent" onchange="doReassign(\'' + u.id + '\', this.value)">' +
+        parentOptions(u.id).map(function(p) {
+          return '<option value="' + p.id + '"' + (p.id === u.parentId ? ' selected' : '') + '>' +
+                 escapeHtml(p.name) + '</option>';
+        }).join('') + '</select>'
+      : '';
+
+    const statusBadge = u.status !== 'active'
+      ? '<span class="team-badge badge-' + escapeHtml(u.status) + '">' + escapeHtml(u.status) + '</span>' : '';
+
+    return '<div class="team-row' + (isMe ? ' me' : '') + (u.status !== 'active' ? ' inactive' : '') +
+             '" style="margin-left:' + indent + 'px;">' +
+             '<div class="team-who">' +
+               '<div class="team-name">' + escapeHtml(u.name) + (isMe ? ' (you)' : '') + '</div>' +
+               '<div class="team-email">' + escapeHtml(u.email) + '</div>' +
+             '</div>' +
+             '<span class="team-badge badge-' + escapeHtml(u.role) + '">' + escapeHtml(u.role) + '</span>' +
+             statusBadge + parentSel +
+             '<div class="team-actions">' + acts + '</div>' +
+           '</div>';
+  }).join('') || '<div class="empty-state"><div class="empty-msg">Nobody in your team yet.</div></div>';
+}
+
+function teamMsg(text, ok) {
+  const el = document.getElementById('npMsg');
+  el.textContent = text;
+  el.className = 'team-msg ' + (ok ? 'ok' : 'err');
+}
+
+async function submitAddPerson() {
+  const email = document.getElementById('npEmail').value.trim();
+  const name  = document.getElementById('npName').value.trim();
+  const role  = document.getElementById('npRole').value;
+  const parentId = document.getElementById('npParent').value;
+  if (!email || !name) return teamMsg('Email and display name are both required.', false);
+  try {
+    const out = await api('POST', { action: 'createUser', email: email, name: name, role: role, parentId: parentId });
+    if (out.error) return teamMsg(out.error, false);
+    document.getElementById('npEmail').value = '';
+    document.getElementById('npName').value = '';
+    teamMsg(name + ' added. They can sign in with that Google account now.', true);
+    loadTeam();
+  } catch (e) { teamMsg(e.message, false); }
+}
+
+async function doReassign(userId, parentId) {
+  try {
+    const out = await api('POST', { action: 'reassignUser', userId: userId, parentId: parentId });
+    if (out.error) { teamMsg(out.error, false); loadTeam(); return; }
+    loadTeam();
+  } catch (e) { teamMsg(e.message, false); }
+}
+
+const TEAM_CONFIRM = {
+  demoteUser: 'Demote to agent? Anyone reporting to them moves up to their manager.',
+  revokeUser: 'Revoke access? Their reports move up and their locked leads are released.',
+  pauseUser:  'Pause this account? They cannot sign in until resumed. Their team keeps working.'
+};
+
+async function teamAct(action, userId) {
+  if (TEAM_CONFIRM[action] && !confirm(TEAM_CONFIRM[action])) return;
+  try {
+    const out = await api('POST', { action: action, userId: userId });
+    if (out.error) return teamMsg(out.error, false);
+    loadTeam();
+  } catch (e) { teamMsg(e.message, false); }
 }
 
 async function loadAdminData() {
