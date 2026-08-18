@@ -7,11 +7,101 @@
 // ══════════════════════════════════════════════════════════════════
 // CONFIGURATION — 3 state sheet IDs
 // ══════════════════════════════════════════════════════════════════
-const SHEETS = {
+// The three that already exist. Anything else is created on first upload and
+// recorded in Script Properties — 50 empty spreadsheets would mean 50
+// openById calls on every stats run, which does not fit in the execution
+// limit. States nobody has uploaded to simply do not exist yet.
+const SHEET_SEED = {
   AZ: '16XtlVoT_4XxtPzfH9THF0f9eWnpN4-g6LSJ7Jkeqdic',
   VA: '1Rofg1YZwb1l7RN2pZ9_LbBoP28_zOLeakYGJqSqaFoc',
   OH: '1Z8qf3oprwWpek3LdDCEJnEjOs2OE1eJdJc2mqsVoB4M'
 };
+
+function stateRegistry_() {
+  let extra = {};
+  try {
+    extra = JSON.parse(PropertiesService.getScriptProperties().getProperty('STATE_SHEETS') || '{}');
+  } catch (e) {}
+  return Object.assign({}, SHEET_SEED, extra);
+}
+
+// Built once per execution. Every existing SHEETS[code] and Object.keys(SHEETS)
+// keeps working; ensureStateSheet_ adds to it in place when a state is created.
+const SHEETS = stateRegistry_();
+
+const US_STATES = {
+  AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas', CA:'California',
+  CO:'Colorado', CT:'Connecticut', DE:'Delaware', DC:'District of Columbia',
+  FL:'Florida', GA:'Georgia', HI:'Hawaii', ID:'Idaho', IL:'Illinois',
+  IN:'Indiana', IA:'Iowa', KS:'Kansas', KY:'Kentucky', LA:'Louisiana',
+  ME:'Maine', MD:'Maryland', MA:'Massachusetts', MI:'Michigan', MN:'Minnesota',
+  MS:'Mississippi', MO:'Missouri', MT:'Montana', NE:'Nebraska', NV:'Nevada',
+  NH:'New Hampshire', NJ:'New Jersey', NM:'New Mexico', NY:'New York',
+  NC:'North Carolina', ND:'North Dakota', OH:'Ohio', OK:'Oklahoma', OR:'Oregon',
+  PA:'Pennsylvania', RI:'Rhode Island', SC:'South Carolina', SD:'South Dakota',
+  TN:'Tennessee', TX:'Texas', UT:'Utah', VT:'Vermont', VA:'Virginia',
+  WA:'Washington', WV:'West Virginia', WI:'Wisconsin', WY:'Wyoming'
+};
+
+// Creates a state's spreadsheet the first time leads arrive for it.
+function ensureStateSheet_(code) {
+  code = String(code || '').toUpperCase();
+  if (!US_STATES[code]) return '';
+  if (SHEETS[code]) return SHEETS[code];
+
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (e) { return ''; }
+  try {
+    // Re-read: another request may have created it while we waited.
+    const fresh = stateRegistry_();
+    if (fresh[code]) { SHEETS[code] = fresh[code]; return fresh[code]; }
+
+    const ss = SpreadsheetApp.create('FreedomCRM Leads — ' + US_STATES[code] + ' (' + code + ')');
+    setupTabs(ss, code);
+
+    const reg = {};
+    Object.keys(fresh).forEach(function(k) { if (!SHEET_SEED[k]) reg[k] = fresh[k]; });
+    reg[code] = ss.getId();
+    PropertiesService.getScriptProperties().setProperty('STATE_SHEETS', JSON.stringify(reg));
+    SHEETS[code] = ss.getId();
+    return ss.getId();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// States with leads this user can actually dial. Cached briefly: the picker
+// is hit on every sign-in and this reads every registered spreadsheet.
+function listStates_(me) {
+  const cache = CacheService.getScriptCache();
+  const key = 'states_' + (me ? me.id : 'anon');
+  const hit = cache.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+
+  const states = [];
+  Object.keys(SHEETS).forEach(function(code) {
+    let available = 0, total = 0;
+    try {
+      const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+      const lr = sheet ? sheet.getLastRow() : 0;
+      if (lr >= 2) {
+        const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+        data.forEach(function(row) {
+          if (!canSee_(row, me)) return;
+          total++;
+          const st = String(row[ix_('Status')] || '').toLowerCase();
+          if (DIALABLE.indexOf(st) !== -1 && !row[ix_('Locked By')]) available++;
+        });
+      }
+    } catch (e) { return; }
+    states.push({ code: code, name: US_STATES[code] || code, available: available, total: total });
+  });
+
+  states.sort(function(a, b) { return b.available - a.available || a.name.localeCompare(b.name); });
+  const out = { states: states, all: US_STATES };
+  cache.put(key, JSON.stringify(out), 120);
+  return out;
+}
 const BATCH_SIZE = 5;
 const LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 const CALLBACK_RESURRECT_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -692,6 +782,7 @@ function doGet(e) {
         result = adminLocks(scopeNamesFor_(me)); break;
       }
       case 'listSources': result = listSources_(userByEmail_(user.email)); break;
+      case 'listStates':  result = listStates_(userByEmail_(user.email)); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
       case 'myTeam': {
         const me = userByEmail_(user.email);
@@ -1354,7 +1445,8 @@ function decideSource_(me, name, decision, rename) {
 function uploadLeads_(me, body) {
   if (!me) return { error: 'No user record.' };
   const state = String(body.state || '').toUpperCase();
-  if (!SHEETS[state]) return { error: 'Pick a state that exists.' };
+  if (!US_STATES[state]) return { error: 'Not a US state code: ' + state };
+  if (!ensureStateSheet_(state)) return { error: 'Could not open or create the ' + state + ' sheet.' };
 
   const incoming = body.rows || [];
   if (!incoming.length) return { error: 'Nothing to upload.' };
