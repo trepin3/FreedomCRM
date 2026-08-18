@@ -64,7 +64,7 @@ const LEAD_COLD = [
   // Stored split because that is how lead vendors export. 'Name' above stays
   // the composed display value, written whenever these are, so every reader
   // that already asks for Name keeps working.
-  'First Name', 'Last Name'
+  'First Name', 'Last Name', 'Zip'
 ];
 
 const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
