@@ -2565,11 +2565,31 @@ function rowReady(obj) {
   return !!(obj['Name'] && String(obj['Phone'] || '').replace(/\D/g, ''));
 }
 
-// A row whose own state contradicts the chosen sheet is never uploadable.
-// Wrong-state leads are invisible to whoever dials that state, and the
-// TCPA calling window is computed from the state — so this is not cosmetic.
+// Which sheet this row belongs in. Its own state when we have a sheet for
+// it, otherwise the selected state for rows whose state we could not read.
+// Empty means there is nowhere correct to put it, so it is not uploaded —
+// a lead in the wrong state sheet is invisible to whoever dials that state,
+// and the TCPA calling window is computed from the state.
+function rowDestination(obj) {
+  const st = obj['State'];
+  if (!st) return chosenState();
+  return CONFIG.STATE_NAMES[st] ? st : '';
+}
+
 function rowStateOk(obj) {
-  return !obj['State'] || obj['State'] === chosenState();
+  return !!rowDestination(obj);
+}
+
+// Rows grouped by the sheet they will be written to.
+function groupByDestination(objs) {
+  const groups = {};
+  const orphans = {};
+  objs.forEach(function(o) {
+    const dest = rowDestination(o);
+    if (dest) { (groups[dest] = groups[dest] || []).push(o); }
+    else { orphans[o['State']] = (orphans[o['State']] || 0) + 1; }
+  });
+  return { groups: groups, orphans: orphans };
 }
 
 // USPS ZIP prefix ranges. Vendor state columns are routinely wrong — this
@@ -2722,7 +2742,7 @@ function renderMapping() {
 
   const complete = mapped.filter(rowReady);
   const usable = complete.filter(rowStateOk).length;
-  const wrongState = complete.length - usable;
+  const wrongState = complete.length - usable;   // no sheet exists for these
   const short = uploadState.rows.length - complete.length;
 
   box.innerHTML =
@@ -2730,7 +2750,7 @@ function renderMapping() {
     (shown.length ? '<div class="up-preview"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>' : '') +
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
-    (wrongState ? '<span class="up-warn"> · ' + wrongState + ' belong to another state and will not upload</span>' : '') +
+    (wrongState ? '<span class="up-warn"> · ' + wrongState + ' have no matching state sheet</span>' : '') +
     '</div>' + switchedNotice() + cityNotice() + stateNotice(usable);
 
   document.getElementById('upBtn').disabled = usable === 0;
@@ -2757,38 +2777,34 @@ function cityNotice() {
          ' <span id="cityMsg"></span></div>';
 }
 
-// Names the state the file is really for, and offers to switch to it.
+// Says where the file is about to go. A mixed file is split by state and
+// each part written to its own sheet, so nothing is dropped for being in
+// the same file as leads from somewhere else.
 function stateNotice(usable) {
-  const fixed = zipDisagreements();
-  const note = fixed
-    ? '<div class="up-note">' + fixed + ' row' + (fixed === 1 ? ' has a' : 's have a') +
-      ' state code that contradicts its ZIP. Going with the ZIP.</div>'
-    : '';
+  const objs = uploadState.rows.map(mapRow).filter(rowReady);
+  const split = groupByDestination(objs);
+  const dests = Object.keys(split.groups).sort(function(a, b) {
+    return split.groups[b].length - split.groups[a].length;
+  });
+  const orphanCodes = Object.keys(split.orphans);
 
-  const tally = stateTally();
-  const found = Object.keys(tally).filter(function(k) { return k !== chosenState(); });
-  if (!found.length) return note;
-
-  const known = found.filter(function(k) { return !!CONFIG.STATE_NAMES[k]; });
-  const label = found.map(function(k) {
-    return (CONFIG.STATE_NAMES[k] || k) + ' (' + tally[k] + ')';
-  }).join(', ');
-
-  const head = usable === 0
-    ? 'This file is not for ' + (CONFIG.STATE_NAMES[chosenState()] || chosenState()) + '.'
-    : 'Some rows belong to another state and will not upload.';
-
-  const fix = known.length === 1
-    ? ' <a onclick="switchUploadState(\'' + known[0] + '\')">Switch to ' + CONFIG.STATE_NAMES[known[0]] + '</a>'
-    : (known.length ? '' : ' We have no sheet for that state.');
-
-  return note + '<div class="up-block">' + head + ' It also contains ' + label + '.' + fix + '</div>';
+  let out = '';
+  if (dests.length > 1) {
+    out += '<div class="up-note">This file covers ' + dests.map(function(d) {
+      return '<b>' + escapeHtml(CONFIG.STATE_NAMES[d]) + '</b> (' + split.groups[d].length + ')';
+    }).join(' and ') + '. Each goes to its own sheet.</div>';
+  }
+  if (orphanCodes.length) {
+    const label = orphanCodes.map(function(c) {
+      return escapeHtml(c) + ' (' + split.orphans[c] + ')';
+    }).join(', ');
+    out += '<div class="up-block">' + label + ' — we have no sheet for ' +
+           (orphanCodes.length === 1 ? 'that state' : 'those states') +
+           ', so ' + (orphanCodes.length === 1 ? 'those rows' : 'they') + ' will not upload.</div>';
+  }
+  return out;
 }
 
-function switchUploadState(code) {
-  document.getElementById('upState').value = code;
-  renderMapping();
-}
 
 function setMap(field, idx) {
   uploadState.map[field] = Number(idx);
@@ -2853,25 +2869,45 @@ async function submitUpload() {
   const source = document.getElementById('upSource').value;
   if (!source || source === '__other') { msg.textContent = 'Pick a lead source first.'; return; }
 
-  const rows = uploadState.rows.map(mapRow).filter(rowReady).filter(rowStateOk);
-  if (!rows.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
+  const objs = uploadState.rows.map(mapRow).filter(rowReady);
+  if (!objs.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
+
+  const split = groupByDestination(objs);
+  const dests = Object.keys(split.groups);
+  if (!dests.length) { msg.textContent = 'None of these rows belong to a state we have a sheet for.'; return; }
 
   btn.disabled = true;
-  msg.textContent = 'Uploading ' + rows.length + ' leads…';
-  const out = await api('POST', {
-    action: 'uploadLeads',
-    state: document.getElementById('upState').value,
-    source: source,
-    visibility: document.getElementById('upVisibility').value,
-    rows: rows
-  });
+  const visibility = document.getElementById('upVisibility').value;
+  const done = [];
+  let addedTotal = 0, dupes = 0, incomplete = 0, refused = 0, failed = '';
+
+  // One request per state, so each batch lands in its own sheet with its
+  // own batch id and can be pulled back independently.
+  for (let i = 0; i < dests.length; i++) {
+    const st = dests[i];
+    msg.textContent = 'Uploading ' + split.groups[st].length + ' to ' +
+                      CONFIG.STATE_NAMES[st] + '…' +
+                      (dests.length > 1 ? ' (' + (i + 1) + ' of ' + dests.length + ')' : '');
+    const out = await api('POST', {
+      action: 'uploadLeads', state: st, source: source,
+      visibility: visibility, rows: split.groups[st]
+    });
+    if (out && out.error) { failed = CONFIG.STATE_NAMES[st] + ': ' + out.error; break; }
+    addedTotal += out.added;
+    dupes      += out.skippedDuplicate || 0;
+    incomplete += out.skippedIncomplete || 0;
+    refused    += out.skippedWrongState || 0;
+    done.push(out.added + ' to ' + CONFIG.STATE_NAMES[st]);
+  }
   btn.disabled = false;
 
-  if (out && out.error) { msg.textContent = out.error; return; }
-  const bits = ['Added ' + out.added + ' leads.'];
-  if (out.skippedDuplicate) bits.push(out.skippedDuplicate + ' already in your pool.');
-  if (out.skippedIncomplete) bits.push(out.skippedIncomplete + ' missing a name or phone.');
-  if (out.skippedWrongState) bits.push(out.skippedWrongState + ' were for another state.');
+  if (failed) { msg.textContent = failed; return; }
+  const bits = ['Added ' + addedTotal + ' leads — ' + done.join(', ') + '.'];
+  if (dupes) bits.push(dupes + ' already in your pool.');
+  if (incomplete) bits.push(incomplete + ' missing a name or phone.');
+  if (refused) bits.push(refused + ' rejected by the server as wrong-state.');
+  const orphanTotal = Object.keys(split.orphans).reduce(function(n, k) { return n + split.orphans[k]; }, 0);
+  if (orphanTotal) bits.push(orphanTotal + ' had no matching state sheet.');
   msg.textContent = bits.join(' ');
   document.getElementById('upPaste').value = '';
   parseUpload();
