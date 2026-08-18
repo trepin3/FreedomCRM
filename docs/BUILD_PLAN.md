@@ -1,6 +1,6 @@
 # FreedomCRM — MVP build plan and state
 
-Working doc for the multi-tenant rebuild. Last updated 2026-08-17.
+Working doc for the multi-tenant rebuild. Last updated 2026-08-17 (schema rewrite).
 Read this first when resuming; it carries decisions that are not derivable from the code.
 
 ---
@@ -27,14 +27,18 @@ Read this first when resuming; it carries decisions that are not derivable from 
 - **`adminStats` / `adminLocks` scoped** to the caller's downline via `scopeNamesFor_` (matches on display name — see Known weak points).
 - **`ActivityLog`** recording verified identity per action.
 - Lead rail, callback day-agenda panel, readable lead detail grid.
+- **Team portal** — one screen for admin and managers, scoped server-side by `myTeam`. Add, reassign, promote, demote, pause, resume, revoke.
+- **Lead schema rewrite** — 58 columns, one `Leads` tab per state, rows never move. `Status` changes in place so `Lead ID` is permanent. Reservation moved off `Status` onto `Locked By`/`Locked At` + `Last Activity At`/`Call Open At`, with 15-min idle release and a 2-hour open-call ceiling. `canSee_` enforces pool/exclusive/shared visibility — unit-tested, including admin being correctly blocked from an agent's exclusive leads.
 
 OAuth client id is shared with Agent-HUD-Workstation — same `trepin3.github.io` origin, so no Cloud Console work was needed.
 
 ## Not built
 
-Team portal UI · lead sources · upload + column mapping · lead visibility/exclusivity · 150-lead reservation · leaderboard AP · add-to-calendar · DCID review + archive · sold workspace · stat drill-downs · Trellus receiver.
+Lead sources UI · upload + column mapping · sharing + donate-to-pool UI · 150-lead reservation endpoint · add-to-calendar · DCID review + archive · sold workspace · stat drill-downs · Trellus receiver.
 
-`docs/planned_lead_schema.gs` holds the designed 59-column schema. It was written into `Code.gs` and **reverted**, because it renames `Locked By`/`Locked At` and breaks every existing lead function. Re-apply only as part of the lead rewrite.
+`docs/planned_lead_schema.gs` was the design sketch; it is now **applied** in `Code.gs` and kept only for reference. Two deliberate departures from it: `Locked By`/`Locked At` keep their old names rather than becoming `Reserved By`/`Reserved At` (name-based lookups meant renaming was the only thing that actually broke callers), and disposition extras keep their old names so `rowToObj`'s derived field names stay stable for the UI.
+
+**Migration is not automatic.** After pasting `Code.gs`, run `migrateLeadSchema()` once. It folds the six old tabs into one, derives `Status` from the source tab, assigns `Lead ID`s, backfills `AP Amount`, and renames old tabs with an `_old` suffix rather than deleting them — so it is reversible. `seedDummyLeads()` re-seeds test data in the new shape.
 
 ---
 

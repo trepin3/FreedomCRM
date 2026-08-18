@@ -18,19 +18,89 @@ const CALLBACK_RESURRECT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const REVIEW_THRESHOLD = 30; // attempts before flagging for review
 const TZ = 'America/Los_Angeles'; // Pacific Time
 
-// Column layout (Leads tab & all disposition tabs share these first cols)
-const LEAD_COLS = [
-  'Name', 'Phone', 'Email', 'Address', 'City', 'State',
-  'Lead Type', 'Beneficiary', 'Hobby', 'Age', 'DOB',
-  'Status', 'Locked By', 'Locked At',
-  'Attempts', 'Last Call Agent', 'Last Call Start', 'Last Call End', 'Last Call Duration',
-  'Date Added'
+// ══════════════════════════════════════════════════════════════════
+// LEAD SCHEMA — one Leads tab per state, rows never move.
+//
+// Disposition sets Status in place, so a lead keeps its Lead ID for life.
+// That is what makes ?lead_id= addressable and gives Trellus something
+// stable to write back against. The old design moved rows between six
+// tabs, which meant a lead's identity was its row number — and row numbers
+// shift under you the moment anything else is dispositioned.
+//
+// Column order is deliberate: choosing a dial batch only needs the HOT
+// block, so the hot path reads 16 columns instead of 58.
+//
+// Names are kept from the old schema wherever the meaning survived.
+// rowToObj derives front-end field names from these strings, so renaming
+// a column silently renames a field the UI reads.
+// ══════════════════════════════════════════════════════════════════
+
+// Everything needed to filter, reserve and prioritise a batch.
+const LEAD_HOT = [
+  'Lead ID', 'Status', 'Owner ID', 'Visibility', 'Shared With',
+  'Locked By', 'Locked At', 'Last Activity At', 'Call Open At',
+  'Attempts', 'Last Call Start', 'Callback Hold Until',
+  'Name', 'Phone', 'State', 'Date Added'
 ];
-const CALLBACK_EXTRA = ['Callback Date', 'Callback Time', 'Scheduled By', 'Scheduled Date'];
-const DCID_EXTRA = ['DCID Reason', 'DCID Date', 'DCID Agent'];
-const SOLD_EXTRA = ['Monthly Premium', 'Carrier', 'First Draft Date', 'Recurring Draft Date', 'Reason for Policy', 'Sale Notes', 'Sold Date', 'Sold Agent'];
-const WRONG_EXTRA = ['Wrong Number Date', 'Wrong Number Agent'];
-const REVIEW_EXTRA = ['Flagged Date', 'Flag Reason'];
+
+// Shown on the lead card.
+const LEAD_WARM = [
+  'Email', 'Address', 'City', 'Lead Type', 'Beneficiary', 'Hobby', 'Age', 'DOB'
+];
+
+// Provenance and disposition detail — read only when something needs it.
+const LEAD_COLD = [
+  'Lead Source', 'Batch ID', 'Uploaded By', 'Batch Status',
+  'Status Reason', 'Status At', 'Status By',
+  'Last Call Agent', 'Last Call End', 'Last Call Duration',
+  'Callback Date', 'Callback Time', 'Scheduled By', 'Scheduled Date',
+  'DCID Reason', 'DCID Date', 'DCID Agent',
+  'DCID Review', 'DCID Reviewed By', 'DCID Reviewed At',
+  'Monthly Premium', 'AP Amount', 'Carrier',
+  'First Draft Date', 'Recurring Draft Date',
+  'Reason for Policy', 'Sale Notes', 'Sold Date', 'Sold Agent', 'Follow Up At',
+  'Wrong Number Date', 'Wrong Number Agent',
+  'Archived At', 'Archived By'
+];
+
+const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
+const HOT_LEN   = LEAD_HOT.length;
+
+// 1-based column lookup for getRange.
+const COL = (function() {
+  const m = {};
+  LEAD_COLS.forEach(function(n, i) { m[n] = i + 1; });
+  return m;
+})();
+// 0-based, for indexing a row array.
+function ix_(name) { return COL[name] - 1; }
+
+// Rows carry these instead of moving between tabs.
+const STATUS = {
+  NEW:      'new',
+  SOLD:     'sold',
+  DCID:     'dcid',
+  WRONG:    'wrong',
+  CALLBACK: 'callback',
+  REVIEW:   'review',
+  ARCHIVED: 'archived',
+  REMOVED:  'removed'      // batch pulled back — reversible, never deleted
+};
+
+// Statuses that put a lead back in the dialable pool.
+const DIALABLE = [STATUS.NEW, ''];
+
+const VISIBILITY = { POOL: 'pool', EXCLUSIVE: 'exclusive' };
+
+// Reservation: 15 minutes idle releases a lead, but an open call holds it —
+// with a ceiling, so a crash mid-call cannot freeze 150 leads indefinitely.
+const RESERVE_SIZE         = 150;
+const IDLE_RELEASE_MS      = 15 * 60 * 1000;
+const OPEN_CALL_CEILING_MS = 2 * 60 * 60 * 1000;
+const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it this long
+const SOLD_FOLLOWUP_DAYS   = 3;
+
+const SEED_LEAD_SOURCES = ['$1 Bang Bang', '$1 Goat', 'DashlyPro'];
 
 // Dummy test leads (same 10 across all 3 states)
 const DUMMY_LEADS = [
@@ -49,6 +119,30 @@ const DUMMY_LEADS = [
 // ══════════════════════════════════════════════════════════════════
 // INITIAL SETUP — RUN ONCE from Apps Script editor
 // ══════════════════════════════════════════════════════════════════
+// Test data, in the new schema. Safe to re-run: it appends.
+function seedDummyLeads() {
+  Object.keys(SHEETS).forEach(function(state) {
+    const ss = SpreadsheetApp.openById(SHEETS[state]);
+    const sheet = ss.getSheetByName('Leads') || setupTabs(ss, state);
+    const rows = DUMMY_LEADS.map(function(d, n) {
+      const row = new Array(LEAD_COLS.length).fill('');
+      ['Name','Phone','Email','Address','City','State','Lead Type','Beneficiary','Hobby','Age','DOB']
+        .forEach(function(name, i) { row[COL[name] - 1] = d[i]; });
+      row[ix_('State')]      = state;
+      row[ix_('Lead ID')]    = state + '-' + ('000000' + (n + 1)).slice(-6);
+      row[ix_('Status')]     = STATUS.NEW;
+      row[ix_('Visibility')] = VISIBILITY.POOL;
+      row[ix_('Date Added')] = stamp_();
+      row[ix_('Lead Source')] = SEED_LEAD_SOURCES[0];
+      return row;
+    });
+    const at = sheet.getLastRow() + 1;
+    sheet.getRange(at, COL['Phone'], rows.length, 1).setNumberFormat('@');
+    sheet.getRange(at, 1, rows.length, LEAD_COLS.length).setValues(rows);
+  });
+  Logger.log('Seeded ' + DUMMY_LEADS.length + ' leads per state.');
+}
+
 function initSetup() {
   Object.keys(SHEETS).forEach(state => {
     const ss = SpreadsheetApp.openById(SHEETS[state]);
@@ -58,43 +152,20 @@ function initSetup() {
 }
 
 function setupTabs(ss, stateCode) {
-  // Rename or remove default "Sheet1"
-  const defaultSheet = ss.getSheetByName('Sheet1');
+  // One tab. Dispositions set Status in place, so there is nowhere to move to.
+  let sheet = ss.getSheetByName('Leads');
+  if (!sheet) sheet = ss.insertSheet('Leads');
 
-  // Define all tabs and their headers
-  const tabs = [
-    { name: 'Leads', headers: LEAD_COLS },
-    { name: 'Callbacks', headers: LEAD_COLS.concat(CALLBACK_EXTRA) },
-    { name: 'DCID', headers: LEAD_COLS.concat(DCID_EXTRA) },
-    { name: 'Sold', headers: LEAD_COLS.concat(SOLD_EXTRA) },
-    { name: 'Wrong Numbers', headers: LEAD_COLS.concat(WRONG_EXTRA) },
-    { name: 'Review', headers: LEAD_COLS.concat(REVIEW_EXTRA) }
-  ];
+  sheet.getRange(1, 1, 1, LEAD_COLS.length)
+       .setValues([LEAD_COLS]).setFontWeight('bold').setBackground('#e8f0fe');
+  sheet.setFrozenRows(1);
+  // Phone and the date-ish columns must not be re-parsed by Sheets.
+  sheet.getRange(2, COL['Phone'], sheet.getMaxRows() - 1, 1).setNumberFormat('@');
+  sheet.getRange(2, COL['Callback Date'], sheet.getMaxRows() - 1, 2).setNumberFormat('@');
 
-  tabs.forEach(t => {
-    let sheet = ss.getSheetByName(t.name);
-    if (!sheet) sheet = ss.insertSheet(t.name);
-    sheet.clear();
-    sheet.getRange(1, 1, 1, t.headers.length).setValues([t.headers]).setFontWeight('bold').setBackground('#e8f0fe');
-    sheet.setFrozenRows(1);
-  });
-
-  // Populate dummy leads in Leads tab with state-adjusted data
-  const leadsSheet = ss.getSheetByName('Leads');
-  const now = new Date();
-  const nowStr = Utilities.formatDate(now, TZ, 'yyyy-MM-dd HH:mm:ss');
-  const rows = DUMMY_LEADS.map(row => {
-    const r = row.slice();
-    r[5] = stateCode; // State column
-    // Fill remaining cols
-    return r.concat(['', '', '', 0, '', '', '', '', nowStr]);
-  });
-  leadsSheet.getRange(2, 1, rows.length, LEAD_COLS.length).setValues(rows);
-
-  // Remove default Sheet1 if it exists and isn't one of our tabs
-  if (defaultSheet && ss.getSheets().length > 6) {
-    ss.deleteSheet(defaultSheet);
-  }
+  const junk = ss.getSheetByName('Sheet1');
+  if (junk && ss.getSheets().length > 1) ss.deleteSheet(junk);
+  return sheet;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -603,11 +674,11 @@ function doGet(e) {
     let result;
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
-      case 'getLeads':    result = getLeads(e.parameter.state, user.name);
+      case 'getLeads':    result = getLeads(e.parameter.state, user.name, userByEmail_(user.email), e.parameter.size);
                           logActivity_(user, 'getLeads', '', e.parameter.state); break;
-      case 'search':      result = search(e.parameter.q); break;
-      case 'myCallbacks': result = myCallbacks(user.name); break;
-      case 'leaderboard': result = leaderboard(); break;
+      case 'search':      result = search(e.parameter.q, userByEmail_(user.email)); break;
+      case 'myCallbacks': result = myCallbacks(user.name, userByEmail_(user.email)); break;
+      case 'leaderboard': result = leaderboard(e.parameter.range); break;
       case 'adminStats': {
         const me = userByEmail_(user.email);
         result = adminStats(e.parameter.range, scopeNamesFor_(me)); break;
@@ -683,111 +754,107 @@ function jsonOut(obj) {
 // ══════════════════════════════════════════════════════════════════
 // GET LEADS — fetch batch, lock rows, cleanup stale locks, resurrect callbacks
 // ══════════════════════════════════════════════════════════════════
-function getLeads(stateCode, agent) {
+function getLeads(stateCode, agent, me, size) {
   if (!SHEETS[stateCode]) return { error: 'invalid state' };
   const ss = SpreadsheetApp.openById(SHEETS[stateCode]);
+  const sheet = ss.getSheetByName('Leads');
+  const want = Number(size) || BATCH_SIZE;
 
-  // 1. Clear stale locks
-  clearStaleLocks(ss);
+  // One agent at a time, or two can reserve the same row.
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (e) { return { error: 'busy, try again' }; }
 
-  // 2. Resurrect callbacks past their scheduled + 24hrs
-  resurrectCallbacks(ss);
+  try {
+    releaseStale_(sheet);
 
-  // 3. Fetch available leads (Status is blank)
-  const leadsSheet = ss.getSheetByName('Leads');
-  const lastRow = leadsSheet.getLastRow();
-  if (lastRow < 2) return { leads: [], state: stateCode };
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { leads: [], state: stateCode };
 
-  const data = leadsSheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
-  const statusIdx = LEAD_COLS.indexOf('Status');
-  const attemptsIdx = LEAD_COLS.indexOf('Attempts');
+    const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
+    const now = Date.now();
 
-  // Available = Status blank
-  const available = [];
-  data.forEach((row, i) => {
-    if (!row[statusIdx]) {
-      available.push({ rowIndex: i + 2, row: row, attempts: Number(row[attemptsIdx]) || 0 });
-    }
-  });
+    const iStatus = ix_('Status'), iLockBy = ix_('Locked By');
+    const iAtt = ix_('Attempts'), iStart = ix_('Last Call Start');
+    const iHold = ix_('Callback Hold Until'), iCbAgent = ix_('Scheduled By');
 
-  // Sort: 0-attempts first, then random
-  const zeroAttempts = available.filter(l => l.attempts === 0);
-  const attempted = available.filter(l => l.attempts > 0);
-  shuffle(zeroAttempts);
-  shuffle(attempted);
-  const prioritized = zeroAttempts.concat(attempted);
+    const avail = [];
+    data.forEach(function(row, i) {
+      const st = String(row[iStatus] || '').toLowerCase();
+      if (DIALABLE.indexOf(st) === -1) return;
+      if (row[iLockBy]) return;                       // someone holds it
+      if (!canSee_(row, me)) return;                  // not mine to dial
 
-  // Take first BATCH_SIZE
-  const batch = prioritized.slice(0, BATCH_SIZE);
-  if (batch.length === 0) return { leads: [], state: stateCode };
+      // A callback stays with the agent who booked it until the hold expires.
+      const hold = row[iHold] ? new Date(row[iHold]).getTime() : 0;
+      if (hold && now < hold && String(row[iCbAgent] || '') !== String(agent || '')) return;
 
-  // Lock them
-  const nowStr = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
-  batch.forEach(item => {
-    leadsSheet.getRange(item.rowIndex, statusIdx + 1).setValue('In Progress');
-    leadsSheet.getRange(item.rowIndex, LEAD_COLS.indexOf('Locked By') + 1).setValue(agent || '');
-    leadsSheet.getRange(item.rowIndex, LEAD_COLS.indexOf('Locked At') + 1).setValue(nowStr);
-  });
+      avail.push({
+        rowIndex: i + 2, row: row,
+        attempts: Number(row[iAtt]) || 0,
+        last: row[iStart] ? new Date(row[iStart]).getTime() : 0
+      });
+    });
 
-  // Return as objects
-  const leads = batch.map(item => ({
-    rowIndex: item.rowIndex,
-    state: stateCode,
-    ...rowToObj(item.row)
-  }));
+    // Never-dialled first, then longest since the last attempt.
+    avail.sort(function(a, b) {
+      if (a.attempts === 0 && b.attempts !== 0) return -1;
+      if (b.attempts === 0 && a.attempts !== 0) return 1;
+      return a.last - b.last;
+    });
 
-  return { leads: leads, state: stateCode };
-}
+    const batch = avail.slice(0, want);
+    if (!batch.length) return { leads: [], state: stateCode };
 
-function clearStaleLocks(ss) {
-  const leadsSheet = ss.getSheetByName('Leads');
-  const lastRow = leadsSheet.getLastRow();
-  if (lastRow < 2) return;
-  const data = leadsSheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
-  const statusIdx = LEAD_COLS.indexOf('Status');
-  const lockedAtIdx = LEAD_COLS.indexOf('Locked At');
-  const now = Date.now();
-  data.forEach((row, i) => {
-    if (row[statusIdx] === 'In Progress' && row[lockedAtIdx]) {
-      const lockTime = new Date(row[lockedAtIdx]).getTime();
-      if (now - lockTime > LOCK_TIMEOUT_MS) {
-        leadsSheet.getRange(i + 2, statusIdx + 1).setValue('');
-        leadsSheet.getRange(i + 2, LEAD_COLS.indexOf('Locked By') + 1).setValue('');
-        leadsSheet.getRange(i + 2, lockedAtIdx + 1).setValue('');
-      }
-    }
-  });
-}
+    const nowStr = stamp_();
+    batch.forEach(function(item) {
+      sheet.getRange(item.rowIndex, COL['Locked By']).setValue(agent || '');
+      sheet.getRange(item.rowIndex, COL['Locked At']).setValue(nowStr);
+      sheet.getRange(item.rowIndex, COL['Last Activity At']).setValue(nowStr);
+    });
+    SpreadsheetApp.flush();
 
-function resurrectCallbacks(ss) {
-  const cbSheet = ss.getSheetByName('Callbacks');
-  const leadsSheet = ss.getSheetByName('Leads');
-  const lastRow = cbSheet.getLastRow();
-  if (lastRow < 2) return;
-
-  const headers = LEAD_COLS.concat(CALLBACK_EXTRA);
-  const data = cbSheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
-  const dateIdx = headers.indexOf('Callback Date');
-  const timeIdx = headers.indexOf('Callback Time');
-  const now = new Date();
-
-  // Iterate in reverse so we can delete rows safely
-  for (let i = data.length - 1; i >= 0; i--) {
-    const row = data[i];
-    if (!row[dateIdx] || !row[timeIdx]) continue;
-    const cbDateTime = parseCallbackDateTime(row[dateIdx], row[timeIdx]);
-    if (!cbDateTime) continue;
-    if (now.getTime() - cbDateTime.getTime() > CALLBACK_RESURRECT_MS) {
-      // Move back to Leads
-      const leadRow = row.slice(0, LEAD_COLS.length);
-      // Clear status fields
-      leadRow[LEAD_COLS.indexOf('Status')] = '';
-      leadRow[LEAD_COLS.indexOf('Locked By')] = '';
-      leadRow[LEAD_COLS.indexOf('Locked At')] = '';
-      leadsSheet.appendRow(leadRow);
-      cbSheet.deleteRow(i + 2);
-    }
+    return {
+      state: stateCode,
+      leads: batch.map(function(item) {
+        return Object.assign({ rowIndex: item.rowIndex, state: stateCode }, rowToObj(item.row));
+      })
+    };
+  } finally {
+    lock.releaseLock();
   }
+}
+
+// A reservation dies after IDLE_RELEASE_MS of no activity. An open call holds
+// it past that — but only up to OPEN_CALL_CEILING_MS, so a browser that died
+// mid-call cannot sit on 150 leads forever.
+function releaseStale_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
+  const now = Date.now();
+  const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'), iOpen = ix_('Call Open At');
+
+  data.forEach(function(row, i) {
+    if (!row[iLockBy]) return;
+    const openAt = row[iOpen] ? new Date(row[iOpen]).getTime() : 0;
+    if (openAt) {
+      if (now - openAt < OPEN_CALL_CEILING_MS) return;   // still on the call
+    } else {
+      const act = row[iAct] ? new Date(row[iAct]).getTime() : 0;
+      if (act && now - act < IDLE_RELEASE_MS) return;
+    }
+    clearLock_(sheet, i + 2);
+  });
+}
+
+function clearLock_(sheet, rowIndex) {
+  sheet.getRange(rowIndex, COL['Locked By']).setValue('');
+  sheet.getRange(rowIndex, COL['Locked At']).setValue('');
+  sheet.getRange(rowIndex, COL['Call Open At']).setValue('');
+}
+
+function stamp_() {
+  return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
 }
 
 function parseCallbackDateTime(dateVal, timeVal) {
@@ -803,169 +870,157 @@ function parseCallbackDateTime(dateVal, timeVal) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// NEXT — release lock, log call, increment attempts, check review threshold
+// VISIBILITY
 // ══════════════════════════════════════════════════════════════════
-function actionNext(body) {
+// Visible if it is in a pool I belong to, or I own it, or it was shared
+// with me. Path alone is not enough: admin's id is in everyone's path, so
+// without an explicit flag every "exclusive" lead would be admin-visible.
+function canSee_(row, me) {
+  if (!me) return false;
+  const owner  = String(row[ix_('Owner ID')] || '');
+  const vis    = String(row[ix_('Visibility')] || VISIBILITY.POOL).toLowerCase();
+  const shared = String(row[ix_('Shared With')] || '');
+
+  if (owner === me.id) return true;
+  if (shared && shared.split(',').some(function(x) { return x.trim() === me.id; })) return true;
+  if (vis === VISIBILITY.EXCLUSIVE) return false;
+  if (!owner) return true;                        // unowned: company-wide pool
+
+  // Pool lead: visible when the owner is me or someone above me, i.e. the
+  // owner's id appears as a segment of my path. Compare segments, not
+  // substrings — 'U1' must not match 'U12'.
+  return String(me.path || '').split('>').indexOf(owner) !== -1;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// DISPOSITIONS — Status changes in place; the row never moves
+// ══════════════════════════════════════════════════════════════════
+function setStatus_(body, status, extra) {
   const ss = SpreadsheetApp.openById(SHEETS[body.state]);
   const sheet = ss.getSheetByName('Leads');
-  const row = body.rowIndex;
-  sheet.getRange(row, LEAD_COLS.indexOf('Status') + 1).setValue('');
-  sheet.getRange(row, LEAD_COLS.indexOf('Locked By') + 1).setValue('');
-  sheet.getRange(row, LEAD_COLS.indexOf('Locked At') + 1).setValue('');
+  const row = Number(body.rowIndex);
+  if (!row || row < 2) return { error: 'bad row' };
 
+  const now = stamp_();
+  const write = Object.assign({
+    'Status': status,
+    'Status At': now,
+    'Status By': body.agent || '',
+    'Status Reason': body.reason || ''
+  }, extra || {});
+
+  // Log the call that produced this disposition, if there was one.
   if (body.callStart) {
-    sheet.getRange(row, LEAD_COLS.indexOf('Last Call Agent') + 1).setValue(body.agent || '');
-    sheet.getRange(row, LEAD_COLS.indexOf('Last Call Start') + 1).setValue(body.callStart);
-    sheet.getRange(row, LEAD_COLS.indexOf('Last Call End') + 1).setValue(body.callEnd || '');
-    sheet.getRange(row, LEAD_COLS.indexOf('Last Call Duration') + 1).setValue(body.callDuration || '');
-
-    // Increment attempts
-    const attemptsIdx = LEAD_COLS.indexOf('Attempts') + 1;
-    const current = Number(sheet.getRange(row, attemptsIdx).getValue()) || 0;
-    const newCount = current + 1;
-    sheet.getRange(row, attemptsIdx).setValue(newCount);
-
-    // Auto-flag to Review if >= threshold
-    if (newCount >= REVIEW_THRESHOLD) {
-      moveToReview(ss, row, body.agent);
+    write['Last Call Agent']    = body.agent || '';
+    write['Last Call Start']    = body.callStart;
+    write['Last Call End']      = body.callEnd || '';
+    write['Last Call Duration'] = body.callDuration || '';
+    const cur = Number(sheet.getRange(row, COL['Attempts']).getValue()) || 0;
+    write['Attempts'] = cur + 1;
+    if (cur + 1 >= REVIEW_THRESHOLD && status === STATUS.NEW) {
+      write['Status'] = STATUS.REVIEW;
+      write['Status Reason'] = 'Exceeded ' + REVIEW_THRESHOLD + ' attempts';
     }
   }
+
+  Object.keys(write).forEach(function(name) {
+    sheet.getRange(row, COL[name]).setValue(write[name]);
+  });
+  clearLock_(sheet, row);
+  sheet.getRange(row, COL['Last Activity At']).setValue(now);
   return { success: true };
 }
 
-function moveToReview(ss, rowIndex, agent) {
-  const leadsSheet = ss.getSheetByName('Leads');
-  const reviewSheet = ss.getSheetByName('Review');
-  const rowData = leadsSheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
-  const now = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
-  const reviewRow = rowData.concat([now, 'Exceeded ' + REVIEW_THRESHOLD + ' attempts']);
-  reviewSheet.appendRow(reviewRow);
-  leadsSheet.deleteRow(rowIndex);
+// NEXT — no disposition, just release and record the attempt.
+function actionNext(body) {
+  return setStatus_(body, STATUS.NEW, {});
 }
 
-// ══════════════════════════════════════════════════════════════════
-// DISPOSITIONS — DCID, Sold, Wrong Number, Callback
-// ══════════════════════════════════════════════════════════════════
 function actionDCID(body) {
-  return moveLead(body.state, body.rowIndex, 'DCID', DCID_EXTRA, [
-    body.reason || '',
-    Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'),
-    body.agent || ''
-  ], body);
+  return setStatus_(body, STATUS.DCID, {
+    'DCID Reason': body.reason || '',
+    'DCID Date': stamp_(),
+    'DCID Agent': body.agent || '',
+    'DCID Review': 'pending'
+  });
 }
 
 function actionSold(body) {
-  return moveLead(body.state, body.rowIndex, 'Sold', SOLD_EXTRA, [
-    body.premium || '',
-    body.carrier || '',
-    body.firstDraft || '',
-    body.recurringDraft || '',
-    body.reason || '',
-    body.notes || '',
-    Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'),
-    body.agent || ''
-  ], body);
+  const monthly = Number(String(body.premium || '').replace(/[^0-9.]/g, '')) || 0;
+  const followUp = new Date(Date.now() + SOLD_FOLLOWUP_DAYS * 86400000);
+  return setStatus_(body, STATUS.SOLD, {
+    'Monthly Premium': body.premium || '',
+    'AP Amount': monthly * 12,                    // annual premium, for the leaderboard
+    'Carrier': body.carrier || '',
+    'First Draft Date': body.firstDraft || '',
+    'Recurring Draft Date': body.recurringDraft || '',
+    'Reason for Policy': body.reason || '',
+    'Sale Notes': body.notes || '',
+    'Sold Date': stamp_(),
+    'Sold Agent': body.agent || '',
+    'Follow Up At': Utilities.formatDate(followUp, TZ, 'yyyy-MM-dd')
+  });
 }
 
 function actionWrong(body) {
-  return moveLead(body.state, body.rowIndex, 'Wrong Numbers', WRONG_EXTRA, [
-    Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'),
-    body.agent || ''
-  ], body);
+  return setStatus_(body, STATUS.WRONG, {
+    'Wrong Number Date': stamp_(),
+    'Wrong Number Agent': body.agent || ''
+  });
 }
 
 function actionCallback(body) {
-  // Convert ISO date (YYYY-MM-DD) → US format (MM/DD/YYYY) so Sheets parses in
-  // local timezone, not UTC. Time is kept as literal text via setNumberFormat('@')
-  // below to prevent any auto-parsing.
-  const isoDate = String(body.callbackDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-  const dateVal = isoDate ? (isoDate[2] + '/' + isoDate[3] + '/' + isoDate[1]) : (body.callbackDate || '');
+  // Store the date as MM/DD/YYYY text. Sheets parses bare date strings in the
+  // spreadsheet's timezone, which shifts them a day; text never moves.
+  const iso = String(body.callbackDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dateVal = iso ? (iso[2] + '/' + iso[3] + '/' + iso[1]) : (body.callbackDate || '');
   const timeVal = body.callbackTime || '';
-  const result = moveLead(body.state, body.rowIndex, 'Callbacks', CALLBACK_EXTRA, [
-    dateVal, timeVal, body.agent || '',
-    Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss')
-  ], body);
-  // Force the newly-written callback date + time cells to plain text so future
-  // reads return the exact string (no timezone shifts).
+
+  const res = setStatus_(body, STATUS.CALLBACK, {
+    'Callback Date': dateVal,
+    'Callback Time': timeVal,
+    'Scheduled By': body.agent || '',
+    'Scheduled Date': stamp_(),
+    // The booking agent keeps first claim for 72 hours past the appointment.
+    'Callback Hold Until': holdUntil_(dateVal, timeVal)
+  });
+
   try {
-    const cbSheet = SpreadsheetApp.openById(SHEETS[body.state]).getSheetByName('Callbacks');
-    const newRow = cbSheet.getLastRow();
-    const dateCol = LEAD_COLS.length + 1; // 1-indexed
-    const timeCol = LEAD_COLS.length + 2;
-    cbSheet.getRange(newRow, dateCol).setNumberFormat('@').setValue(dateVal);
-    cbSheet.getRange(newRow, timeCol).setNumberFormat('@').setValue(timeVal);
+    const sheet = SpreadsheetApp.openById(SHEETS[body.state]).getSheetByName('Leads');
+    sheet.getRange(body.rowIndex, COL['Callback Date']).setNumberFormat('@').setValue(dateVal);
+    sheet.getRange(body.rowIndex, COL['Callback Time']).setNumberFormat('@').setValue(timeVal);
   } catch (e) {}
-  return result;
+  return res;
 }
 
-// Move lead from Leads (or Callbacks) tab into destination tab
-function moveLead(stateCode, rowIndex, destTabName, extraCols, extraValues, body) {
-  const ss = SpreadsheetApp.openById(SHEETS[stateCode]);
-  const sourceTab = body.sourceTab || 'Leads';
-  const source = ss.getSheetByName(sourceTab);
-  const dest = ss.getSheetByName(destTabName);
-
-  const sourceHeaders = (sourceTab === 'Callbacks') ? LEAD_COLS.concat(CALLBACK_EXTRA) : LEAD_COLS;
-  const rowData = source.getRange(rowIndex, 1, 1, sourceHeaders.length).getValues()[0];
-  const baseData = rowData.slice(0, LEAD_COLS.length);
-
-  // Log call data if provided
-  if (body.callStart) {
-    baseData[LEAD_COLS.indexOf('Last Call Agent')] = body.agent || '';
-    baseData[LEAD_COLS.indexOf('Last Call Start')] = body.callStart;
-    baseData[LEAD_COLS.indexOf('Last Call End')] = body.callEnd || '';
-    baseData[LEAD_COLS.indexOf('Last Call Duration')] = body.callDuration || '';
-    const attemptsIdx = LEAD_COLS.indexOf('Attempts');
-    baseData[attemptsIdx] = (Number(baseData[attemptsIdx]) || 0) + 1;
-  }
-
-  // Clear lock fields
-  baseData[LEAD_COLS.indexOf('Status')] = '';
-  baseData[LEAD_COLS.indexOf('Locked By')] = '';
-  baseData[LEAD_COLS.indexOf('Locked At')] = '';
-
-  const destRow = baseData.concat(extraValues);
-  dest.appendRow(destRow);
-  source.deleteRow(rowIndex);
-  return { success: true };
+function holdUntil_(dateVal, timeVal) {
+  const dt = parseCallbackDateTime(dateVal, timeVal);
+  if (!dt) return '';
+  return Utilities.formatDate(new Date(dt.getTime() + CALLBACK_HOLD_MS), TZ, 'yyyy-MM-dd HH:mm:ss');
 }
 
 function actionReturnToPool(body) {
-  const ss = SpreadsheetApp.openById(SHEETS[body.state]);
-  const sourceTab = body.sourceTab || 'Callbacks';
-  const source = ss.getSheetByName(sourceTab);
-  const dest = ss.getSheetByName('Leads');
-  const rowData = source.getRange(body.rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
-  rowData[LEAD_COLS.indexOf('Status')] = '';
-  rowData[LEAD_COLS.indexOf('Locked By')] = '';
-  rowData[LEAD_COLS.indexOf('Locked At')] = '';
-  dest.appendRow(rowData);
-  source.deleteRow(body.rowIndex);
-  return { success: true };
+  return setStatus_(body, STATUS.NEW, {
+    'Callback Date': '', 'Callback Time': '',
+    'Callback Hold Until': '', 'Scheduled By': ''
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
-// RELEASE ALL — end dial session
+// RELEASE — end a dial session
 // ══════════════════════════════════════════════════════════════════
 function actionReleaseAll(body) {
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
-    releaseAgentLocks(ss, body.agent);
+  Object.keys(SHEETS).forEach(function(state) {
+    releaseAgentLocks(SpreadsheetApp.openById(SHEETS[state]), body.agent);
   });
   return { success: true };
 }
 
 function actionForceRelease(body) {
-  // Admin force-release specific agent's locks in a state (or all states)
-  if (body.state) {
-    const ss = SpreadsheetApp.openById(SHEETS[body.state]);
-    releaseAgentLocks(ss, body.agent);
-  } else {
-    Object.keys(SHEETS).forEach(state => {
-      const ss = SpreadsheetApp.openById(SHEETS[state]);
-      releaseAgentLocks(ss, body.agent);
-    });
-  }
+  const states = body.state ? [body.state] : Object.keys(SHEETS);
+  states.forEach(function(state) {
+    releaseAgentLocks(SpreadsheetApp.openById(SHEETS[state]), body.agent);
+  });
   return { success: true };
 }
 
@@ -973,50 +1028,32 @@ function releaseAgentLocks(ss, agent) {
   const sheet = ss.getSheetByName('Leads');
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
-  const statusIdx = LEAD_COLS.indexOf('Status');
-  const lockedByIdx = LEAD_COLS.indexOf('Locked By');
-  data.forEach((row, i) => {
-    if (row[statusIdx] === 'In Progress' && row[lockedByIdx] === agent) {
-      sheet.getRange(i + 2, statusIdx + 1).setValue('');
-      sheet.getRange(i + 2, lockedByIdx + 1).setValue('');
-      sheet.getRange(i + 2, LEAD_COLS.indexOf('Locked At') + 1).setValue('');
-    }
+  const vals = sheet.getRange(2, COL['Locked By'], lastRow - 1, 1).getValues();
+  vals.forEach(function(r, i) {
+    if (String(r[0] || '') === String(agent || '')) clearLock_(sheet, i + 2);
   });
 }
 
 // ══════════════════════════════════════════════════════════════════
 // SEARCH — across all states, Leads + Callbacks tabs
 // ══════════════════════════════════════════════════════════════════
-function search(query) {
+function search(query, me) {
   if (!query || query.length < 2) return { results: [] };
-  const q = query.toLowerCase().replace(/\D/g, '') || query.toLowerCase();
-  const qName = query.toLowerCase();
+  const digits = query.replace(/\D/g, '');
+  const qName  = query.toLowerCase();
   const results = [];
 
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
-    ['Leads', 'Callbacks'].forEach(tabName => {
-      const sheet = ss.getSheetByName(tabName);
-      const lastRow = sheet.getLastRow();
-      if (lastRow < 2) return;
-      const cols = (tabName === 'Callbacks') ? LEAD_COLS.concat(CALLBACK_EXTRA) : LEAD_COLS;
-      const data = sheet.getRange(2, 1, lastRow - 1, cols.length).getValues();
-      const nameIdx = 0, phoneIdx = 1;
-      data.forEach((row, i) => {
-        const nameMatch = String(row[nameIdx]).toLowerCase().includes(qName);
-        const phoneMatch = String(row[phoneIdx]).replace(/\D/g, '').includes(q);
-        if (nameMatch || phoneMatch) {
-          results.push({
-            rowIndex: i + 2,
-            state: state,
-            sourceTab: tabName,
-            ...rowToObj(row.slice(0, LEAD_COLS.length)),
-            callbackDate: tabName === 'Callbacks' ? fmtDate(row[LEAD_COLS.length]) : null,
-            callbackTime: tabName === 'Callbacks' ? fmtTime(row[LEAD_COLS.length + 1]) : null
-          });
-        }
-      });
+  Object.keys(SHEETS).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
+    data.forEach(function(row, i) {
+      if (!canSee_(row, me)) return;
+      const nameHit  = String(row[ix_('Name')] || '').toLowerCase().indexOf(qName) !== -1;
+      const phoneHit = digits && String(row[ix_('Phone')] || '').replace(/\D/g, '').indexOf(digits) !== -1;
+      if (!nameHit && !phoneHit) return;
+      results.push(Object.assign({ rowIndex: i + 2, state: state }, rowToObj(row)));
     });
   });
   return { results: results.slice(0, 25) };
@@ -1025,27 +1062,17 @@ function search(query) {
 // ══════════════════════════════════════════════════════════════════
 // MY CALLBACKS — agent's unresolved callbacks across all states
 // ══════════════════════════════════════════════════════════════════
-function myCallbacks(agent) {
+function myCallbacks(agent, me) {
   const results = [];
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
-    const sheet = ss.getSheetByName('Callbacks');
+  Object.keys(SHEETS).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
-    const cols = LEAD_COLS.concat(CALLBACK_EXTRA);
-    const data = sheet.getRange(2, 1, lastRow - 1, cols.length).getValues();
-    const scheduledByIdx = LEAD_COLS.length + 2;
-    data.forEach((row, i) => {
-      if (row[scheduledByIdx] === agent) {
-        results.push({
-          rowIndex: i + 2,
-          state: state,
-          sourceTab: 'Callbacks',
-          ...rowToObj(row.slice(0, LEAD_COLS.length)),
-          callbackDate: fmtDate(row[LEAD_COLS.length]),
-          callbackTime: fmtTime(row[LEAD_COLS.length + 1])
-        });
-      }
+    const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
+    data.forEach(function(row, i) {
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.CALLBACK) return;
+      if (String(row[ix_('Scheduled By')] || '') !== String(agent || '')) return;
+      results.push(Object.assign({ rowIndex: i + 2, state: state }, rowToObj(row)));
     });
   });
   return { callbacks: results };
@@ -1054,59 +1081,15 @@ function myCallbacks(agent) {
 // ══════════════════════════════════════════════════════════════════
 // LEADERBOARD — today's top performers
 // ══════════════════════════════════════════════════════════════════
-function leaderboard() {
-  const todayStart = getRangeCutoff('today');
-  const agentStats = {};
-  const ensureAgent = (a) => {
-    agentStats[a] = agentStats[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
+function leaderboard(range) {
+  // Company-wide by design — everything else scopes to a downline, this does not.
+  const out = adminStats(range || 'today', null);
+  return {
+    range: out.range,
+    leaderboard: out.agents.sort(function(a, b) {
+      return b.ap - a.ap || b.sales - a.sales || b.calls - a.calls;
+    })
   };
-
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
-
-    // Count calls today across ALL tabs (Last Call Agent + Last Call Start)
-    ['Leads', 'DCID', 'Sold', 'Wrong Numbers', 'Callbacks'].forEach(tabName => {
-      const sheet = ss.getSheetByName(tabName);
-      const rows = sheet.getLastRow();
-      if (rows < 2) return;
-      const cols = sheet.getLastColumn();
-      const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
-      const startIdx = LEAD_COLS.indexOf('Last Call Start');
-      const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
-      data.forEach(row => {
-        if (dateInRange(row[startIdx], todayStart) && row[agentIdx]) {
-          ensureAgent(row[agentIdx]);
-          agentStats[row[agentIdx]].calls++;
-        }
-      });
-    });
-
-    // Count sales today (Sold tab, Sold Date + Sold Agent)
-    countAgentDisp(ss, 'Sold', LEAD_COLS.length + 6, LEAD_COLS.length + 7, todayStart, agentStats, 'sales', ensureAgent);
-    // Count DCID today
-    countAgentDisp(ss, 'DCID', LEAD_COLS.length + 1, LEAD_COLS.length + 2, todayStart, agentStats, 'dcid', ensureAgent);
-    // Count Wrong # today
-    countAgentDisp(ss, 'Wrong Numbers', LEAD_COLS.length, LEAD_COLS.length + 1, todayStart, agentStats, 'wrong', ensureAgent);
-    // Count Callbacks scheduled today
-    countAgentDisp(ss, 'Callbacks', LEAD_COLS.length + 3, LEAD_COLS.length + 2, todayStart, agentStats, 'callbacks', ensureAgent);
-  });
-
-  const rows = Object.values(agentStats).sort((a, b) => b.sales - a.sales || b.calls - a.calls);
-  return { leaderboard: rows };
-}
-
-function countAgentDisp(ss, tabName, dateColIdx, agentColIdx, cutoff, agentStats, key, ensureAgent) {
-  const sheet = ss.getSheetByName(tabName);
-  const rows = sheet.getLastRow();
-  if (rows < 2) return;
-  const cols = sheet.getLastColumn();
-  const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
-  data.forEach(row => {
-    if (dateInRange(row[dateColIdx], cutoff) && row[agentColIdx]) {
-      ensureAgent(row[agentColIdx]);
-      agentStats[row[agentColIdx]][key]++;
-    }
-  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1127,99 +1110,80 @@ function inScope_(scope, agentName) {
   return !!scope[String(agentName || '').trim().toLowerCase()];
 }
 
+function blankAgent_(name) {
+  return { agent: name, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, ap: 0, lastActive: '' };
+}
+
+function bump_(agents, name, key, when) {
+  if (!name) return;
+  agents[name] = agents[name] || blankAgent_(name);
+  agents[name][key]++;
+  const d = fmtDateTime(when);
+  if (d && (!agents[name].lastActive || d > agents[name].lastActive)) agents[name].lastActive = d;
+}
+
 function adminStats(range, scope) {
   const cutoff = getRangeCutoff(range || 'today');
   const perState = {};
-  const totals = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
+  const totals = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, ap: 0 };
   const agents = {};
 
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
-    const s = {
-      available: 0, inProgress: 0,
-      callbacks: 0, dcid: 0, sold: 0, wrong: 0, review: 0
-    };
+  Object.keys(SHEETS).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const st = { available: 0, inProgress: 0, callbacks: 0, dcid: 0, sold: 0, wrong: 0, review: 0 };
+    const lr = sheet.getLastRow();
 
-    // Count status in Leads tab (available vs In Progress)
-    const leadsSheet = ss.getSheetByName('Leads');
-    const lr = leadsSheet.getLastRow();
     if (lr >= 2) {
-      const data = leadsSheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
-      const statusIdx = LEAD_COLS.indexOf('Status');
-      const lockedByIdx = LEAD_COLS.indexOf('Locked By');
-      data.forEach(row => {
-        if (row[statusIdx] === 'In Progress') {
-          if (inScope_(scope, row[lockedByIdx])) s.inProgress++;
-        } else s.available++;   // pool-wide: leads have no owner until phase 2
+      const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+      data.forEach(function(row) {
+        const status = String(row[ix_('Status')] || '').toLowerCase();
+        const lockedBy = row[ix_('Locked By')];
+
+        // Live pool counts.
+        if (lockedBy) { if (inScope_(scope, lockedBy)) st.inProgress++; }
+        else if (DIALABLE.indexOf(status) !== -1) st.available++;
+
+        // Calls in range — recorded on the lead whatever it was dispositioned as.
+        const callAt = row[ix_('Last Call Start')], callBy = row[ix_('Last Call Agent')];
+        if (callAt && dateInRange(callAt, cutoff) && inScope_(scope, callBy)) {
+          totals.calls++;
+          bump_(agents, callBy, 'calls', callAt);
+        }
+
+        // Dispositions in range, each dated and attributed by its own columns.
+        const disp = [
+          [STATUS.SOLD,     'Sold Date',         'Sold Agent',         'sold',      'sales'],
+          [STATUS.DCID,     'DCID Date',         'DCID Agent',         'dcid',      'dcid'],
+          [STATUS.WRONG,    'Wrong Number Date', 'Wrong Number Agent', 'wrong',     'wrong'],
+          [STATUS.CALLBACK, 'Scheduled Date',    'Scheduled By',       'callbacks', 'callbacks']
+        ];
+        disp.forEach(function(d) {
+          if (status !== d[0]) return;
+          const at = row[ix_(d[1])], by = row[ix_(d[2])];
+          if (!at || !dateInRange(at, cutoff) || !inScope_(scope, by)) return;
+          st[d[3]]++;
+          totals[d[4]]++;
+          bump_(agents, by, d[4], at);
+          if (d[0] === STATUS.SOLD) {
+            const ap = Number(row[ix_('AP Amount')]) || 0;
+            totals.ap += ap;
+            if (by) { agents[by] = agents[by] || blankAgent_(by); agents[by].ap += ap; }
+          }
+        });
+
+        if (status === STATUS.REVIEW) st.review++;
       });
     }
-
-    // Count calls in range across ALL tabs — captures calls that ended in Sold/DCID/Wrong/Callback
-    ['Leads', 'DCID', 'Sold', 'Wrong Numbers', 'Callbacks'].forEach(tabName => {
-      const sheet = ss.getSheetByName(tabName);
-      const rows = sheet.getLastRow();
-      if (rows < 2) return;
-      const cols = sheet.getLastColumn();
-      const data = sheet.getRange(2, 1, rows - 1, cols).getValues();
-      const startIdx = LEAD_COLS.indexOf('Last Call Start');
-      const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
-      data.forEach(row => {
-        const d = row[startIdx];
-        const a0 = row[agentIdx];
-        if (d && dateInRange(d, cutoff) && inScope_(scope, a0)) {
-          totals.calls++;
-          const a = a0;
-          if (a) {
-            agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
-            agents[a].calls++;
-            const dStr = fmtDateTime(d);
-            if (!agents[a].lastActive || dStr > agents[a].lastActive) agents[a].lastActive = dStr;
-          }
-        }
-      });
-    });
-
-    s.callbacks = countInRange(ss, 'Callbacks', LEAD_COLS.length + 3, cutoff, totals, agents, 'callbacks', LEAD_COLS.length + 2, scope);
-    s.dcid = countInRange(ss, 'DCID', LEAD_COLS.length + 1, cutoff, totals, agents, 'dcid', LEAD_COLS.length + 2, scope);
-    s.sold = countInRange(ss, 'Sold', LEAD_COLS.length + 6, cutoff, totals, agents, 'sales', LEAD_COLS.length + 7, scope);
-    s.wrong = countInRange(ss, 'Wrong Numbers', LEAD_COLS.length, cutoff, totals, agents, 'wrong', LEAD_COLS.length + 1, scope);
-    s.review = ss.getSheetByName('Review').getLastRow() - 1;
-    if (s.review < 0) s.review = 0;
-
-    perState[state] = s;
+    perState[state] = st;
   });
 
   return {
     range: range || 'today',
     perState: perState,
     totals: totals,
-    agents: Object.values(agents).sort((a, b) => b.sales - a.sales || b.calls - a.calls)
+    agents: Object.keys(agents).map(function(k) { return agents[k]; })
+              .sort(function(a, b) { return b.sales - a.sales || b.calls - a.calls; })
   };
-}
-
-function countInRange(ss, tabName, dateColIdx, cutoff, totals, agents, agentKey, agentColIdx, scope) {
-  const sheet = ss.getSheetByName(tabName);
-  const lr = sheet.getLastRow();
-  if (lr < 2) return 0;
-  const cols = sheet.getLastColumn();
-  const data = sheet.getRange(2, 1, lr - 1, cols).getValues();
-  let count = 0;
-  data.forEach(row => {
-    const d = row[dateColIdx];
-    const a0 = row[agentColIdx];
-    if (d && dateInRange(d, cutoff) && inScope_(scope, a0)) {
-      count++;
-      totals[agentKey]++;
-      const a = a0;
-      if (a) {
-        agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
-        agents[a][agentKey]++;
-        const dStr = fmtDateTime(d);
-        if (!agents[a].lastActive || dStr > agents[a].lastActive) agents[a].lastActive = dStr;
-      }
-    }
-  });
-  return count;
 }
 
 function getRangeCutoff(range) {
@@ -1255,12 +1219,11 @@ function adminLocks(scope) {
     const lr = sheet.getLastRow();
     if (lr < 2) return;
     const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
-    const statusIdx = LEAD_COLS.indexOf('Status');
     const lockedByIdx = LEAD_COLS.indexOf('Locked By');
     const lockedAtIdx = LEAD_COLS.indexOf('Locked At');
     const nameIdx = LEAD_COLS.indexOf('Name');
     data.forEach((row, i) => {
-      if (row[statusIdx] === 'In Progress' && inScope_(scope, row[lockedByIdx])) {
+      if (row[lockedByIdx] && inScope_(scope, row[lockedByIdx])) {
         locks.push({
           state: state,
           rowIndex: i + 2,
@@ -1283,9 +1246,120 @@ function adminLocks(scope) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// MIGRATION — run once from the editor, after pasting this file
+// ══════════════════════════════════════════════════════════════════
+// Folds the old six tabs into one, mapping columns by name and deriving
+// Status from whichever tab a row was sitting in. Old tabs are renamed,
+// never deleted, so this is reversible if the result looks wrong.
+function migrateLeadSchema() {
+  const OLD_LEAD_COLS = [
+    'Name', 'Phone', 'Email', 'Address', 'City', 'State',
+    'Lead Type', 'Beneficiary', 'Hobby', 'Age', 'DOB',
+    'Status', 'Locked By', 'Locked At',
+    'Attempts', 'Last Call Agent', 'Last Call Start', 'Last Call End', 'Last Call Duration',
+    'Date Added'
+  ];
+  // tab → [status, extra column names appended after the shared block]
+  const OLD_TABS = {
+    'Leads':         [STATUS.NEW,      []],
+    'Callbacks':     [STATUS.CALLBACK, ['Callback Date', 'Callback Time', 'Scheduled By', 'Scheduled Date']],
+    'DCID':          [STATUS.DCID,     ['DCID Reason', 'DCID Date', 'DCID Agent']],
+    'Sold':          [STATUS.SOLD,     ['Monthly Premium', 'Carrier', 'First Draft Date',
+                                        'Recurring Draft Date', 'Reason for Policy', 'Sale Notes',
+                                        'Sold Date', 'Sold Agent']],
+    'Wrong Numbers': [STATUS.WRONG,    ['Wrong Number Date', 'Wrong Number Agent']],
+    'Review':        [STATUS.REVIEW,   ['Status At', 'Status Reason']]
+  };
+
+  const report = [];
+
+  Object.keys(SHEETS).forEach(function(state) {
+    const ss = SpreadsheetApp.openById(SHEETS[state]);
+    const rows = [];
+    let seq = 0;
+
+    Object.keys(OLD_TABS).forEach(function(tabName) {
+      const sheet = ss.getSheetByName(tabName);
+      if (!sheet) return;
+      const lr = sheet.getLastRow();
+      if (lr < 2) return;
+
+      const status = OLD_TABS[tabName][0];
+      const extras = OLD_TABS[tabName][1];
+      const oldCols = OLD_LEAD_COLS.concat(extras);
+      const data = sheet.getRange(2, 1, lr - 1, Math.min(oldCols.length, sheet.getLastColumn())).getValues();
+
+      data.forEach(function(old) {
+        if (!old[0] && !old[1]) return;                 // no name and no phone: junk row
+        const row = new Array(LEAD_COLS.length).fill('');
+
+        oldCols.forEach(function(name, i) {
+          if (name === 'Status') return;                // old Status was the lock flag
+          if (COL[name]) row[COL[name] - 1] = old[i];
+        });
+
+        seq++;
+        row[ix_('Lead ID')]    = state + '-' + ('000000' + seq).slice(-6);
+        row[ix_('Status')]     = status;
+        row[ix_('State')]      = state;
+        row[ix_('Visibility')] = VISIBILITY.POOL;
+        row[ix_('Owner ID')]   = '';                    // unowned = whole-company pool
+        row[ix_('Locked By')]  = '';                    // no reservation survives a migration
+        row[ix_('Locked At')]  = '';
+
+        // Backfill AP so the leaderboard has something to rank on.
+        if (status === STATUS.SOLD) {
+          const m = Number(String(row[ix_('Monthly Premium')] || '').replace(/[^0-9.]/g, '')) || 0;
+          row[ix_('AP Amount')] = m * 12;
+        }
+        if (status === STATUS.DCID) row[ix_('DCID Review')] = 'pending';
+        if (status === STATUS.CALLBACK) {
+          row[ix_('Callback Hold Until')] =
+            holdUntil_(row[ix_('Callback Date')], row[ix_('Callback Time')]);
+        }
+        rows.push(row);
+      });
+
+      sheet.setName(tabName === 'Leads' ? 'Leads_old' : tabName + '_old');
+    });
+
+    const fresh = ss.insertSheet('Leads');
+    fresh.getRange(1, 1, 1, LEAD_COLS.length)
+         .setValues([LEAD_COLS]).setFontWeight('bold').setBackground('#e8f0fe');
+    fresh.setFrozenRows(1);
+    if (rows.length) {
+      fresh.getRange(2, COL['Phone'], rows.length, 1).setNumberFormat('@');
+      fresh.getRange(2, COL['Callback Date'], rows.length, 2).setNumberFormat('@');
+      fresh.getRange(2, 1, rows.length, LEAD_COLS.length).setValues(rows);
+    }
+    report.push(state + ': ' + rows.length + ' leads');
+  });
+
+  const msg = 'Migrated — ' + report.join(', ') + '. Old tabs kept with an _old suffix.';
+  Logger.log(msg);
+  return msg;
+}
+
+// Next sequential Lead ID for a state, e.g. AZ-000042.
+function nextLeadId_(sheet, state) {
+  const lr = sheet.getLastRow();
+  if (lr < 2) return state + '-000001';
+  const ids = sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues();
+  let max = 0;
+  ids.forEach(function(r) {
+    const m = String(r[0] || '').match(/-(\d+)$/);
+    if (m) max = Math.max(max, Number(m[1]));
+  });
+  return state + '-' + ('000000' + (max + 1)).slice(-6);
+}
+
+// ══════════════════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════════════════
-const DATE_COLS = new Set(['DOB', 'Date Added', 'Last Call Start', 'Last Call End', 'Locked At']);
+const DATE_COLS = new Set(['DOB', 'Date Added', 'Last Call Start', 'Last Call End', 'Locked At',
+  'Last Activity At', 'Call Open At', 'Callback Hold Until', 'Status At',
+  'DCID Date', 'DCID Reviewed At', 'Sold Date', 'Follow Up At',
+  'Wrong Number Date', 'Scheduled Date', 'Archived At']);
 function rowToObj(row) {
   const obj = {};
   LEAD_COLS.forEach((col, i) => {
@@ -1293,6 +1367,10 @@ function rowToObj(row) {
     // Format Date-type columns as strings so JSON doesn't serialize them as ISO
     obj[key] = DATE_COLS.has(col) ? fmtDateTime(row[i]) : row[i];
   });
+  // The UI has read these camelCase keys since before callbacks lived on the
+  // lead row. Keep them rather than rewrite 22 call sites.
+  obj.callbackDate = fmtDate(row[ix_('Callback Date')]);
+  obj.callbackTime = fmtTime(row[ix_('Callback Time')]);
   return obj;
 }
 
