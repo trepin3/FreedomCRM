@@ -687,6 +687,8 @@ function doGet(e) {
         const me = userByEmail_(user.email);
         result = adminLocks(scopeNamesFor_(me)); break;
       }
+      case 'listSources': result = listSources_(userByEmail_(user.email)); break;
+      case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
       case 'myTeam': {
         const me = userByEmail_(user.email);
         if (!me) { result = { error: 'No user record.' }; break; }
@@ -730,6 +732,10 @@ function doPost(e) {
 
     let result;
     switch (action) {
+      case 'uploadLeads':    result = uploadLeads_(userByEmail_(user.email), body); break;
+      case 'addSource':      result = addSource_(userByEmail_(user.email), body.name); break;
+      case 'decideSource':   result = decideSource_(userByEmail_(user.email), body.name, body.decision, body.rename); break;
+      case 'setBatchStatus': result = setBatchStatus_(userByEmail_(user.email), body.batchId, body.state, !!body.active); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
@@ -1243,6 +1249,235 @@ function adminLocks(scope) {
     byAgent[l.agent].leads.push(l);
   });
   return { locks: locks, byAgent: Object.values(byAgent) };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// LEAD SOURCES
+// ══════════════════════════════════════════════════════════════════
+// Lives in the auth spreadsheet, not the state sheets — a source is
+// company-wide. "Other" writes a pending row for admin to approve, so
+// agents can keep working without waiting on a decision.
+const SOURCE_COLS = ['Source', 'Status', 'Submitted By', 'Submitted At'];
+
+function sourcesSheet_() {
+  const ss = authSS_();
+  let sh = ss.getSheetByName('LeadSources');
+  if (!sh) {
+    sh = ss.insertSheet('LeadSources');
+    sh.appendRow(SOURCE_COLS);
+    sh.setFrozenRows(1);
+    SEED_LEAD_SOURCES.forEach(function(name) {
+      sh.appendRow([name, 'approved', 'system', stamp_()]);
+    });
+  }
+  return sh;
+}
+
+function sourcesAll_() {
+  const sh = sourcesSheet_();
+  const lr = sh.getLastRow();
+  if (lr < 2) return [];
+  return sh.getRange(2, 1, lr - 1, SOURCE_COLS.length).getValues().map(function(r, i) {
+    return { rowIndex: i + 2, name: String(r[0] || ''), status: String(r[1] || ''),
+             submittedBy: String(r[2] || ''), submittedAt: fmtDateTime(r[3]) };
+  }).filter(function(x) { return x.name; });
+}
+
+function listSources_(me) {
+  const all = sourcesAll_();
+  const isAdmin = me && me.role === 'admin';
+  return {
+    // Everyone picks from approved. Admin also sees the queue.
+    sources: all.filter(function(s) { return s.status === 'approved'; }),
+    pending: isAdmin ? all.filter(function(s) { return s.status === 'pending'; }) : []
+  };
+}
+
+function addSource_(me, name) {
+  name = String(name || '').trim();
+  if (!name) return { error: 'Name that source before you submit it.' };
+  const existing = sourcesAll_().filter(function(s) {
+    return s.name.toLowerCase() === name.toLowerCase();
+  })[0];
+  if (existing) {
+    return existing.status === 'approved'
+      ? { error: 'That source already exists — pick it from the list.' }
+      : { error: 'That one is already waiting on approval.' };
+  }
+  // Admin adding a source does not need to approve their own request.
+  const status = (me.role === 'admin') ? 'approved' : 'pending';
+  sourcesSheet_().appendRow([name, status, me.email, stamp_()]);
+  logActivity_(me, 'addSource', name + ' (' + status + ')', '');
+  return { success: true, status: status, name: name };
+}
+
+function decideSource_(me, name, decision, rename) {
+  if (!me || me.role !== 'admin') return { error: 'not_permitted' };
+  const row = sourcesAll_().filter(function(s) { return s.name === name; })[0];
+  if (!row) return { error: 'No such source.' };
+  const sh = sourcesSheet_();
+  if (decision === 'approve') {
+    if (rename) sh.getRange(row.rowIndex, 1).setValue(String(rename).trim());
+    sh.getRange(row.rowIndex, 2).setValue('approved');
+  } else {
+    sh.getRange(row.rowIndex, 2).setValue('rejected');
+  }
+  logActivity_(me, 'decideSource', name + ' -> ' + decision, '');
+  return { success: true };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// LEAD UPLOAD
+// ══════════════════════════════════════════════════════════════════
+// Takes rows already mapped to column names by the client. Name and phone
+// are required; everything else is optional. A batch id ties the rows
+// together so the whole upload can be pulled back later — by flipping
+// Batch Status, never by deleting rows.
+function uploadLeads_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const state = String(body.state || '').toUpperCase();
+  if (!SHEETS[state]) return { error: 'Pick a state that exists.' };
+
+  const incoming = body.rows || [];
+  if (!incoming.length) return { error: 'Nothing to upload.' };
+  if (incoming.length > 5000) return { error: 'Split uploads into 5,000 rows or fewer.' };
+
+  const source = String(body.source || '').trim();
+  const approved = sourcesAll_().filter(function(s) { return s.status === 'approved'; })
+                                .map(function(s) { return s.name; });
+  if (approved.indexOf(source) === -1) return { error: 'Choose an approved lead source.' };
+
+  const exclusive = String(body.visibility || '') === VISIBILITY.EXCLUSIVE;
+  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (e) { return { error: 'busy, try again' }; }
+
+  try {
+    // Duplicate check is per-owner-pool only. A number already worked by
+    // another branch is reported, not blocked — it is a different pool.
+    const lr = sheet.getLastRow();
+    const mine = {};
+    if (lr >= 2) {
+      const existing = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+      existing.forEach(function(row) {
+        const digits = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+        if (digits && String(row[ix_('Owner ID')] || '') === me.id) mine[digits] = true;
+      });
+    }
+
+    const batchId = 'B' + Utilities.formatDate(new Date(), TZ, 'yyyyMMdd-HHmmss') + '-' + me.id;
+    const idBase = nextLeadSeq_(sheet, state);
+    const now = stamp_();
+    let seq = 0, skipped = 0, noPhone = 0;
+    const out = [];
+    const seenInBatch = {};
+
+    incoming.forEach(function(item) {
+      const name  = String(item['Name'] || '').trim();
+      const phone = String(item['Phone'] || '').replace(/\D/g, '');
+      if (!name || !phone) { noPhone++; return; }
+      if (mine[phone] || seenInBatch[phone]) { skipped++; return; }
+      seenInBatch[phone] = true;
+
+      const row = new Array(LEAD_COLS.length).fill('');
+      LEAD_COLS.forEach(function(col) {
+        if (item[col] !== undefined && item[col] !== null && String(item[col]) !== '') {
+          row[COL[col] - 1] = item[col];
+        }
+      });
+
+      seq++;
+      row[ix_('Lead ID')]      = state + '-' + ('000000' + (idBase + seq - 1)).slice(-6);
+      row[ix_('Status')]       = STATUS.NEW;
+      row[ix_('State')]        = state;
+      row[ix_('Phone')]        = phone;
+      row[ix_('Name')]         = name;
+      row[ix_('Owner ID')]     = me.id;
+      row[ix_('Visibility')]   = exclusive ? VISIBILITY.EXCLUSIVE : VISIBILITY.POOL;
+      row[ix_('Lead Source')]  = source;
+      row[ix_('Batch ID')]     = batchId;
+      row[ix_('Uploaded By')]  = me.email;
+      row[ix_('Batch Status')] = 'active';
+      row[ix_('Date Added')]   = now;
+      row[ix_('Attempts')]     = 0;
+      row[ix_('Locked By')]    = '';
+      out.push(row);
+    });
+
+    if (out.length) {
+      const at = sheet.getLastRow() + 1;
+      sheet.getRange(at, COL['Phone'], out.length, 1).setNumberFormat('@');
+      sheet.getRange(at, 1, out.length, LEAD_COLS.length).setValues(out);
+    }
+
+    logActivity_(me, 'uploadLeads', out.length + ' into ' + state + ' (' + source + ', ' + batchId + ')', state);
+    return {
+      success: true, added: out.length, batchId: batchId,
+      skippedDuplicate: skipped, skippedIncomplete: noPhone
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Highest existing sequence for a state, so a batch can number from there.
+function nextLeadSeq_(sheet, state) {
+  const lr = sheet.getLastRow();
+  let max = 0;
+  if (lr >= 2) {
+    sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues().forEach(function(r) {
+      const m = String(r[0] || '').match(/-(\d+)$/);
+      if (m) max = Math.max(max, Number(m[1]));
+    });
+  }
+  return max + 1;
+}
+
+// Pull a batch back out of rotation. Reversible: rows are flagged, not deleted.
+function setBatchStatus_(me, batchId, state, active) {
+  if (!me) return { error: 'No user record.' };
+  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  const lr = sheet.getLastRow();
+  if (lr < 2) return { error: 'Nothing there.' };
+
+  const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+  let touched = 0;
+  data.forEach(function(row, i) {
+    if (String(row[ix_('Batch ID')] || '') !== batchId) return;
+    // Uploader can pull their own batch; admin can pull anyone's.
+    if (me.role !== 'admin' && String(row[ix_('Uploaded By')] || '') !== me.email) return;
+    sheet.getRange(i + 2, COL['Batch Status']).setValue(active ? 'active' : 'removed');
+    sheet.getRange(i + 2, COL['Status']).setValue(active ? STATUS.NEW : STATUS.REMOVED);
+    touched++;
+  });
+  logActivity_(me, 'setBatchStatus', batchId + ' -> ' + (active ? 'active' : 'removed'), state);
+  return { success: true, updated: touched };
+}
+
+function myBatches_(me) {
+  const out = [];
+  Object.keys(SHEETS).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const lr = sheet.getLastRow();
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+    const acc = {};
+    data.forEach(function(row) {
+      const b = String(row[ix_('Batch ID')] || '');
+      if (!b) return;
+      const by = String(row[ix_('Uploaded By')] || '');
+      if (me.role !== 'admin' && by !== me.email) return;
+      acc[b] = acc[b] || { batchId: b, state: state, uploadedBy: by,
+                           source: String(row[ix_('Lead Source')] || ''),
+                           batchStatus: String(row[ix_('Batch Status')] || ''),
+                           added: String(row[ix_('Date Added')] || ''), count: 0 };
+      acc[b].count++;
+    });
+    Object.keys(acc).forEach(function(k) { out.push(acc[k]); });
+  });
+  out.sort(function(a, b) { return String(b.added).localeCompare(String(a.added)); });
+  return { batches: out };
 }
 
 // ══════════════════════════════════════════════════════════════════
