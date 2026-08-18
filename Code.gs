@@ -60,7 +60,11 @@ const LEAD_COLD = [
   'First Draft Date', 'Recurring Draft Date',
   'Reason for Policy', 'Sale Notes', 'Sold Date', 'Sold Agent', 'Follow Up At',
   'Wrong Number Date', 'Wrong Number Agent',
-  'Archived At', 'Archived By'
+  'Archived At', 'Archived By',
+  // Stored split because that is how lead vendors export. 'Name' above stays
+  // the composed display value, written whenever these are, so every reader
+  // that already asks for Name keeps working.
+  'First Name', 'Last Name'
 ];
 
 const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
@@ -859,6 +863,20 @@ function clearLock_(sheet, rowIndex) {
   sheet.getRange(rowIndex, COL['Call Open At']).setValue('');
 }
 
+// 'Linda Beno' from parts; falls back to whichever half exists.
+function composeName_(first, last) {
+  return [String(first || '').trim(), String(last || '').trim()]
+    .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+// 'Linda Beno' -> ['Linda', 'Beno']; 'Mary Jo Smith' -> ['Mary', 'Jo Smith'].
+function splitName_(full) {
+  const parts = String(full || '').trim().replace(/\s+/g, ' ').split(' ');
+  if (!parts[0]) return ['', ''];
+  if (parts.length === 1) return [parts[0], ''];
+  return [parts[0], parts.slice(1).join(' ')];
+}
+
 function stamp_() {
   return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
 }
@@ -1369,7 +1387,7 @@ function uploadLeads_(me, body) {
     const batchId = 'B' + Utilities.formatDate(new Date(), TZ, 'yyyyMMdd-HHmmss') + '-' + me.id;
     const idBase = nextLeadSeq_(sheet, state);
     const now = stamp_();
-    let seq = 0, skipped = 0, noPhone = 0;
+    let seq = 0, skipped = 0, noPhone = 0, wrongState = 0;
     const out = [];
     const seenInBatch = {};
 
@@ -1377,6 +1395,11 @@ function uploadLeads_(me, body) {
       const name  = String(item['Name'] || '').trim();
       const phone = String(item['Phone'] || '').replace(/\D/g, '');
       if (!name || !phone) { noPhone++; return; }
+
+      // The client filters these out, but it is the client — and a lead in
+      // the wrong state sheet gets dialled against the wrong TCPA window.
+      const rowState = String(item['State'] || '').trim().toUpperCase();
+      if (rowState && rowState !== state) { wrongState++; return; }
       if (mine[phone] || seenInBatch[phone]) { skipped++; return; }
       seenInBatch[phone] = true;
 
@@ -1387,12 +1410,18 @@ function uploadLeads_(me, body) {
         }
       });
 
+      let first = String(item['First Name'] || '').trim();
+      let last  = String(item['Last Name'] || '').trim();
+      if (!first && !last) { const p = splitName_(name); first = p[0]; last = p[1]; }
+
       seq++;
+      row[ix_('First Name')]   = first;
+      row[ix_('Last Name')]    = last;
       row[ix_('Lead ID')]      = state + '-' + ('000000' + (idBase + seq - 1)).slice(-6);
       row[ix_('Status')]       = STATUS.NEW;
       row[ix_('State')]        = state;
       row[ix_('Phone')]        = phone;
-      row[ix_('Name')]         = name;
+      row[ix_('Name')]         = composeName_(first, last) || name;
       row[ix_('Owner ID')]     = me.id;
       row[ix_('Visibility')]   = exclusive ? VISIBILITY.EXCLUSIVE : VISIBILITY.POOL;
       row[ix_('Lead Source')]  = source;
@@ -1414,7 +1443,7 @@ function uploadLeads_(me, body) {
     logActivity_(me, 'uploadLeads', out.length + ' into ' + state + ' (' + source + ', ' + batchId + ')', state);
     return {
       success: true, added: out.length, batchId: batchId,
-      skippedDuplicate: skipped, skippedIncomplete: noPhone
+      skippedDuplicate: skipped, skippedIncomplete: noPhone, skippedWrongState: wrongState
     };
   } finally {
     lock.releaseLock();
@@ -1543,6 +1572,10 @@ function migrateLeadSchema() {
           if (COL[name]) row[COL[name] - 1] = old[i];
         });
 
+        const sp = splitName_(row[ix_('Name')]);
+        row[ix_('First Name')] = sp[0];
+        row[ix_('Last Name')]  = sp[1];
+
         seq++;
         row[ix_('Lead ID')]    = state + '-' + ('000000' + seq).slice(-6);
         row[ix_('Status')]     = status;
@@ -1592,6 +1625,41 @@ function renameUnique_(ss, sheet, base) {
   while (ss.getSheetByName(name)) { name = base + '_' + n; n++; }
   sheet.setName(name);
   return name;
+}
+
+// Adds the two name columns to sheets migrated before they existed, and
+// splits the existing Name into them. Safe to re-run: it only fills blanks.
+function backfillNameParts() {
+  const report = [];
+  Object.keys(SHEETS).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    if (!sheet) { report.push(state + ': no Leads tab'); return; }
+
+    // Widen the sheet and rewrite the header to the current schema.
+    if (sheet.getMaxColumns() < LEAD_COLS.length) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), LEAD_COLS.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, LEAD_COLS.length)
+         .setValues([LEAD_COLS]).setFontWeight('bold').setBackground('#e8f0fe');
+
+    const lr = sheet.getLastRow();
+    if (lr < 2) { report.push(state + ': header updated, no rows'); return; }
+
+    const names = sheet.getRange(2, COL['Name'], lr - 1, 1).getValues();
+    const parts = sheet.getRange(2, COL['First Name'], lr - 1, 2).getValues();
+    let filled = 0;
+    const out = parts.map(function(p, i) {
+      if (String(p[0] || '').trim() || String(p[1] || '').trim()) return p;
+      const sp = splitName_(names[i][0]);
+      if (sp[0] || sp[1]) filled++;
+      return sp;
+    });
+    sheet.getRange(2, COL['First Name'], out.length, 2).setValues(out);
+    report.push(state + ': ' + filled + ' split');
+  });
+  const msg = report.join(', ');
+  Logger.log(msg);
+  return msg;
 }
 
 // What state is each spreadsheet actually in? Read-only.

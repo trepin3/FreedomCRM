@@ -347,6 +347,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-preview th{background:var(--input-bg);font-weight:600;}
 .up-count{font-size:12px;color:var(--text-secondary);margin-bottom:10px;}
 .up-warn{color:#c47f00;}
+.up-block{font-size:12px;background:rgba(196,127,0,.10);border:1px solid rgba(196,127,0,.35);
+  color:#8a5a00;border-radius:8px;padding:8px 12px;margin-bottom:10px;}
+.up-block a{color:var(--accent);cursor:pointer;text-decoration:underline;font-weight:600;}
 .batch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px;}
 .batch-row.removed{opacity:.55;}
@@ -599,7 +602,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <div class="team-add">
         <div class="team-add-title">Upload leads</div>
         <div class="up-row">
-          <select class="text-input" id="upState"></select>
+          <select class="text-input" id="upState" onchange="renderMapping()"></select>
           <select class="text-input" id="upSource" onchange="onSourceChange()"></select>
           <select class="text-input" id="upVisibility">
             <option value="pool">Pool — my team can dial these</option>
@@ -2319,8 +2322,10 @@ function switchAdminRange(range) {
 // filtering to get wrong.
 let teamCache = { me: null, users: [] };
 
-const UPLOAD_FIELDS = ['Name','Phone','Email','Address','City','Lead Type',
-  'Beneficiary','Hobby','Age','DOB'];
+const UPLOAD_FIELDS = ['Name','First Name','Last Name','Phone','Email','Address','City',
+  'Lead Type','Beneficiary','Hobby','Age','DOB'];
+// Composed into Name rather than stored — the sheet has one name column.
+const NAME_PARTS = { 'First Name': 1, 'Last Name': 1 };
 let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [] };
 
 // Split a CSV line honouring quoted fields — addresses contain commas.
@@ -2343,12 +2348,14 @@ function splitCsvLine(line) {
 // Guess which pasted column feeds which field, so the common case needs no clicks.
 function guessColumn(headers, field) {
   const want = {
-    'Name': ['name','full name','first name','fullname','lead name','contact'],
-    'Phone': ['phone','phone number','mobile','cell','number','telephone'],
+    'Name': ['name','full name','fullname','lead name','contact','customer name'],
+    'First Name': ['firstname','first name','fname','first','given name'],
+    'Last Name': ['lastname','last name','lname','last','surname','family name'],
+    'Phone': ['phone','phone number','phonenumber','mobile','cell','number','telephone','primary phone'],
     'Email': ['email','e-mail','email address'],
-    'Address': ['address','street','address1','address 1'],
-    'City': ['city','town'],
-    'Lead Type': ['lead type','type','product'],
+    'Address': ['address','street','address1','address 1','street address','addr'],
+    'City': ['city','town','municipality'],
+    'Lead Type': ['product','plan','leadtype','lead type','type'],
     'Beneficiary': ['beneficiary','bene'],
     'Hobby': ['hobby','hobbies','interest'],
     'Age': ['age'],
@@ -2449,6 +2456,68 @@ function parseUpload() {
   renderMapping();
 }
 
+// Single source of truth for what a pasted row becomes. Preview, the
+// ready-count and the upload all run through this, so they cannot disagree.
+function mapRow(r) {
+  const obj = {};
+  UPLOAD_FIELDS.forEach(function(f) {
+    const i = uploadState.map[f];
+    if (i >= 0 && r[i] !== undefined && String(r[i]).trim()) obj[f] = String(r[i]).trim();
+  });
+  // Store both halves and the composed form. Vendors export split names;
+  // the UI reads a single one. Keeping all three means neither side has to
+  // care which the file happened to have.
+  const joined = [obj['First Name'], obj['Last Name']]
+    .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  if (!obj['Name'] && joined) obj['Name'] = joined;
+  if (obj['Name'] && !joined) {
+    const p = String(obj['Name']).trim().replace(/\s+/g, ' ').split(' ');
+    obj['First Name'] = p[0];
+    obj['Last Name'] = p.length > 1 ? p.slice(1).join(' ') : '';
+  }
+  const col = stateColumn();
+  if (col >= 0) obj['State'] = String(r[col] || '').trim().toUpperCase();
+  return obj;
+}
+
+function rowReady(obj) {
+  return !!(obj['Name'] && String(obj['Phone'] || '').replace(/\D/g, ''));
+}
+
+// A row whose own state contradicts the chosen sheet is never uploadable.
+// Wrong-state leads are invisible to whoever dials that state, and the
+// TCPA calling window is computed from the state — so this is not cosmetic.
+function rowStateOk(obj) {
+  return !obj['State'] || obj['State'] === chosenState();
+}
+
+// Which pasted column holds the state, if any.
+function stateColumn() {
+  const hs = uploadState.headers;
+  for (let i = 0; i < hs.length; i++) {
+    const h = hs[i].trim().toLowerCase();
+    if (h === 'st' || h === 'state' || h === 'state code' || h === 'statecode') return i;
+  }
+  return -1;
+}
+
+function chosenState() {
+  const el = document.getElementById('upState');
+  return el ? el.value : '';
+}
+
+// Tally of the states actually present in the file.
+function stateTally() {
+  const col = stateColumn();
+  const seen = {};
+  if (col < 0) return seen;
+  uploadState.rows.forEach(function(r) {
+    const v = String(r[col] || '').trim().toUpperCase();
+    if (v) seen[v] = (seen[v] || 0) + 1;
+  });
+  return seen;
+}
+
 function renderMapping() {
   const box = document.getElementById('upMapping');
   const hs = uploadState.headers;
@@ -2468,28 +2537,59 @@ function renderMapping() {
            opts(uploadState.map[f]) + '</select></div>';
   }).join('');
 
-  // Preview the first five, already mapped — this is what will actually land.
-  const shown = UPLOAD_FIELDS.filter(function(f) { return uploadState.map[f] >= 0; });
+  // Preview the first five as they will actually land, name already composed.
+  const mapped = uploadState.rows.map(mapRow);
+  const shown = ['Name'].concat(UPLOAD_FIELDS.filter(function(f) {
+    return f !== 'Name' && !NAME_PARTS[f] && uploadState.map[f] >= 0;
+  }));
   const head = shown.map(function(f) { return '<th>' + f + '</th>'; }).join('');
-  const body = uploadState.rows.slice(0, 5).map(function(r) {
+  const body = mapped.slice(0, 5).map(function(o) {
     return '<tr>' + shown.map(function(f) {
-      return '<td>' + escapeHtml(r[uploadState.map[f]] || '') + '</td>';
+      return '<td>' + escapeHtml(o[f] || '') + '</td>';
     }).join('') + '</tr>';
   }).join('');
 
-  const usable = uploadState.rows.filter(function(r) {
-    return (r[uploadState.map['Name']] || '').trim() &&
-           String(r[uploadState.map['Phone']] || '').replace(/\D/g, '');
-  }).length;
-  const short = uploadState.rows.length - usable;
+  const complete = mapped.filter(rowReady);
+  const usable = complete.filter(rowStateOk).length;
+  const wrongState = complete.length - usable;
+  const short = uploadState.rows.length - complete.length;
 
   box.innerHTML =
     '<div class="up-map">' + map + '</div>' +
     (shown.length ? '<div class="up-preview"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>' : '') +
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
-    (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') + '</div>';
+    (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
+    (wrongState ? '<span class="up-warn"> · ' + wrongState + ' belong to another state and will not upload</span>' : '') +
+    '</div>' + stateNotice(usable);
 
   document.getElementById('upBtn').disabled = usable === 0;
+}
+
+// Names the state the file is really for, and offers to switch to it.
+function stateNotice(usable) {
+  const tally = stateTally();
+  const found = Object.keys(tally).filter(function(k) { return k !== chosenState(); });
+  if (!found.length) return '';
+
+  const known = found.filter(function(k) { return !!CONFIG.STATE_NAMES[k]; });
+  const label = found.map(function(k) {
+    return (CONFIG.STATE_NAMES[k] || k) + ' (' + tally[k] + ')';
+  }).join(', ');
+
+  const head = usable === 0
+    ? 'This file is not for ' + (CONFIG.STATE_NAMES[chosenState()] || chosenState()) + '.'
+    : 'Some rows belong to another state.';
+
+  const fix = known.length === 1
+    ? ' <a onclick="switchUploadState(\'' + known[0] + '\')">Switch to ' + CONFIG.STATE_NAMES[known[0]] + '</a>'
+    : (known.length ? '' : ' We have no sheet for that state.');
+
+  return '<div class="up-block">' + head + ' It contains ' + label + '.' + fix + '</div>';
+}
+
+function switchUploadState(code) {
+  document.getElementById('upState').value = code;
+  renderMapping();
 }
 
 function setMap(field, idx) {
@@ -2554,15 +2654,7 @@ async function submitUpload() {
   const source = document.getElementById('upSource').value;
   if (!source || source === '__other') { msg.textContent = 'Pick a lead source first.'; return; }
 
-  const rows = [];
-  uploadState.rows.forEach(function(r) {
-    const obj = {};
-    UPLOAD_FIELDS.forEach(function(f) {
-      const i = uploadState.map[f];
-      if (i >= 0 && r[i] !== undefined && String(r[i]).trim()) obj[f] = String(r[i]).trim();
-    });
-    if (obj['Name'] && obj['Phone']) rows.push(obj);
-  });
+  const rows = uploadState.rows.map(mapRow).filter(rowReady).filter(rowStateOk);
   if (!rows.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
 
   btn.disabled = true;
@@ -2580,6 +2672,7 @@ async function submitUpload() {
   const bits = ['Added ' + out.added + ' leads.'];
   if (out.skippedDuplicate) bits.push(out.skippedDuplicate + ' already in your pool.');
   if (out.skippedIncomplete) bits.push(out.skippedIncomplete + ' missing a name or phone.');
+  if (out.skippedWrongState) bits.push(out.skippedWrongState + ' were for another state.');
   msg.textContent = bits.join(' ');
   document.getElementById('upPaste').value = '';
   parseUpload();
