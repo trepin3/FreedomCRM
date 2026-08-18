@@ -197,6 +197,13 @@ function verifyGoogleToken_(idToken) {
 }
 
 function findAgent_(email) {
+  const u = userByEmail_(email);
+  if (u) return { row: u.row, email: u.email, name: u.name, role: u.role,
+                  status: u.status, id: u.id, path: u.path };
+  return findAgentLegacy_(email);
+}
+
+function findAgentLegacy_(email) {
   const sh = authSS_().getSheetByName(AGENTS_SHEET);
   if (!sh || sh.getLastRow() < 2) return null;
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();
@@ -242,6 +249,280 @@ function verifySession_(token) {
   return { email: agent.email, name: agent.name || payload.n, role: agent.role };
 }
 
+
+// ══════════════════════════════════════════════════════════════════
+// USERS — hierarchy, permissions
+//
+// Every user carries a materialised path: their chain from the root, e.g.
+// U001>U007>U042. One column answers all three questions we need:
+//   downline?      target.path starts with actor.path
+//   my downline    filter paths starting with mine
+//   which leads?   owner_id appears in my own path (admin sits at the root of
+//                  every path, so house leads reach everyone with no special case)
+// ══════════════════════════════════════════════════════════════════
+
+const USERS_SHEET = 'Users';
+const USER_COLS   = ['User ID', 'Email', 'Display Name', 'Role', 'Parent ID', 'Path', 'Status', 'Last Login'];
+
+function usersSheet_() {
+  const ss = authSS_();
+  let sh = ss.getSheetByName(USERS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(USERS_SHEET);
+    sh.appendRow(USER_COLS);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function usersAll_() {
+  const sh = usersSheet_();
+  if (sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, USER_COLS.length).getValues().map(function(r, i) {
+    return {
+      row: i + 2,
+      id: String(r[0]).trim(),
+      email: String(r[1]).trim().toLowerCase(),
+      name: String(r[2]).trim(),
+      role: String(r[3] || 'agent').trim().toLowerCase(),
+      parentId: String(r[4] || '').trim(),
+      path: String(r[5] || '').trim(),
+      status: String(r[6] || 'active').trim().toLowerCase(),
+      lastLogin: r[7]
+    };
+  });
+}
+
+function userByEmail_(email) {
+  const e = String(email || '').trim().toLowerCase();
+  const all = usersAll_();
+  for (let i = 0; i < all.length; i++) if (all[i].email === e) return all[i];
+  return null;
+}
+
+function userById_(id) {
+  const all = usersAll_();
+  for (let i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
+  return null;
+}
+
+function nextUserId_() {
+  const all = usersAll_();
+  let max = 0;
+  all.forEach(function(u) {
+    const n = parseInt(String(u.id).replace(/^U/, ''), 10);
+    if (!isNaN(n) && n > max) max = n;
+  });
+  return 'U' + String(max + 1).padStart(3, '0');
+}
+
+// ── Permission primitives ────────────────────────────────────────────────────
+// A path prefix must end on a separator, or U001>U0071 would look like a child
+// of U001>U007.
+function pathStartsWith_(childPath, ancestorPath) {
+  if (!childPath || !ancestorPath) return false;
+  return childPath === ancestorPath || childPath.indexOf(ancestorPath + '>') === 0;
+}
+
+function isInDownline_(actor, target) {
+  return !!(actor && target) && actor.id !== target.id && pathStartsWith_(target.path, actor.path);
+}
+
+function canManage_(actor, target) {
+  if (!actor || !target) return false;
+  if (actor.role === 'admin') return actor.id !== target.id;   // admin manages all but itself
+  return isInDownline_(actor, target);
+}
+
+function downlineOf_(actor, includeSelf) {
+  return usersAll_().filter(function(u) {
+    if (!pathStartsWith_(u.path, actor.path)) return false;
+    return includeSelf ? true : u.id !== actor.id;
+  });
+}
+
+// The ids whose leads this user may see: everyone on their own upline chain.
+function visibleOwnerIds_(user) {
+  return String(user.path || '').split('>').filter(String);
+}
+
+// ── Mutations ────────────────────────────────────────────────────────────────
+function createUser_(actor, opts) {
+  const email = String(opts.email || '').trim().toLowerCase();
+  const name  = String(opts.name || '').trim();
+  const role  = String(opts.role || 'agent').trim().toLowerCase();
+  if (!email || email.indexOf('@') === -1) return { error: 'A valid email is required.' };
+  if (!name) return { error: 'A display name is required.' };
+  if (['manager', 'agent'].indexOf(role) === -1) return { error: 'Role must be manager or agent.' };
+  if (userByEmail_(email)) return { error: 'That email already has an account.' };
+
+  // Default to reporting to whoever is creating them.
+  const parent = opts.parentId ? userById_(opts.parentId) : actor;
+  if (!parent) return { error: 'That manager does not exist.' };
+  if (parent.id !== actor.id && !canManage_(actor, parent)) {
+    return { error: 'You can only add people under yourself or your downline.' };
+  }
+  if (parent.role === 'agent') return { error: 'Agents cannot have people reporting to them.' };
+
+  const id = nextUserId_();
+  usersSheet_().appendRow([id, email, name, role, parent.id, parent.path + '>' + id, 'active', '']);
+  logActivity_(actor, 'createUser', role + ' ' + email + ' under ' + parent.email, '');
+  return { ok: true, id: id };
+}
+
+// Moving a manager moves everyone beneath them, so the whole subtree is
+// rewritten in one pass rather than row by row.
+function reassignUser_(actor, userId, newParentId) {
+  const target = userById_(userId);
+  const parent = userById_(newParentId);
+  if (!target || !parent) return { error: 'User not found.' };
+  if (!canManage_(actor, target)) return { error: 'That person is not in your downline.' };
+  if (parent.id !== actor.id && !canManage_(actor, parent)) {
+    return { error: 'That manager is not in your downline.' };
+  }
+  if (parent.role === 'agent') return { error: 'Agents cannot have people reporting to them.' };
+  if (target.id === parent.id || pathStartsWith_(parent.path, target.path)) {
+    return { error: 'That would put someone inside their own downline.' };
+  }
+
+  const sh = usersSheet_();
+  const oldPath = target.path;
+  const newPath = parent.path + '>' + target.id;
+  usersAll_().forEach(function(u) {
+    if (!pathStartsWith_(u.path, oldPath)) return;
+    sh.getRange(u.row, 6).setValue(newPath + u.path.slice(oldPath.length));
+  });
+  sh.getRange(target.row, 5).setValue(parent.id);
+  logActivity_(actor, 'reassignUser', target.email + ' -> ' + parent.email, '');
+  return { ok: true };
+}
+
+// Disabling a manager rolls their reports up to that manager's own parent, so
+// nobody is orphaned under a disabled account.
+function disableUser_(actor, userId) {
+  const target = userById_(userId);
+  if (!target) return { error: 'User not found.' };
+  if (!canManage_(actor, target)) return { error: 'That person is not in your downline.' };
+  if (target.role === 'admin') return { error: 'The admin account cannot be disabled.' };
+
+  const grandparent = userById_(target.parentId);
+  if (grandparent) {
+    usersAll_().forEach(function(u) {
+      if (u.parentId === target.id) reassignUser_(actor, u.id, grandparent.id);
+    });
+  }
+  usersSheet_().getRange(userById_(userId).row, 7).setValue('disabled');
+  logActivity_(actor, 'disableUser', target.email, '');
+  return { ok: true };
+}
+
+// Promote an agent to manager. Position in the tree is unchanged — they simply
+// gain the ability to have reports.
+function promoteUser_(actor, userId) {
+  const target = userById_(userId);
+  if (!target) return { error: 'User not found.' };
+  if (!canManage_(actor, target)) return { error: 'That person is not in your downline.' };
+  if (target.role !== 'agent') return { error: 'Only agents can be promoted.' };
+  usersSheet_().getRange(target.row, 4).setValue('manager');
+  logActivity_(actor, 'promoteUser', target.email, '');
+  return { ok: true };
+}
+
+// Demote and revoke both restructure: an agent cannot have reports, and a
+// revoked account should not have a live downline hanging off it.
+function demoteUser_(actor, userId) {
+  if (actor.role !== 'admin') return { error: 'Only the admin can demote.' };
+  const target = userById_(userId);
+  if (!target) return { error: 'User not found.' };
+  if (target.role !== 'manager') return { error: 'That account is not a manager.' };
+  rollUpReports_(actor, target);
+  usersSheet_().getRange(userById_(userId).row, 4).setValue('agent');
+  logActivity_(actor, 'demoteUser', target.email, '');
+  return { ok: true };
+}
+
+function revokeUser_(actor, userId) {
+  if (actor.role !== 'admin') return { error: 'Only the admin can revoke access.' };
+  const target = userById_(userId);
+  if (!target) return { error: 'User not found.' };
+  if (target.role === 'admin') return { error: 'The admin account cannot be revoked.' };
+  rollUpReports_(actor, target);
+  usersSheet_().getRange(userById_(userId).row, 7).setValue('revoked');
+  releaseReservations_(target.name);
+  logActivity_(actor, 'revokeUser', target.email, '');
+  return { ok: true };
+}
+
+// Pause leaves the tree alone — it is temporary, and their agents keep working.
+function setPaused_(actor, userId, paused) {
+  if (actor.role !== 'admin') return { error: 'Only the admin can pause accounts.' };
+  const target = userById_(userId);
+  if (!target) return { error: 'User not found.' };
+  if (target.role === 'admin') return { error: 'The admin account cannot be paused.' };
+  usersSheet_().getRange(target.row, 7).setValue(paused ? 'paused' : 'active');
+  if (paused) releaseReservations_(target.name);
+  logActivity_(actor, paused ? 'pauseUser' : 'resumeUser', target.email, '');
+  return { ok: true };
+}
+
+function rollUpReports_(actor, target) {
+  const grandparent = userById_(target.parentId);
+  if (!grandparent) return;
+  usersAll_().forEach(function(u) {
+    if (u.parentId === target.id) reassignUser_(actor, u.id, grandparent.id);
+  });
+}
+
+// Locked leads must not sit frozen behind an account that can no longer sign in.
+function releaseReservations_(agentName) {
+  if (!agentName) return;
+  const want = String(agentName).trim().toLowerCase();
+  Object.keys(SHEETS).forEach(function(state) {
+    const sh = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const lr = sh.getLastRow();
+    if (lr < 2) return;
+    const statusIdx = LEAD_COLS.indexOf('Status') + 1;
+    const lockedIdx = LEAD_COLS.indexOf('Locked By') + 1;
+    const vals = sh.getRange(2, lockedIdx, lr - 1, 1).getValues();
+    vals.forEach(function(r, i) {
+      if (String(r[0]).trim().toLowerCase() === want) {
+        sh.getRange(i + 2, statusIdx).setValue('');
+        sh.getRange(i + 2, lockedIdx).setValue('');
+      }
+    });
+  });
+}
+
+// ── One-time migration from the flat Agents sheet ───────────────────────────
+function migrateAgentsToUsers() {
+  const ss = authSS_();
+  const sh = usersSheet_();
+  if (sh.getLastRow() > 1) return 'Users already populated — nothing to do.';
+
+  const old = ss.getSheetByName(AGENTS_SHEET);
+  const rows = (old && old.getLastRow() > 1)
+    ? old.getRange(2, 1, old.getLastRow() - 1, 5).getValues() : [];
+
+  // Admin first so it owns the root of every path.
+  let n = 0;
+  const adminId = 'U001';
+  const adminRow = rows.filter(function(r) { return String(r[0]).trim().toLowerCase() === SEED_ADMIN; })[0];
+  sh.appendRow([adminId, SEED_ADMIN, adminRow ? adminRow[1] : 'Kepler Wolsey',
+                'admin', '', adminId, 'active', adminRow ? adminRow[4] : '']);
+  n++;
+
+  rows.forEach(function(r) {
+    const email = String(r[0]).trim().toLowerCase();
+    if (!email || email === SEED_ADMIN) return;
+    const id = 'U' + String(++n).padStart(3, '0');
+    const role = String(r[2] || 'agent').trim().toLowerCase() === 'admin' ? 'manager' : (r[2] || 'agent');
+    sh.appendRow([id, email, r[1], String(role).toLowerCase(), adminId,
+                  adminId + '>' + id, String(r[3] || 'active').toLowerCase(), r[4]]);
+  });
+
+  return 'Migrated ' + n + ' users. Everyone reports to admin — rearrange downlines from the portal.';
+}
+
 function actionLogin_(body) {
   const g = verifyGoogleToken_(body && body.idToken);
   if (!g) return { error: 'Google sign-in could not be verified.' };
@@ -282,11 +563,24 @@ function doGet(e) {
     if (!user) return jsonOut({ error: 'auth_required' });
 
     const isAdmin = user.role === 'admin';
-    if ((action === 'adminStats' || action === 'adminLocks') && !isAdmin) {
-      return jsonOut({ error: 'admin_only' });
+    // Managers see the same screen, scoped to their branch; agents get nothing.
+    if ((action === 'adminStats' || action === 'adminLocks') &&
+        user.role !== 'admin' && user.role !== 'manager') {
+      return jsonOut({ error: 'not_permitted' });
     }
 
+    const me = userByEmail_(user.email);
     let result;
+    switch (action) {
+      case 'createUser':   return jsonOut(me ? createUser_(me, body)                        : { error: 'No user record.' });
+      case 'reassignUser': return jsonOut(me ? reassignUser_(me, body.userId, body.parentId) : { error: 'No user record.' });
+      case 'disableUser':  return jsonOut(me ? disableUser_(me, body.userId)                 : { error: 'No user record.' });
+      case 'promoteUser':  return jsonOut(me ? promoteUser_(me, body.userId)                 : { error: 'No user record.' });
+      case 'demoteUser':   return jsonOut(me ? demoteUser_(me, body.userId)                  : { error: 'No user record.' });
+      case 'revokeUser':   return jsonOut(me ? revokeUser_(me, body.userId)                  : { error: 'No user record.' });
+      case 'pauseUser':    return jsonOut(me ? setPaused_(me, body.userId, true)             : { error: 'No user record.' });
+      case 'resumeUser':   return jsonOut(me ? setPaused_(me, body.userId, false)            : { error: 'No user record.' });
+    }
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
       case 'getLeads':    result = getLeads(e.parameter.state, user.name);
@@ -294,8 +588,28 @@ function doGet(e) {
       case 'search':      result = search(e.parameter.q); break;
       case 'myCallbacks': result = myCallbacks(user.name); break;
       case 'leaderboard': result = leaderboard(); break;
-      case 'adminStats':  result = adminStats(e.parameter.range); break;
-      case 'adminLocks':  result = adminLocks(); break;
+      case 'adminStats': {
+        const me = userByEmail_(user.email);
+        result = adminStats(e.parameter.range, scopeNamesFor_(me)); break;
+      }
+      case 'adminLocks': {
+        const me = userByEmail_(user.email);
+        result = adminLocks(scopeNamesFor_(me)); break;
+      }
+      case 'myTeam': {
+        const me = userByEmail_(user.email);
+        if (!me) { result = { error: 'No user record.' }; break; }
+        result = {
+          me: { id: me.id, email: me.email, name: me.name, role: me.role },
+          // Managers get their branch; admin's path is the root, so this is everyone.
+          users: downlineOf_(me, true).map(function(u) {
+            return { id: u.id, email: u.email, name: u.name, role: u.role,
+                     parentId: u.parentId, depth: u.path.split('>').length - 1,
+                     status: u.status, lastLogin: u.lastLogin };
+          })
+        };
+        break;
+      }
       default: result = { error: 'unknown action: ' + action };
     }
     return jsonOut(result);
@@ -775,7 +1089,22 @@ function countAgentDisp(ss, tabName, dateColIdx, agentColIdx, cutoff, agentStats
 // ══════════════════════════════════════════════════════════════════
 // ADMIN STATS — per state counts, aggregates, per-agent breakdown
 // ══════════════════════════════════════════════════════════════════
-function adminStats(range) {
+function scopeNamesFor_(me) {
+  if (!me) return null;
+  if (me.role === 'admin') return null;                 // null = no filter
+  const set = {};
+  downlineOf_(me, true).forEach(function(u) {
+    if (u.name) set[String(u.name).trim().toLowerCase()] = true;
+  });
+  return set;
+}
+
+function inScope_(scope, agentName) {
+  if (!scope) return true;                              // admin, or unscoped
+  return !!scope[String(agentName || '').trim().toLowerCase()];
+}
+
+function adminStats(range, scope) {
   const cutoff = getRangeCutoff(range || 'today');
   const perState = {};
   const totals = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
@@ -794,9 +1123,11 @@ function adminStats(range) {
     if (lr >= 2) {
       const data = leadsSheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
       const statusIdx = LEAD_COLS.indexOf('Status');
+      const lockedByIdx = LEAD_COLS.indexOf('Locked By');
       data.forEach(row => {
-        if (row[statusIdx] === 'In Progress') s.inProgress++;
-        else s.available++;
+        if (row[statusIdx] === 'In Progress') {
+          if (inScope_(scope, row[lockedByIdx])) s.inProgress++;
+        } else s.available++;   // pool-wide: leads have no owner until phase 2
       });
     }
 
@@ -811,9 +1142,10 @@ function adminStats(range) {
       const agentIdx = LEAD_COLS.indexOf('Last Call Agent');
       data.forEach(row => {
         const d = row[startIdx];
-        if (d && dateInRange(d, cutoff)) {
+        const a0 = row[agentIdx];
+        if (d && dateInRange(d, cutoff) && inScope_(scope, a0)) {
           totals.calls++;
-          const a = row[agentIdx];
+          const a = a0;
           if (a) {
             agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
             agents[a].calls++;
@@ -824,10 +1156,10 @@ function adminStats(range) {
       });
     });
 
-    s.callbacks = countInRange(ss, 'Callbacks', LEAD_COLS.length + 3, cutoff, totals, agents, 'callbacks', LEAD_COLS.length + 2);
-    s.dcid = countInRange(ss, 'DCID', LEAD_COLS.length + 1, cutoff, totals, agents, 'dcid', LEAD_COLS.length + 2);
-    s.sold = countInRange(ss, 'Sold', LEAD_COLS.length + 6, cutoff, totals, agents, 'sales', LEAD_COLS.length + 7);
-    s.wrong = countInRange(ss, 'Wrong Numbers', LEAD_COLS.length, cutoff, totals, agents, 'wrong', LEAD_COLS.length + 1);
+    s.callbacks = countInRange(ss, 'Callbacks', LEAD_COLS.length + 3, cutoff, totals, agents, 'callbacks', LEAD_COLS.length + 2, scope);
+    s.dcid = countInRange(ss, 'DCID', LEAD_COLS.length + 1, cutoff, totals, agents, 'dcid', LEAD_COLS.length + 2, scope);
+    s.sold = countInRange(ss, 'Sold', LEAD_COLS.length + 6, cutoff, totals, agents, 'sales', LEAD_COLS.length + 7, scope);
+    s.wrong = countInRange(ss, 'Wrong Numbers', LEAD_COLS.length, cutoff, totals, agents, 'wrong', LEAD_COLS.length + 1, scope);
     s.review = ss.getSheetByName('Review').getLastRow() - 1;
     if (s.review < 0) s.review = 0;
 
@@ -842,7 +1174,7 @@ function adminStats(range) {
   };
 }
 
-function countInRange(ss, tabName, dateColIdx, cutoff, totals, agents, agentKey, agentColIdx) {
+function countInRange(ss, tabName, dateColIdx, cutoff, totals, agents, agentKey, agentColIdx, scope) {
   const sheet = ss.getSheetByName(tabName);
   const lr = sheet.getLastRow();
   if (lr < 2) return 0;
@@ -851,10 +1183,11 @@ function countInRange(ss, tabName, dateColIdx, cutoff, totals, agents, agentKey,
   let count = 0;
   data.forEach(row => {
     const d = row[dateColIdx];
-    if (d && dateInRange(d, cutoff)) {
+    const a0 = row[agentColIdx];
+    if (d && dateInRange(d, cutoff) && inScope_(scope, a0)) {
       count++;
       totals[agentKey]++;
-      const a = row[agentColIdx];
+      const a = a0;
       if (a) {
         agents[a] = agents[a] || { agent: a, calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0, lastActive: '' };
         agents[a][agentKey]++;
@@ -891,7 +1224,7 @@ function dateInRange(val, cutoff) {
 // ══════════════════════════════════════════════════════════════════
 // ADMIN LOCKS — live view of who has what locked
 // ══════════════════════════════════════════════════════════════════
-function adminLocks() {
+function adminLocks(scope) {
   const locks = [];
   Object.keys(SHEETS).forEach(state => {
     const ss = SpreadsheetApp.openById(SHEETS[state]);
@@ -904,7 +1237,7 @@ function adminLocks() {
     const lockedAtIdx = LEAD_COLS.indexOf('Locked At');
     const nameIdx = LEAD_COLS.indexOf('Name');
     data.forEach((row, i) => {
-      if (row[statusIdx] === 'In Progress') {
+      if (row[statusIdx] === 'In Progress' && inScope_(scope, row[lockedByIdx])) {
         locks.push({
           state: state,
           rowIndex: i + 2,
