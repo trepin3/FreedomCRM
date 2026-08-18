@@ -337,7 +337,10 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-hint{font-size:12px;color:var(--text-secondary);margin:-4px 0 10px;}
 .up-hint a{color:var(--accent);cursor:pointer;text-decoration:underline;}
 .up-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-bottom:12px;}
-.up-map-item{display:flex;align-items:center;gap:8px;font-size:12px;}
+.up-map-item{display:flex;align-items:center;gap:8px;font-size:12px;flex-wrap:wrap;}
+.req{color:#d14343;font-weight:700;margin-left:2px;}
+.req.met{color:var(--text-secondary);font-weight:400;}
+.up-from{flex-basis:100%;margin-left:104px;font-size:11px;color:#0a7d3f;}
 .up-map-item .col{flex:0 0 96px;color:var(--text-secondary);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .up-map-item select{flex:1;min-width:0;padding:6px 8px;font-size:12px;}
@@ -604,7 +607,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <div class="team-add">
         <div class="team-add-title">Upload leads</div>
         <div class="up-row">
-          <select class="text-input" id="upState" onchange="renderMapping()"></select>
+          <select class="text-input" id="upState" onchange="uploadState.autoState=''; renderMapping();"></select>
           <select class="text-input" id="upSource" onchange="onSourceChange()"></select>
           <select class="text-input" id="upVisibility">
             <option value="pool">Pool — my team can dial these</option>
@@ -2471,6 +2474,7 @@ function parseUpload() {
   uploadState.rows = lines.slice(1).map(splitCsvLine);
   uploadState.map = {};
   UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = guessColumn(uploadState.headers, f); });
+  uploadState.autoState = autoPickState();
   renderMapping();
 }
 
@@ -2653,6 +2657,23 @@ function stateTally() {
   return seen;
 }
 
+// Set the state selector to whatever the file actually contains, so the
+// common case needs no thought. Runs on load only — once someone picks a
+// state by hand, re-rendering must not overrule them.
+function autoPickState() {
+  const tally = stateTally();
+  const codes = Object.keys(tally).filter(function(k) { return !!CONFIG.STATE_NAMES[k]; });
+  if (!codes.length) return '';
+
+  codes.sort(function(a, b) { return tally[b] - tally[a]; });
+  const winner = codes[0];
+  if (winner === chosenState()) return '';
+
+  const sel = document.getElementById('upState');
+  if (sel) sel.value = winner;
+  return winner;
+}
+
 function renderMapping() {
   const box = document.getElementById('upMapping');
   const hs = uploadState.headers;
@@ -2665,11 +2686,26 @@ function renderMapping() {
     }).join('');
   };
 
+  // Name is required but can be met two ways — a Name column, or first and
+  // last. Marking it unmet while the preview shows names would be nonsense.
+  const nameFromParts = uploadState.map['Name'] < 0 &&
+    (uploadState.map['First Name'] >= 0 || uploadState.map['Last Name'] >= 0);
+  const met = {
+    'Name': uploadState.map['Name'] >= 0 || nameFromParts,
+    'Phone': uploadState.map['Phone'] >= 0
+  };
+
   const map = UPLOAD_FIELDS.map(function(f) {
-    const req = (f === 'Name' || f === 'Phone') ? ' *' : '';
-    return '<div class="up-map-item"><span class="col">' + f + req + '</span>' +
+    const required = (f === 'Name' || f === 'Phone');
+    const star = required
+      ? '<span class="req' + (met[f] ? ' met' : '') + '" title="' +
+        (met[f] ? 'Required — provided' : 'Required — not mapped yet') + '">*</span>'
+      : '';
+    const hint = (f === 'Name' && nameFromParts)
+      ? '<span class="up-from">✓ built from First Name + Last Name</span>' : '';
+    return '<div class="up-map-item"><span class="col">' + f + star + '</span>' +
            '<select class="text-input" onchange="setMap(\'' + f + '\', this.value)">' +
-           opts(uploadState.map[f]) + '</select></div>';
+           opts(uploadState.map[f]) + '</select>' + hint + '</div>';
   }).join('');
 
   // Preview the first five as they will actually land, name already composed.
@@ -2695,9 +2731,16 @@ function renderMapping() {
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
     (wrongState ? '<span class="up-warn"> · ' + wrongState + ' belong to another state and will not upload</span>' : '') +
-    '</div>' + cityNotice() + stateNotice(usable);
+    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable);
 
   document.getElementById('upBtn').disabled = usable === 0;
+}
+
+function switchedNotice() {
+  const code = uploadState.autoState;
+  if (!code || code !== chosenState()) return '';
+  return '<div class="up-note">Set to ' + CONFIG.STATE_NAMES[code] +
+         ' — that is what this file contains.</div>';
 }
 
 // Offers to fill blank cities from their ZIPs.
@@ -2733,13 +2776,13 @@ function stateNotice(usable) {
 
   const head = usable === 0
     ? 'This file is not for ' + (CONFIG.STATE_NAMES[chosenState()] || chosenState()) + '.'
-    : 'Some rows belong to another state.';
+    : 'Some rows belong to another state and will not upload.';
 
   const fix = known.length === 1
     ? ' <a onclick="switchUploadState(\'' + known[0] + '\')">Switch to ' + CONFIG.STATE_NAMES[known[0]] + '</a>'
     : (known.length ? '' : ' We have no sheet for that state.');
 
-  return note + '<div class="up-block">' + head + ' It contains ' + label + '.' + fix + '</div>';
+  return note + '<div class="up-block">' + head + ' It also contains ' + label + '.' + fix + '</div>';
 }
 
 function switchUploadState(code) {
