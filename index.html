@@ -326,6 +326,12 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .team-add{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;box-shadow:var(--shadow);}
 .team-add-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);margin-bottom:10px;}
 .up-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;}
+.up-drop{border:1.5px dashed var(--border);border-radius:10px;padding:10px;margin-bottom:10px;
+  transition:border-color .12s,background .12s;}
+.up-drop.dragging{border-color:var(--accent);background:rgba(37,99,235,.06);}
+.up-drop-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+.up-drop-hint{font-size:12px;color:var(--text-secondary);}
+.up-file{font-size:12px;color:var(--accent);font-weight:600;margin-left:auto;}
 .up-paste{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
   resize:vertical;margin-bottom:10px;}
 .up-hint{font-size:12px;color:var(--text-secondary);margin:-4px 0 10px;}
@@ -601,9 +607,22 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
           </select>
         </div>
         <div class="up-hint" id="upSourceHint"></div>
-        <textarea class="text-input up-paste" id="upPaste" rows="7"
-          placeholder="Paste your CSV here, including the header row."
-          oninput="parseUpload()"></textarea>
+        <div class="up-drop" id="upDrop"
+             ondragover="dropOver(event, true)"
+             ondragenter="dropOver(event, true)"
+             ondragleave="dropOver(event, false)"
+             ondrop="dropFile(event)">
+          <div class="up-drop-head">
+            <button type="button" class="mini-btn" onclick="document.getElementById('upFile').click()">📁 Choose file</button>
+            <span class="up-drop-hint">or drop a .csv here, or paste below</span>
+            <span class="up-file" id="upFileName"></span>
+          </div>
+          <input type="file" id="upFile" accept=".csv,.tsv,.txt,text/csv,text/plain"
+                 style="display:none" onchange="pickFile(event)">
+          <textarea class="text-input up-paste" id="upPaste" rows="7"
+            placeholder="Paste your CSV here, including the header row."
+            oninput="onPasteInput()"></textarea>
+        </div>
         <div id="upMapping"></div>
         <div class="team-msg" id="upMsg"></div>
         <button class="mini-btn team-add-btn" id="upBtn" onclick="submitUpload()" disabled>Upload</button>
@@ -2341,6 +2360,76 @@ function guessColumn(headers, field) {
     }
   }
   return -1;
+}
+
+function dropOver(e, on) {
+  e.preventDefault();
+  e.stopPropagation();
+  const el = document.getElementById('upDrop');
+  if (el) el.classList.toggle('dragging', on);
+}
+
+function dropFile(e) {
+  dropOver(e, false);
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  if (dt.files && dt.files.length) { readCsvFile(dt.files[0]); return; }
+  // Dragging a selection rather than a file still gives us text.
+  const text = dt.getData('text');
+  if (text) {
+    document.getElementById('upPaste').value = text;
+    setFileLabel('');
+    parseUpload();
+  }
+}
+
+function pickFile(e) {
+  const f = e.target.files && e.target.files[0];
+  if (f) readCsvFile(f);
+  e.target.value = '';        // so picking the same file twice still fires
+}
+
+function setFileLabel(text) {
+  const el = document.getElementById('upFileName');
+  if (el) el.textContent = text;
+}
+
+function readCsvFile(file) {
+  const msg = document.getElementById('upMsg');
+  const name = (file.name || '').toLowerCase();
+
+  // A spreadsheet is a zip, not text — reading it produces binary noise.
+  if (/\.(xlsx|xls|numbers|ods)$/.test(name)) {
+    msg.textContent = 'That is a spreadsheet, not a CSV. Export it as CSV first (File → Download → CSV) and try again.';
+    setFileLabel('');
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    msg.textContent = 'That file is over 8MB. Split it into smaller batches.';
+    setFileLabel('');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function() {
+    let text = String(reader.result || '');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);   // strip Excel's BOM
+    document.getElementById('upPaste').value = text;
+    msg.textContent = '';
+    setFileLabel(file.name);
+    parseUpload();
+  };
+  reader.onerror = function() {
+    msg.textContent = 'Could not read that file.';
+    setFileLabel('');
+  };
+  reader.readAsText(file);
+}
+
+// Typing or pasting by hand means the loaded filename no longer describes it.
+function onPasteInput() {
+  setFileLabel('');
+  parseUpload();
 }
 
 function parseUpload() {
