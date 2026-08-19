@@ -922,7 +922,20 @@ function show(id) {
 // The page cannot decide who you are — it only carries proof. Apps Script
 // re-verifies the token on every request; anything decided here is UI routing.
 
+// Wake the Apps Script container while the user is still reading the page.
+// Cold starts cost 15-25 seconds and land squarely on the sign-in click;
+// firing this on load moves that wait somewhere nobody is waiting.
+let prewarmed = false;
+function prewarmBackend() {
+  if (prewarmed || !CONFIG.APPS_SCRIPT_URL) return;
+  prewarmed = true;
+  try {
+    fetch(CONFIG.APPS_SCRIPT_URL + '?action=ping', { cache: 'no-store' }).catch(function() {});
+  } catch (e) {}
+}
+
 function initGoogleSignIn() {
+  prewarmBackend();
   if (!window.google || !google.accounts || !google.accounts.id) {
     return setTimeout(initGoogleSignIn, 200);   // GIS script still loading
   }

@@ -820,6 +820,12 @@ function doGet(e) {
   try {
     const action = (e.parameter.action || 'getLeads');
 
+    // Answered before anything else and deliberately empty. Apps Script
+    // containers idle out, and a cold start costs 15-25 seconds — the client
+    // fires this when the login page loads so the container is awake by the
+    // time someone picks an account. It exposes nothing, so it needs no session.
+    if (action === 'ping') return jsonOut({ ok: true, t: Date.now() });
+
     const user = verifySession_(e.parameter.s);
     if (!user) return jsonOut({ error: 'auth_required' });
 
@@ -1457,6 +1463,46 @@ function sourcesSheet_() {
     });
   }
   return sh;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// KEEPING THE CONTAINER WARM
+// ══════════════════════════════════════════════════════════════════
+// A cold Apps Script container takes 15-25 seconds to answer; a warm one
+// takes about one. The client pings on page load, which covers the common
+// case. This trigger covers the rest of the working day so the first agent
+// in the morning is not the one who pays for it.
+//
+// Run installKeepWarm() once. Set WEB_APP_URL in Script Properties first,
+// to this deployment's /exec URL.
+function installKeepWarm() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'keepWarm') ScriptApp.deleteTrigger(t);
+  });
+  const url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
+  if (!url) return 'Set WEB_APP_URL in Script Properties to the /exec URL first.';
+  ScriptApp.newTrigger('keepWarm').timeBased().everyMinutes(5).create();
+  return 'Keep-warm trigger installed, every 5 minutes.';
+}
+
+function removeKeepWarm() {
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'keepWarm') { ScriptApp.deleteTrigger(t); n++; }
+  });
+  return 'Removed ' + n + ' keep-warm trigger(s).';
+}
+
+function keepWarm() {
+  // Only during calling hours — warming a container nobody will use at 3am
+  // just burns quota.
+  const hour = Number(Utilities.formatDate(new Date(), TZ, 'H'));
+  if (hour < 6 || hour > 21) return;
+  const url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
+  if (!url) return;
+  try {
+    UrlFetchApp.fetch(url + '?action=ping', { muteHttpExceptions: true });
+  } catch (e) {}
 }
 
 // Read-only: what the sources tab actually holds, and whether it is reachable.
