@@ -849,6 +849,8 @@ function doGet(e) {
       case 'listSources': result = listSources_(userByEmail_(user.email)); break;
       case 'listStates':  result = listStates_(userByEmail_(user.email)); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
+      case 'roster':      result = rosterFor_(userByEmail_(user.email)); break;
+      case 'donationInfo':result = donationInfo_(userByEmail_(user.email)); break;
       case 'myTeam': {
         const me = userByEmail_(user.email);
         if (!me) { result = { error: 'No user record.' }; break; }
@@ -896,6 +898,9 @@ function doPost(e) {
       case 'addSource':      result = addSource_(userByEmail_(user.email), body.name); break;
       case 'decideSource':   result = decideSource_(userByEmail_(user.email), body.name, body.decision, body.rename); break;
       case 'setBatchStatus': result = setBatchStatus_(userByEmail_(user.email), body.batchId, body.state, !!body.active); break;
+      case 'setBatchVisibility': result = setBatchVisibility_(userByEmail_(user.email), body); break;
+      case 'shareBatch':     result = shareBatch_(userByEmail_(user.email), body); break;
+      case 'donateBatch':    result = donateBatch_(userByEmail_(user.email), body); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
@@ -1678,13 +1683,121 @@ function myBatches_(me) {
       acc[b] = acc[b] || { batchId: b, state: state, uploadedBy: by,
                            source: String(row[ix_('Lead Source')] || ''),
                            batchStatus: String(row[ix_('Batch Status')] || ''),
-                           added: String(row[ix_('Date Added')] || ''), count: 0 };
+                           visibility: String(row[ix_('Visibility')] || VISIBILITY.POOL),
+                           sharedWith: String(row[ix_('Shared With')] || ''),
+                           ownerId: String(row[ix_('Owner ID')] || ''),
+                           added: String(row[ix_('Date Added')] || ''), count: 0, locked: 0 };
       acc[b].count++;
+      if (row[ix_('Locked By')]) acc[b].locked++;
     });
     Object.keys(acc).forEach(function(k) { out.push(acc[k]); });
   });
   out.sort(function(a, b) { return String(b.added).localeCompare(String(a.added)); });
   return { batches: out };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// LEAD OWNERSHIP — visibility, sharing, donating to a pool
+// ══════════════════════════════════════════════════════════════════
+function hasDownline_(me) {
+  return downlineOf_(me, false).length > 0;
+}
+
+// Who a donation goes to, and what to call it on the confirmation.
+// A manager with reports keeps ownership and simply opens the leads to
+// their branch. Someone with nobody under them has no branch to open to,
+// so the leads pass up to their parent instead.
+function donationTarget_(me) {
+  if (me.role === 'admin' || hasDownline_(me)) {
+    return { ownerId: me.id, label: 'your team' };
+  }
+  const parent = me.parentId ? userById_(me.parentId) : null;
+  if (!parent) return null;
+  return { ownerId: parent.id, label: parent.name || parent.email };
+}
+
+// Everyone active, for the share picker. Agents seeing the full roster is
+// intentional — sharing a lead is not a permission grant.
+function rosterFor_(me) {
+  if (!me) return { roster: [] };
+  return {
+    roster: usersAll_()
+      .filter(function(u) { return u.status === 'active' && u.id !== me.id; })
+      .map(function(u) { return { id: u.id, name: u.name, email: u.email, role: u.role }; })
+      .sort(function(a, b) { return String(a.name).localeCompare(String(b.name)); })
+  };
+}
+
+// Walks one batch, applying `fn` to every row the caller is allowed to touch.
+// Reserved rows are skipped: changing ownership under someone mid-call would
+// pull the lead out from under them.
+function eachBatchRow_(me, batchId, state, fn) {
+  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  if (!sheet) return { error: 'No sheet for ' + state };
+  const lr = sheet.getLastRow();
+  if (lr < 2) return { error: 'Nothing there.' };
+
+  const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+  let changed = 0, skippedLocked = 0, notMine = 0;
+
+  data.forEach(function(row, i) {
+    if (String(row[ix_('Batch ID')] || '') !== batchId) return;
+    const owner = String(row[ix_('Owner ID')] || '');
+    if (me.role !== 'admin' && owner !== me.id) { notMine++; return; }
+    if (row[ix_('Locked By')]) { skippedLocked++; return; }
+    fn(sheet, i + 2, row);
+    changed++;
+  });
+  return { success: true, changed: changed, skippedLocked: skippedLocked, notMine: notMine };
+}
+
+function setBatchVisibility_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const vis = String(body.visibility || '').toLowerCase();
+  if ([VISIBILITY.POOL, VISIBILITY.EXCLUSIVE].indexOf(vis) === -1) return { error: 'Bad visibility.' };
+
+  const out = eachBatchRow_(me, body.batchId, body.state, function(sheet, rowIndex) {
+    sheet.getRange(rowIndex, COL['Visibility']).setValue(vis);
+  });
+  if (out.error) return out;
+  logActivity_(me, 'setVisibility', body.batchId + ' -> ' + vis + ' (' + out.changed + ')', body.state);
+  return out;
+}
+
+function shareBatch_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const ids = (body.userIds || []).map(function(x) { return String(x).trim(); }).filter(Boolean);
+  const value = ids.join(',');
+
+  const out = eachBatchRow_(me, body.batchId, body.state, function(sheet, rowIndex) {
+    sheet.getRange(rowIndex, COL['Shared With']).setValue(value);
+  });
+  if (out.error) return out;
+  logActivity_(me, 'shareBatch', body.batchId + ' -> [' + value + '] (' + out.changed + ')', body.state);
+  return out;
+}
+
+function donateBatch_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const target = donationTarget_(me);
+  if (!target) return { error: 'You have no manager above you to donate to.' };
+
+  const out = eachBatchRow_(me, body.batchId, body.state, function(sheet, rowIndex) {
+    sheet.getRange(rowIndex, COL['Owner ID']).setValue(target.ownerId);
+    sheet.getRange(rowIndex, COL['Visibility']).setValue(VISIBILITY.POOL);
+    sheet.getRange(rowIndex, COL['Shared With']).setValue('');
+  });
+  if (out.error) return out;
+  out.destination = target.label;
+  logActivity_(me, 'donateBatch', body.batchId + ' -> ' + target.ownerId + ' (' + out.changed + ')', body.state);
+  return out;
+}
+
+// Where a donation would land, so the UI can name it before asking.
+function donationInfo_(me) {
+  const t = donationTarget_(me);
+  return t ? { destination: t.label, ownerId: t.ownerId }
+           : { destination: '', ownerId: '' };
 }
 
 // ══════════════════════════════════════════════════════════════════
