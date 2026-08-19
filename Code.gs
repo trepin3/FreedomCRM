@@ -756,8 +756,16 @@ function actionLogin_(body) {
   if (!agent)                      return { error: 'That account is not on the agent list.' };
   if (agent.status !== 'active')   return { error: 'That account has been disabled.' };
 
-  const sh = authSS_().getSheetByName(AGENTS_SHEET);
-  sh.getRange(agent.row, 5).setValue(Utilities.formatDate(new Date(), TZ, 'MM/dd/yyyy HH:mm:ss'));
+  // Stamp Last Login on the Users row. This previously wrote column 5 of the
+  // legacy Agents tab using a row index taken from Users — a different sheet
+  // and a different column — so it dated an unrelated legacy row and left
+  // Users.Last Login permanently blank.
+  const u = userByEmail_(g.email);
+  if (u) {
+    authSS_().getSheetByName(USERS_SHEET)
+      .getRange(u.row, USER_COLS.indexOf('Last Login') + 1)
+      .setValue(Utilities.formatDate(new Date(), TZ, 'MM/dd/yyyy HH:mm:ss'));
+  }
 
   const name = agent.name || g.name;
   logActivity_({ email: agent.email, name: name, role: agent.role }, 'login', '');
