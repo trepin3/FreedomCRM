@@ -11,6 +11,10 @@
 // recorded in Script Properties — 50 empty spreadsheets would mean 50
 // openById calls on every stats run, which does not fit in the execution
 // limit. States nobody has uploaded to simply do not exist yet.
+// Set the instant the script body begins running. Comparing this with the
+// time doGet is entered separates our top-level cost from container startup.
+const BOOT_T0 = Date.now();
+
 const SHEET_SEED = {
   AZ: '16XtlVoT_4XxtPzfH9THF0f9eWnpN4-g6LSJ7Jkeqdic',
   VA: '1Rofg1YZwb1l7RN2pZ9_LbBoP28_zOLeakYGJqSqaFoc',
@@ -25,9 +29,14 @@ function stateRegistry_() {
   return Object.assign({}, SHEET_SEED, extra);
 }
 
-// Built once per execution. Every existing SHEETS[code] and Object.keys(SHEETS)
-// keeps working; ensureStateSheet_ adds to it in place when a state is created.
-const SHEETS = stateRegistry_();
+// Read on first use, not at script load. Every execution parses this file,
+// so anything at the top level is paid by every request — including the ping
+// whose whole purpose is to be cheap. Cached per execution.
+let _sheets = null;
+function sheets_() {
+  if (!_sheets) _sheets = stateRegistry_();
+  return _sheets;
+}
 
 const US_STATES = {
   AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas', CA:'California',
@@ -47,14 +56,14 @@ const US_STATES = {
 function ensureStateSheet_(code) {
   code = String(code || '').toUpperCase();
   if (!US_STATES[code]) return '';
-  if (SHEETS[code]) return SHEETS[code];
+  if (sheets_()[code]) return sheets_()[code];
 
   const lock = LockService.getScriptLock();
   try { lock.waitLock(30000); } catch (e) { return ''; }
   try {
     // Re-read: another request may have created it while we waited.
     const fresh = stateRegistry_();
-    if (fresh[code]) { SHEETS[code] = fresh[code]; return fresh[code]; }
+    if (fresh[code]) { sheets_()[code] = fresh[code]; return fresh[code]; }
 
     const ss = SpreadsheetApp.create('FreedomCRM Leads — ' + US_STATES[code] + ' (' + code + ')');
     setupTabs(ss, code);
@@ -63,7 +72,7 @@ function ensureStateSheet_(code) {
     Object.keys(fresh).forEach(function(k) { if (!SHEET_SEED[k]) reg[k] = fresh[k]; });
     reg[code] = ss.getId();
     PropertiesService.getScriptProperties().setProperty('STATE_SHEETS', JSON.stringify(reg));
-    SHEETS[code] = ss.getId();
+    sheets_()[code] = ss.getId();
     return ss.getId();
   } finally {
     lock.releaseLock();
@@ -90,7 +99,7 @@ function bumpStateCount_(code, delta) {
 // slow is survivable, silently skipping a state with leads in it is not.
 function activeStates_() {
   const counts = stateCounts_();
-  const all = Object.keys(SHEETS);
+  const all = Object.keys(sheets_());
   if (!counts) return all;
   return all.filter(function(code) { return (counts[code] || 0) > 0; });
 }
@@ -99,9 +108,9 @@ function activeStates_() {
 // any time the counts look wrong.
 function recountStates() {
   const counts = {};
-  Object.keys(SHEETS).forEach(function(code) {
+  Object.keys(sheets_()).forEach(function(code) {
     try {
-      const sh = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+      const sh = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
       counts[code] = sh ? Math.max(0, sh.getLastRow() - 1) : 0;
     } catch (e) { counts[code] = 0; }
   });
@@ -119,7 +128,7 @@ function recountStates() {
 function createAllStateSheets() {
   const made = [];
   Object.keys(US_STATES).forEach(function(code) {
-    if (SHEETS[code]) return;
+    if (sheets_()[code]) return;
     const id = ensureStateSheet_(code);
     if (id) made.push(code);
     Utilities.sleep(200);   // Drive dislikes 48 creations back to back
@@ -144,7 +153,7 @@ function listStates_(me) {
   activeStates_().forEach(function(code) {
     let available = 0, total = 0;
     try {
-      const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+      const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
       const lr = sheet ? sheet.getLastRow() : 0;
       if (lr >= 2) {
         const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
@@ -281,7 +290,7 @@ const DUMMY_LEADS = [
 // 51 sheets. Safe to re-run: it appends.
 function seedDummyLeads() {
   Object.keys(SHEET_SEED).forEach(function(state) {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
+    const ss = SpreadsheetApp.openById(sheets_()[state]);
     const sheet = ss.getSheetByName('Leads') || setupTabs(ss, state);
     const rows = DUMMY_LEADS.map(function(d, n) {
       const row = new Array(LEAD_COLS.length).fill('');
@@ -303,8 +312,8 @@ function seedDummyLeads() {
 }
 
 function initSetup() {
-  Object.keys(SHEETS).forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
+  Object.keys(sheets_()).forEach(state => {
+    const ss = SpreadsheetApp.openById(sheets_()[state]);
     setupTabs(ss, state);
   });
   Logger.log('Setup complete for all 3 state sheets.');
@@ -703,7 +712,7 @@ function releaseReservations_(agentName) {
   if (!agentName) return;
   const want = String(agentName).trim().toLowerCase();
   activeStates_().forEach(function(state) {
-    const sh = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const sh = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const lr = sh.getLastRow();
     if (lr < 2) return;
     const statusIdx = LEAD_COLS.indexOf('Status') + 1;
@@ -824,7 +833,13 @@ function doGet(e) {
     // containers idle out, and a cold start costs 15-25 seconds — the client
     // fires this when the login page loads so the container is awake by the
     // time someone picks an account. It exposes nothing, so it needs no session.
-    if (action === 'ping') return jsonOut({ ok: true, t: Date.now() });
+    if (action === 'ping') {
+      return jsonOut({
+        ok: true,
+        bootToHandlerMs: Date.now() - BOOT_T0,   // all of our top-level code
+        note: 'registry is lazy; this request never reads Script Properties'
+      });
+    }
 
     const user = verifySession_(e.parameter.s);
     if (!user) return jsonOut({ error: 'auth_required' });
@@ -935,8 +950,8 @@ function jsonOut(obj) {
 // GET LEADS — fetch batch, lock rows, cleanup stale locks, resurrect callbacks
 // ══════════════════════════════════════════════════════════════════
 function getLeads(stateCode, agent, me, size) {
-  if (!SHEETS[stateCode]) return { error: 'invalid state' };
-  const ss = SpreadsheetApp.openById(SHEETS[stateCode]);
+  if (!sheets_()[stateCode]) return { error: 'invalid state' };
+  const ss = SpreadsheetApp.openById(sheets_()[stateCode]);
   const sheet = ss.getSheetByName('Leads');
   const want = Number(size) || BATCH_SIZE;
 
@@ -1090,7 +1105,7 @@ function canSee_(row, me) {
 // DISPOSITIONS — Status changes in place; the row never moves
 // ══════════════════════════════════════════════════════════════════
 function setStatus_(body, status, extra) {
-  const ss = SpreadsheetApp.openById(SHEETS[body.state]);
+  const ss = SpreadsheetApp.openById(sheets_()[body.state]);
   const sheet = ss.getSheetByName('Leads');
   const row = Number(body.rowIndex);
   if (!row || row < 2) return { error: 'bad row' };
@@ -1180,7 +1195,7 @@ function actionCallback(body) {
   });
 
   try {
-    const sheet = SpreadsheetApp.openById(SHEETS[body.state]).getSheetByName('Leads');
+    const sheet = SpreadsheetApp.openById(sheets_()[body.state]).getSheetByName('Leads');
     sheet.getRange(body.rowIndex, COL['Callback Date']).setNumberFormat('@').setValue(dateVal);
     sheet.getRange(body.rowIndex, COL['Callback Time']).setNumberFormat('@').setValue(timeVal);
   } catch (e) {}
@@ -1205,7 +1220,7 @@ function actionReturnToPool(body) {
 // ══════════════════════════════════════════════════════════════════
 function actionReleaseAll(body) {
   activeStates_().forEach(function(state) {
-    releaseAgentLocks(SpreadsheetApp.openById(SHEETS[state]), body.agent);
+    releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), body.agent);
   });
   return { success: true };
 }
@@ -1213,7 +1228,7 @@ function actionReleaseAll(body) {
 function actionForceRelease(body) {
   const states = body.state ? [body.state] : activeStates_();
   states.forEach(function(state) {
-    releaseAgentLocks(SpreadsheetApp.openById(SHEETS[state]), body.agent);
+    releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), body.agent);
   });
   return { success: true };
 }
@@ -1238,7 +1253,7 @@ function search(query, me) {
   const results = [];
 
   activeStates_().forEach(function(state) {
-    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
     const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
@@ -1259,7 +1274,7 @@ function search(query, me) {
 function myCallbacks(agent, me) {
   const results = [];
   activeStates_().forEach(function(state) {
-    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
     const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
@@ -1323,7 +1338,7 @@ function adminStats(range, scope) {
   const agents = {};
 
   activeStates_().forEach(function(state) {
-    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const st = { available: 0, inProgress: 0, callbacks: 0, dcid: 0, sold: 0, wrong: 0, review: 0 };
     const lr = sheet.getLastRow();
 
@@ -1408,7 +1423,7 @@ function dateInRange(val, cutoff) {
 function adminLocks(scope) {
   const locks = [];
   activeStates_().forEach(state => {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
+    const ss = SpreadsheetApp.openById(sheets_()[state]);
     const sheet = ss.getSheetByName('Leads');
     const lr = sheet.getLastRow();
     if (lr < 2) return;
@@ -1597,7 +1612,7 @@ function uploadLeads_(me, body) {
   if (approved.indexOf(source) === -1) return { error: 'Choose an approved lead source.' };
 
   const exclusive = String(body.visibility || '') === VISIBILITY.EXCLUSIVE;
-  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
 
   const lock = LockService.getScriptLock();
   try { lock.waitLock(30000); } catch (e) { return { error: 'busy, try again' }; }
@@ -1698,7 +1713,7 @@ function nextLeadSeq_(sheet, state) {
 // Pull a batch back out of rotation. Reversible: rows are flagged, not deleted.
 function setBatchStatus_(me, batchId, state, active) {
   if (!me) return { error: 'No user record.' };
-  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
   const lr = sheet.getLastRow();
   if (lr < 2) return { error: 'Nothing there.' };
 
@@ -1719,7 +1734,7 @@ function setBatchStatus_(me, batchId, state, active) {
 function myBatches_(me) {
   const out = [];
   activeStates_().forEach(function(state) {
-    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const lr = sheet.getLastRow();
     if (lr < 2) return;
     const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
@@ -1781,7 +1796,7 @@ function rosterFor_(me) {
 // Reserved rows are skipped: changing ownership under someone mid-call would
 // pull the lead out from under them.
 function eachBatchRow_(me, batchId, state, fn) {
-  const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
   if (!sheet) return { error: 'No sheet for ' + state };
   const lr = sheet.getLastRow();
   if (lr < 2) return { error: 'Nothing there.' };
@@ -1877,8 +1892,8 @@ function migrateLeadSchema() {
 
   const report = [];
 
-  Object.keys(SHEETS).forEach(function(state) {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
+  Object.keys(sheets_()).forEach(function(state) {
+    const ss = SpreadsheetApp.openById(sheets_()[state]);
 
     // Already migrated? A new-schema Leads tab starts with 'Lead ID'. Re-reading
     // it through the old column map would produce garbage, so stop here instead.
@@ -1971,8 +1986,8 @@ function renameUnique_(ss, sheet, base) {
 // splits the existing Name into them. Safe to re-run: it only fills blanks.
 function backfillNameParts() {
   const report = [];
-  Object.keys(SHEETS).forEach(function(state) {
-    const sheet = SpreadsheetApp.openById(SHEETS[state]).getSheetByName('Leads');
+  Object.keys(sheets_()).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     if (!sheet) { report.push(state + ': no Leads tab'); return; }
 
     // Widen the sheet and rewrite the header to the current schema.
@@ -2013,8 +2028,8 @@ function removeDummyLeads() {
   DUMMY_LEADS.forEach(function(d) { phones[String(d[1]).replace(/\D/g, '')] = true; });
 
   const report = [];
-  Object.keys(SHEETS).forEach(function(code) {
-    const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+  Object.keys(sheets_()).forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
     if (!sheet) return;
     const lr = sheet.getLastRow();
     if (lr < 2) return;
@@ -2046,8 +2061,8 @@ function removeDummyLeads() {
 // obvious before a large upload lands on top of it. Pass a state code.
 function inspectLeadRow(stateCode) {
   const code = String(stateCode || 'OH').toUpperCase();
-  if (!SHEETS[code]) return 'No sheet for ' + code;
-  const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+  if (!sheets_()[code]) return 'No sheet for ' + code;
+  const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
   if (!sheet) return code + ': no Leads tab';
 
   const width = sheet.getLastColumn();
@@ -2082,8 +2097,8 @@ function inspectLeadRow(stateCode) {
 // What state is each spreadsheet actually in? Read-only.
 function inspectSheets() {
   const out = [];
-  Object.keys(SHEETS).forEach(function(state) {
-    const ss = SpreadsheetApp.openById(SHEETS[state]);
+  Object.keys(sheets_()).forEach(function(state) {
+    const ss = SpreadsheetApp.openById(sheets_()[state]);
     const tabs = ss.getSheets().map(function(sh) {
       return sh.getName() + '(' + Math.max(0, sh.getLastRow() - 1) + ')';
     });
@@ -2135,7 +2150,7 @@ let _cachedSheetTZ = null;
 function sheetTZ() {
   if (_cachedSheetTZ) return _cachedSheetTZ;
   try {
-    _cachedSheetTZ = SpreadsheetApp.openById(SHEETS.AZ).getSpreadsheetTimeZone();
+    _cachedSheetTZ = SpreadsheetApp.openById(sheets_()['AZ']).getSpreadsheetTimeZone();
   } catch (e) {
     try { _cachedSheetTZ = Session.getScriptTimeZone(); } catch (e2) { _cachedSheetTZ = TZ; }
   }
