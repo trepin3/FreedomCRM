@@ -1092,22 +1092,21 @@ function clearSaved() {
 }
 
 // Hand back every lead this user is holding. Managers and admins dial too,
-// so this is not agent-only.
-async function releaseMyLeads() {
-  if (!state.agentName || !state.authToken) return;
-  try {
-    await api('POST', { action: 'releaseAll', agent: state.agentName });
-  } catch (e) {
-    // The server releases on idle anyway; this just makes it immediate.
-  }
+// so this is not agent-only. Credentials are passed in rather than read from
+// state, because the caller clears state immediately and api() re-reads it on
+// every retry — a retry would otherwise go out unauthenticated.
+function releaseMyLeads(agent, token) {
+  if (!agent || !token) return Promise.resolve();
+  return api('POST', { action: 'releaseAll', agent: agent, s: token })
+    .catch(function() { /* the server's idle release is the real guarantee */ });
 }
 
 async function doLogout() {
-  // Release BEFORE tearing down the session. The previous order set
-  // state.role = null first and then asked whether the role was 'agent',
-  // so the release never ran for anyone — and had it run, the token was
-  // already blank, so api() would have sent it unauthenticated.
-  await releaseMyLeads();
+  // Start the release, but do not wait for it. It scans a spreadsheet per
+  // state, so awaiting it left the button looking dead for seconds. Capture
+  // the credentials first: the teardown below blanks them, and the request
+  // still needs them.
+  releaseMyLeads(state.agentName, state.authToken);
 
   state.authToken = ''; state.agentEmail = ''; state.role = null;
   ['fcrm_session','fcrm_email','fcrm_role'].forEach(function(k){ localStorage.removeItem(k); });
