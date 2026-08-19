@@ -58,6 +58,11 @@ body.is-admin .admin-only{display:flex;}
 .picker-sub{font-size:15px;color:var(--text-secondary);margin-bottom:28px;text-align:center;}
 .picker-agent{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--primary);margin-bottom:20px;}
 .state-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;width:100%;max-width:520px;}
+.picker-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:24px;}
+.picker-btn{padding:11px 20px;border-radius:10px;border:1px solid var(--border);
+  background:var(--accent);color:#fff;font-weight:700;font-size:14px;cursor:pointer;}
+.picker-btn.subtle{background:var(--input-bg);color:var(--text);}
+.picker-btn:hover{opacity:.9;}
 .state-count{font-size:11px;color:var(--text-secondary);margin-top:4px;}
 .state-tile{background:var(--card);border-radius:var(--radius);padding:24px 16px;border:2px solid var(--border);box-shadow:var(--shadow);cursor:pointer;text-align:center;transition:all 0.2s;color:var(--text);text-decoration:none;}
 .state-tile:active{transform:scale(0.96);}
@@ -489,8 +494,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="state-grid" id="stateGrid">
       <div class="empty-state"><div class="spinner"></div></div>
     </div>
-    <div style="margin-top:24px;">
-      <button class="login-btn" style="max-width:200px;background:var(--input-bg);color:var(--text);" onclick="doLogout()">Sign Out</button>
+    <div class="picker-actions">
+      <button class="picker-btn" onclick="goToUpload()">📥 Upload my leads</button>
+      <button class="picker-btn subtle" onclick="doLogout()">Sign Out</button>
     </div>
   </div>
 </div>
@@ -565,7 +571,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
      ADMIN DASHBOARD VIEW
 ══════════════════════════════════════════════════ -->
 <div id="adminView" class="view">
-  <button class="mini-btn admin-jump" onclick="goToCrm()" title="Open the dialer">→ Open CRM</button>
+  <button class="mini-btn admin-jump" onclick="goToCrm()" title="Back to dialing">→ Open CRM</button>
   <div class="hud-header">
     <div class="hud-header-row">
       <div class="hud-brand">
@@ -1007,7 +1013,7 @@ async function loadStates() {
 
   if (!list.length) {
     grid.innerHTML = '<div class="empty-state">No leads are available to you right now.<br>' +
-      'Upload a list, or check back once your manager assigns some.</div>';
+      'Upload your own list below, or check back once your manager assigns some.</div>';
     return;
   }
   grid.innerHTML = list.map(function(s) {
