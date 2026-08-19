@@ -1091,15 +1091,28 @@ function clearSaved() {
   alert('Saved info cleared.');
 }
 
-function doLogout() {
+// Hand back every lead this user is holding. Managers and admins dial too,
+// so this is not agent-only.
+async function releaseMyLeads() {
+  if (!state.agentName || !state.authToken) return;
+  try {
+    await api('POST', { action: 'releaseAll', agent: state.agentName });
+  } catch (e) {
+    // The server releases on idle anyway; this just makes it immediate.
+  }
+}
+
+async function doLogout() {
+  // Release BEFORE tearing down the session. The previous order set
+  // state.role = null first and then asked whether the role was 'agent',
+  // so the release never ran for anyone — and had it run, the token was
+  // already blank, so api() would have sent it unauthenticated.
+  await releaseMyLeads();
+
   state.authToken = ''; state.agentEmail = ''; state.role = null;
   ['fcrm_session','fcrm_email','fcrm_role'].forEach(function(k){ localStorage.removeItem(k); });
   if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
   document.body.classList.remove('is-admin');
-  // Release all locks if agent
-  if (state.role === 'agent' && state.agentName) {
-    api('POST', { action: 'releaseAll', agent: state.agentName }).catch(() => {});
-  }
   stopTimers();
   state.role = null;
   state.currentState = '';
@@ -1114,10 +1127,25 @@ function doLogout() {
   initGoogleSignIn();   // re-render the button; GIS clears it when the view hides
 }
 
-function endDialSession() {
+async function endDialSession() {
   if (!confirm('End your dial session? All your locked leads will be released.')) return;
-  doLogout();
+  await doLogout();
 }
+
+// Closing the tab is the common case, and fetch does not survive unload.
+// sendBeacon does, and a text/plain body avoids the CORS preflight Apps
+// Script cannot answer. Best effort — the 15-minute idle release remains
+// the real guarantee.
+window.addEventListener('beforeunload', function() {
+  if (!state.agentName || !state.authToken) return;
+  try {
+    const body = JSON.stringify({
+      action: 'releaseAll', agent: state.agentName, s: state.authToken
+    });
+    navigator.sendBeacon(CONFIG.APPS_SCRIPT_URL,
+      new Blob([body], { type: 'text/plain;charset=utf-8' }));
+  } catch (e) {}
+});
 
 // ══════════════════════════════════════════════════
 // THEME
