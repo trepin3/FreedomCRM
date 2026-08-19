@@ -1488,24 +1488,47 @@ function sourcesSheet_() {
 // case. This trigger covers the rest of the working day so the first agent
 // in the morning is not the one who pays for it.
 //
-// Run installKeepWarm() once. Set WEB_APP_URL in Script Properties first,
-// to this deployment's /exec URL.
-function installKeepWarm() {
+// Run setupKeepWarm() once from the editor. It finds its own URL, so there is
+// nothing to paste anywhere.
+function setupKeepWarm() {
+  let url = '';
+  try { url = ScriptApp.getService().getUrl() || ''; } catch (e) {}
+  if (!url) url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || '';
+  if (!url) {
+    return 'Could not find the web app URL. Deploy the web app first, then run this again.';
+  }
+  PropertiesService.getScriptProperties().setProperty('WEB_APP_URL', url);
+
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'keepWarm') ScriptApp.deleteTrigger(t);
   });
-  const url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
-  if (!url) return 'Set WEB_APP_URL in Script Properties to the /exec URL first.';
   ScriptApp.newTrigger('keepWarm').timeBased().everyMinutes(5).create();
-  return 'Keep-warm trigger installed, every 5 minutes.';
+
+  // Prove it works now rather than leaving you to wonder for five minutes.
+  const t0 = Date.now();
+  let probe;
+  try {
+    probe = UrlFetchApp.fetch(url + '?action=ping', { muteHttpExceptions: true }).getContentText();
+  } catch (e) { probe = 'probe failed: ' + e.message; }
+
+  const msg = 'Keep-warm installed, every 5 minutes between 6am and 9pm.\n' +
+              'URL: ' + url + '\n' +
+              'Test ping took ' + (Date.now() - t0) + 'ms\n' +
+              'Response: ' + String(probe).slice(0, 300);
+  Logger.log(msg);
+  return msg;
 }
+
+function installKeepWarm() { return setupKeepWarm(); }
 
 function removeKeepWarm() {
   let n = 0;
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'keepWarm') { ScriptApp.deleteTrigger(t); n++; }
   });
-  return 'Removed ' + n + ' keep-warm trigger(s).';
+  const msg = 'Removed ' + n + ' keep-warm trigger(s).';
+  Logger.log(msg);
+  return msg;
 }
 
 function keepWarm() {
