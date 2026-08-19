@@ -1490,12 +1490,17 @@ function sourcesSheet_() {
 //
 // Run setupKeepWarm() once from the editor. It finds its own URL, so there is
 // nothing to paste anywhere.
+// The deployment the front end actually calls. ScriptApp.getService().getUrl()
+// is not usable here: it returns this project's /dev URL, which is a different
+// deployment and requires the owner to be signed in — pinging it warms the
+// wrong container and returns a Google sign-in page.
+const WEB_APP_EXEC_URL = 'https://script.google.com/macros/s/AKfycbxp5bPBH45WwdR33oP-We7hEgYP37US2_wcmm-ZsLeuVSuo4jeJU9yXwyzH2t4f5uaa/exec';
+
 function setupKeepWarm() {
-  let url = '';
-  try { url = ScriptApp.getService().getUrl() || ''; } catch (e) {}
-  if (!url) url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || '';
-  if (!url) {
-    return 'Could not find the web app URL. Deploy the web app first, then run this again.';
+  let url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL') || '';
+  if (!url) url = WEB_APP_EXEC_URL;
+  if (!url || url.indexOf('/exec') === -1) {
+    return 'Need the /exec URL of the deployment the app calls. Set WEB_APP_URL in Script Properties.';
   }
   PropertiesService.getScriptProperties().setProperty('WEB_APP_URL', url);
 
@@ -1511,10 +1516,15 @@ function setupKeepWarm() {
     probe = UrlFetchApp.fetch(url + '?action=ping', { muteHttpExceptions: true }).getContentText();
   } catch (e) { probe = 'probe failed: ' + e.message; }
 
-  const msg = 'Keep-warm installed, every 5 minutes between 6am and 9pm.\n' +
-              'URL: ' + url + '\n' +
-              'Test ping took ' + (Date.now() - t0) + 'ms\n' +
-              'Response: ' + String(probe).slice(0, 300);
+  // A sign-in page means we pinged something the trigger cannot reach.
+  const ok = String(probe).indexOf('"ok":true') !== -1;
+  const msg = (ok ? 'Keep-warm working.' : 'Keep-warm installed but the ping did NOT reach the app.') +
+              '\nEvery 5 minutes, 6am to 9pm.' +
+              '\nURL: ' + url +
+              '\nPing took ' + (Date.now() - t0) + 'ms' +
+              (ok ? '' : '\nExpected JSON with ok:true. If this is an HTML sign-in page, the URL is' +
+                         ' wrong or that deployment is older than the ping handler.') +
+              '\nResponse: ' + String(probe).slice(0, 200);
   Logger.log(msg);
   return msg;
 }
