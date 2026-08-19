@@ -382,6 +382,13 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-block a{color:var(--accent);cursor:pointer;text-decoration:underline;font-weight:600;}
 .up-note{font-size:12px;background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.25);
   color:var(--text-secondary);border-radius:8px;padding:8px 12px;margin-bottom:10px;}
+.dcid-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;}
+.dcid-all{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;cursor:pointer;}
+.dcid-row{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border:1px solid var(--border);
+  border-radius:8px;margin-bottom:6px;font-size:13px;}
+.dcid-row.sel{background:rgba(37,99,235,.06);border-color:var(--accent);}
+.dcid-main{flex:1;min-width:0;}
+.dcid-reason{color:var(--text-secondary);font-size:12px;margin-top:3px;}
 .batch-info{flex:1;min-width:0;}
 .batch-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
 .vis-badge{font-size:10px;padding:2px 7px;border-radius:999px;margin-left:6px;white-space:nowrap;}
@@ -609,6 +616,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <button class="admin-tab active" id="secStats" onclick="switchAdminSection('stats')">📊 Stats</button>
       <button class="admin-tab" id="secTeam" onclick="switchAdminSection('team')">👥 Team</button>
       <button class="admin-tab" id="secUpload" onclick="switchAdminSection('upload')">📥 Upload</button>
+      <button class="admin-tab" id="secDcid" onclick="switchAdminSection('dcid')">🔍 DCID Review</button>
     </div>
 
     <div id="adminTeamPanel" style="display:none;">
@@ -678,6 +686,25 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
           <button class="mini-btn team-add-btn" onclick="saveShare()">Save</button>
         </div>
       </div>
+    </div>
+
+    <div id="adminDcidPanel" style="display:none;">
+      <div class="team-add">
+        <div class="team-add-title">DCID awaiting review</div>
+        <div class="up-hint">Agents disposition these mid-call under pressure. Send one back to the
+          pool if it was hasty, or archive it if it is genuinely dead. Archived leads keep their row
+          and history — nothing is deleted.</div>
+        <div class="dcid-bar">
+          <label class="dcid-all"><input type="checkbox" id="dcidAll" onchange="toggleAllDcid(this.checked)"> Select all</label>
+          <span class="batch-meta" id="dcidCount"></span>
+          <div class="batch-actions">
+            <button class="tiny-btn" onclick="reviewDcid('pool')">↩︎ Return to pool</button>
+            <button class="tiny-btn danger" onclick="reviewDcid('archive')">Archive</button>
+          </div>
+        </div>
+        <div class="team-msg" id="dcidMsg"></div>
+      </div>
+      <div id="dcidList"><div class="empty-state"><div class="spinner"></div></div></div>
     </div>
 
     <div id="adminStatsPanel">
@@ -1056,7 +1083,7 @@ function enterAfterSignIn() {
     title.innerHTML = state.role === 'admin' ? 'Admin <span>Dashboard</span>' : 'Team <span>Dashboard</span>';
   }
   if (leads) {
-    ['secStats', 'secTeam'].forEach(function(id) {
+    ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
       const el = document.getElementById(id);
       if (el) el.style.display = '';
     });
@@ -1103,7 +1130,7 @@ async function loadStates() {
 // stats and team panels stay hidden, and adminStats would refuse them anyway.
 function goToUpload() {
   const isAgent = state.role !== 'admin' && state.role !== 'manager';
-  ['secStats', 'secTeam'].forEach(function(id) {
+  ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
     const el = document.getElementById(id);
     if (el) el.style.display = isAgent ? 'none' : '';
   });
@@ -3419,6 +3446,74 @@ async function loadBatches() {
   }).join('');
 }
 
+let dcidCache = [];
+
+async function loadDcid() {
+  const box = document.getElementById('dcidList');
+  box.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  const data = await api('GET', { action: 'dcidQueue' });
+  if (data && data.error) {
+    box.innerHTML = '<div class="empty-state">' + escapeHtml(data.error) + '</div>';
+    return;
+  }
+  dcidCache = (data && data.items) || [];
+  document.getElementById('dcidAll').checked = false;
+  renderDcid();
+}
+
+function renderDcid() {
+  const box = document.getElementById('dcidList');
+  document.getElementById('dcidCount').textContent =
+    dcidCache.length ? dcidCache.length + ' awaiting review' : '';
+
+  if (!dcidCache.length) {
+    box.innerHTML = '<div class="empty-state">Nothing waiting. DCID leads appear here as agents mark them.</div>';
+    return;
+  }
+  box.innerHTML = dcidCache.map(function(it, i) {
+    return '<label class="dcid-row' + (it._sel ? ' sel' : '') + '">' +
+      '<input type="checkbox" ' + (it._sel ? 'checked' : '') +
+        ' onchange="selectDcid(' + i + ', this.checked)">' +
+      '<div class="dcid-main">' +
+        '<div><b>' + escapeHtml(it.name || 'Unknown') + '</b> · ' + escapeHtml(formatPhone(it.phone)) +
+          ' · ' + escapeHtml(it.state) + (it.city ? ' · ' + escapeHtml(it.city) : '') + '</div>' +
+        '<div class="dcid-reason">' + escapeHtml(it.reason || 'No reason given') + '</div>' +
+        '<div class="batch-meta">' + escapeHtml(it.agent || 'unknown agent') + ' · ' +
+          escapeHtml(it.at || '') + ' · ' + it.attempts + ' attempt' + (it.attempts === 1 ? '' : 's') +
+          (it.leadId ? ' · ' + escapeHtml(it.leadId) : '') + '</div>' +
+      '</div>' +
+    '</label>';
+  }).join('');
+}
+
+function selectDcid(i, on) {
+  if (dcidCache[i]) dcidCache[i]._sel = on;
+  renderDcid();
+}
+
+function toggleAllDcid(on) {
+  dcidCache.forEach(function(it) { it._sel = on; });
+  renderDcid();
+}
+
+async function reviewDcid(decision) {
+  const picked = dcidCache.filter(function(it) { return it._sel; });
+  const msg = document.getElementById('dcidMsg');
+  if (!picked.length) { msg.textContent = 'Tick the ones you want to act on first.'; return; }
+  if (decision === 'archive' &&
+      !confirm('Archive ' + picked.length + ' lead' + (picked.length === 1 ? '' : 's') + '?\n\n' +
+               'They leave the dialling pool but keep their row and history, and can be brought back.')) return;
+
+  msg.textContent = 'Working…';
+  const out = await api('POST', {
+    action: 'reviewDcid', decision: decision,
+    items: picked.map(function(it) { return { state: it.state, rowIndex: it.rowIndex }; })
+  });
+  if (out && out.error) { msg.textContent = out.error; return; }
+  msg.textContent = (decision === 'pool' ? 'Returned ' : 'Archived ') + out.changed + ' to review.';
+  loadDcid();
+}
+
 function batchResult(out) {
   if (!out || out.error) return out && out.error ? out.error : 'Something went wrong.';
   const bits = [out.changed + ' updated'];
@@ -3505,13 +3600,16 @@ async function toggleBatch(batchId, state, active) {
 function switchAdminSection(which) {
   const team = which === 'team';
   const upload = which === 'upload';
+  const dcid   = which === 'dcid';
   document.getElementById('adminTeamPanel').style.display   = team ? 'block' : 'none';
   document.getElementById('adminUploadPanel').style.display = upload ? 'block' : 'none';
-  document.getElementById('adminStatsPanel').style.display  = (team || upload) ? 'none' : 'block';
+  document.getElementById('adminDcidPanel').style.display   = dcid ? 'block' : 'none';
+  document.getElementById('adminStatsPanel').style.display  = (team || upload || dcid) ? 'none' : 'block';
   document.getElementById('secTeam').classList.toggle('active', team);
   document.getElementById('secStats').classList.toggle('active', !team);
   if (team) loadTeam();
   if (upload) loadUpload();
+  if (dcid) loadDcid();
 }
 
 async function loadTeam() {
