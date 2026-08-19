@@ -44,6 +44,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .login-card{width:100%;max-width:380px;background:var(--card);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-lg);border:1px solid var(--border);}
 .login-btn{width:100%;margin-top:16px;padding:15px;border-radius:var(--radius-sm);border:none;background:var(--primary);color:#fff;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.2s;}
 .login-btn:active{opacity:0.85;}
+.login-busy{display:none;flex-direction:column;align-items:center;gap:10px;padding:14px 0 4px;}
+.login-busy.on{display:flex;}
+.login-busy-msg{font-size:13px;color:var(--text-secondary);text-align:center;line-height:1.45;}
+.login-card.busy #gsiButton{display:none !important;}
 .login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(255,69,58,0.1);border:1.5px solid var(--danger);border-radius:var(--radius-sm);font-size:14px;font-weight:600;color:var(--danger);text-align:center;}
 .login-hint{text-align:center;margin-top:14px;font-size:12px;color:var(--text-secondary);}
 .login-hint a{color:var(--primary);text-decoration:none;font-weight:600;cursor:pointer;}
@@ -453,6 +457,10 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="login-card">
       <div class="login-sub" style="margin-bottom:14px;">Sign in with the Google account you use for work.</div>
       <div id="gsiButton" style="display:flex;justify-content:center;"></div>
+      <div id="loginBusy" class="login-busy">
+        <div class="spinner"></div>
+        <div class="login-busy-msg" id="loginBusyMsg">Signing you in…</div>
+      </div>
       <div class="login-error" id="loginError">That account is not on the agent list. Ask an admin to add you.</div>
       <div class="login-hint" style="margin-top:12px;">
         <a onclick="clearSaved()">Clear saved info</a>
@@ -938,10 +946,38 @@ function decodeJwt(token) {
   } catch (e) { return null; }
 }
 
+// Sign-in takes a few seconds: the backend verifies the token with Google,
+// opens the auth spreadsheet and writes two rows, on top of an Apps Script
+// cold start. Without feedback that reads as broken, so people click again —
+// and Apps Script queues executions per user, so a second click does not
+// retry, it doubles the wait. Hence both the spinner and the guard.
+let loginInFlight = false;
+let loginSlowTimer = null;
+
+function setLoginBusy(on) {
+  loginInFlight = on;
+  const box = document.getElementById('loginBusy');
+  const card = document.querySelector('.login-card');
+  if (box) box.classList.toggle('on', on);
+  if (card) card.classList.toggle('busy', on);
+
+  clearTimeout(loginSlowTimer);
+  if (on) {
+    const msg = document.getElementById('loginBusyMsg');
+    if (msg) msg.textContent = 'Signing you in…';
+    // Set expectation before they reach for the refresh button.
+    loginSlowTimer = setTimeout(function() {
+      if (msg && loginInFlight) msg.textContent = 'Still going — the server is waking up. This can take a few seconds.';
+    }, 5000);
+  }
+}
+
 async function onGoogleCredential(res) {
+  if (loginInFlight) return;            // a second click queues, it does not hurry
   const idToken = res && res.credential;
   const claims = decodeJwt(idToken);
   if (!claims || !claims.email) return showLoginError('Could not read that Google account.');
+  setLoginBusy(true);
 
   // Trade the Google token for a session the backend signed. If the backend has
   // not been updated yet, fall through and run on the verified Google profile so
@@ -949,9 +985,10 @@ async function onGoogleCredential(res) {
   let session = null;
   try {
     const out = await api('POST', { action: 'login', idToken: idToken });
-    if (out && out.error) return showLoginError(out.error);
+    if (out && out.error) { setLoginBusy(false); return showLoginError(out.error); }
     if (out && out.token) session = out;
   } catch (e) { /* backend not updated yet */ }
+  setLoginBusy(false);
 
   state.authToken = session ? session.token : '';
   state.agentEmail = (session && session.email) || claims.email;
@@ -968,6 +1005,7 @@ async function onGoogleCredential(res) {
 }
 
 function showLoginError(msg) {
+  setLoginBusy(false);
   const err = document.getElementById('loginError');
   if (err) { err.textContent = msg; err.style.display = 'block'; }
 }
