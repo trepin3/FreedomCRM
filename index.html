@@ -2874,6 +2874,18 @@ async function loadUpload() {
     }).join('');
   }
   const data = await api('GET', { action: 'listSources' });
+  const hintEl = document.getElementById('upSourceHint');
+  if (data && data.error) {
+    // Falling back to a bare "Other..." with no explanation is how this hid
+    // the first time. Say what broke.
+    uploadState.sources = [];
+    uploadState.pending = [];
+    document.getElementById('upSource').innerHTML = '<option value="">Lead source…</option>';
+    if (hintEl) hintEl.innerHTML = '<span class="up-warn">Could not load lead sources: ' +
+      escapeHtml(data.error) + '</span>';
+    loadBatches();
+    return;
+  }
   uploadState.sources = (data && data.sources) || [];
   uploadState.pending = (data && data.pending) || [];
 
@@ -2885,6 +2897,12 @@ async function loadUpload() {
     '<option value="__other">Other…</option>';
 
   const hint = document.getElementById('upSourceHint');
+  if (!uploadState.sources.length) {
+    hint.innerHTML = '<span class="up-warn">No approved lead sources came back. ' +
+      'Run inspectSources() in the Apps Script editor to see why.</span>';
+    loadBatches();
+    return;
+  }
   hint.innerHTML = uploadState.pending.length
     ? uploadState.pending.length + ' source(s) awaiting your approval: ' +
       uploadState.pending.map(function(p) {
