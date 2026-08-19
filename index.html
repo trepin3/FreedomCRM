@@ -155,6 +155,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .lead-card{background:var(--card);border-radius:var(--radius);padding:20px;border:1px solid var(--border);box-shadow:var(--shadow-lg);}
 .lead-flag{padding:8px 12px;background:rgba(255,159,10,0.1);border:1px solid var(--warning);border-radius:var(--radius-sm);color:var(--warning);font-size:12px;font-weight:700;margin-bottom:12px;text-align:center;}
 .lead-name{font-size:24px;font-weight:800;color:var(--text);letter-spacing:-0.4px;margin-bottom:4px;line-height:1.2;}
+.lead-header-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .lead-header-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;}
 .lead-header-row .lead-name{margin-bottom:0;flex:1;min-width:0;word-break:break-word;}
 /* Callback calendar picker */
@@ -261,6 +262,15 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .modal-card{background:var(--card);border-radius:var(--radius);padding:22px;max-width:480px;width:100%;box-shadow:var(--shadow-lg);}
 .modal-title{font-size:18px;font-weight:800;color:var(--text);margin-bottom:4px;letter-spacing:-0.3px;}
 .modal-sub{font-size:13px;color:var(--text-secondary);margin-bottom:16px;}
+.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0;
+  max-height:52vh;overflow-y:auto;}
+.edit-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.edit-field.wide{grid-column:1 / -1;}
+.edit-field label{font-size:11px;font-weight:700;color:var(--text-secondary);
+  text-transform:uppercase;letter-spacing:.3px;}
+.edit-field input{padding:9px 11px;border-radius:8px;border:1px solid var(--border);
+  background:var(--input-bg);color:var(--text);font-size:14px;width:100%;}
+@media(max-width:520px){.edit-grid{grid-template-columns:1fr;}}
 .modal-actions{display:flex;gap:8px;margin-top:16px;}
 .modal-btn{flex:1;padding:13px;border-radius:var(--radius-sm);border:none;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;}
 .modal-btn-cancel{background:var(--input-bg);color:var(--text);}
@@ -738,6 +748,19 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="modal-actions">
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('soldModal')">Cancel</button>
       <button class="modal-btn modal-btn-confirm" onclick="confirmSold()">Confirm Sale</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="editLeadModal">
+  <div class="modal-card">
+    <div class="modal-title">✏️ Edit lead</div>
+    <div class="modal-sub" id="editLeadSub">Corrections are logged with your name.</div>
+    <div class="edit-grid" id="editLeadFields"></div>
+    <div class="team-msg" id="editLeadMsg"></div>
+    <div class="modal-actions">
+      <button class="mini-btn" onclick="closeModal('editLeadModal')">Cancel</button>
+      <button class="mini-btn team-add-btn" onclick="saveLeadEdit()">Save changes</button>
     </div>
   </div>
 </div>
@@ -1375,7 +1398,10 @@ function renderLead() {
     <div class="lead-card">
       <div class="lead-header-row">
         <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
-        <button class="lead-cb-btn" onclick="openCallback()">📅 Schedule Callback</button>
+        <div class="lead-header-actions">
+          <button class="lead-cb-btn" onclick="openEditLead('dial')">✏️ Edit</button>
+          <button class="lead-cb-btn" onclick="openCallback()">📅 Schedule Callback</button>
+        </div>
       </div>
       <div class="lead-phone-wrap">
         <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
@@ -1926,6 +1952,77 @@ function addCallbackToCalendar(stateCode, rowIndex) {
   setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 }
 
+// ══════════════════════════════════════════════════
+// EDIT LEAD
+// ══════════════════════════════════════════════════
+// Anyone who can see a lead can fix it. A wrong number cannot return to the
+// pool until it is corrected, and only whoever made the call knows the right
+// value. Every change is logged with the editor's name.
+const EDIT_FIELDS = [
+  ['First Name', 'first_name'], ['Last Name', 'last_name'],
+  ['Phone', 'phone'], ['Email', 'email'],
+  ['Address', 'address', 'wide'], ['City', 'city'], ['Zip', 'zip'],
+  ['Lead Type', 'lead_type'], ['Beneficiary', 'beneficiary'],
+  ['Hobby', 'hobby'], ['Age', 'age'], ['DOB', 'dob']
+];
+
+let editCtx = null;
+
+function openEditLead(source) {
+  const lead = source === 'leadView'
+    ? (leadViewState && leadViewState.lead)
+    : state.leads[state.currentIdx];
+  if (!lead) return;
+
+  editCtx = { source: source, state: lead.state, rowIndex: lead.rowIndex };
+  document.getElementById('editLeadSub').textContent =
+    (lead.lead_id ? lead.lead_id + ' · ' : '') + 'Changes are logged with your name.';
+  document.getElementById('editLeadMsg').textContent = '';
+
+  document.getElementById('editLeadFields').innerHTML = EDIT_FIELDS.map(function(f) {
+    const val = lead[f[1]] === null || lead[f[1]] === undefined ? '' : lead[f[1]];
+    return '<div class="edit-field' + (f[2] ? ' ' + f[2] : '') + '">' +
+      '<label>' + f[0] + '</label>' +
+      '<input id="ed_' + f[1] + '" value="' + escapeHtml(String(val)) + '" autocomplete="off">' +
+      '</div>';
+  }).join('');
+
+  document.getElementById('editLeadModal').classList.add('show');
+}
+
+async function saveLeadEdit() {
+  if (!editCtx) return;
+  const msg = document.getElementById('editLeadMsg');
+  const fields = {};
+  EDIT_FIELDS.forEach(function(f) {
+    const el = document.getElementById('ed_' + f[1]);
+    if (el) fields[f[0]] = el.value;
+  });
+
+  msg.textContent = 'Saving…';
+  const out = await api('POST', {
+    action: 'updateLead', state: editCtx.state, rowIndex: editCtx.rowIndex, fields: fields
+  });
+  if (out && out.error) { msg.textContent = out.error; return; }
+
+  // Update in place so the card reflects the correction immediately.
+  if (out && out.lead) {
+    if (editCtx.source === 'leadView' && leadViewState) {
+      leadViewState.lead = Object.assign(leadViewState.lead, out.lead);
+      renderLeadView();
+    } else {
+      const i = state.leads.findIndex(function(l) {
+        return l.state === editCtx.state && l.rowIndex === editCtx.rowIndex;
+      });
+      if (i >= 0) state.leads[i] = Object.assign(state.leads[i], out.lead);
+      renderLead();
+      renderLeadRail();
+    }
+  }
+  closeModal('editLeadModal');
+  editCtx = null;
+}
+
 // Opens the same callback modal from any context (dial, reschedule, leadView)
 function openCallbackModalFor(context) {
   state.callbackContext = context;
@@ -2438,7 +2535,9 @@ function renderLeadView() {
 
   document.getElementById('leadViewContent').innerHTML = `
     <div class="lead-card">
-      <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
+      <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}
+        <button class="lead-cb-btn" style="margin-left:10px;" onclick="openEditLead('leadView')">✏️ Edit</button>
+      </div>
       <div class="lead-phone-wrap">
         <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
