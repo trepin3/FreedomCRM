@@ -925,6 +925,7 @@ function doPost(e) {
       case 'setBatchVisibility': result = setBatchVisibility_(userByEmail_(user.email), body); break;
       case 'shareBatch':     result = shareBatch_(userByEmail_(user.email), body); break;
       case 'donateBatch':    result = donateBatch_(userByEmail_(user.email), body); break;
+      case 'updateLead':     result = updateLead_(userByEmail_(user.email), body); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
@@ -1947,6 +1948,66 @@ function donationInfo_(me) {
   const t = donationTarget_(me);
   return t ? { destination: t.label, ownerId: t.ownerId }
            : { destination: '', ownerId: '' };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// LEAD EDITING
+// ══════════════════════════════════════════════════════════════════
+// Anyone who can see a lead can correct it. Bad data is worse than no data
+// on a dialer — a wrong number cannot go back to the pool until someone
+// fixes it, and only the person on the call knows what it should say.
+//
+// Every change is logged before-and-after, because the sheet only ever holds
+// the current value: the activity log is the sole record of who changed what.
+const EDITABLE_FIELDS = [
+  'First Name', 'Last Name', 'Phone', 'Email', 'Address', 'City', 'Zip',
+  'Lead Type', 'Beneficiary', 'Hobby', 'Age', 'DOB', 'Lead Source'
+];
+
+function updateLead_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const state = String(body.state || '').toUpperCase();
+  if (!sheets_()[state]) return { error: 'Unknown state: ' + state };
+
+  const rowIndex = Number(body.rowIndex);
+  if (!rowIndex || rowIndex < 2) return { error: 'Bad row.' };
+
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const row = sheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+  if (!canSee_(row, me)) return { error: 'not_permitted' };
+
+  const fields = body.fields || {};
+  const changes = [];
+
+  EDITABLE_FIELDS.forEach(function(name) {
+    if (!(name in fields)) return;
+    let next = String(fields[name] === null || fields[name] === undefined ? '' : fields[name]).trim();
+    if (name === 'Phone') next = next.replace(/\D/g, '');
+    const prev = String(row[ix_(name)] === null || row[ix_(name)] === undefined ? '' : row[ix_(name)]).trim();
+    if (prev === next) return;
+    sheet.getRange(rowIndex, COL[name]).setValue(next);
+    row[ix_(name)] = next;
+    changes.push(name + ': "' + prev + '" -> "' + next + '"');
+  });
+
+  if (!changes.length) return { success: true, changed: 0 };
+
+  // Name is the composed display value, so it has to follow its parts.
+  const composed = composeName_(row[ix_('First Name')], row[ix_('Last Name')]);
+  if (composed && composed !== String(row[ix_('Name')] || '').trim()) {
+    sheet.getRange(rowIndex, COL['Name']).setValue(composed);
+    row[ix_('Name')] = composed;
+  }
+
+  sheet.getRange(rowIndex, COL['Last Activity At']).setValue(stamp_());
+  logActivity_(me, 'editLead',
+    (row[ix_('Lead ID')] || ('row ' + rowIndex)) + ' — ' + changes.join('; '), state);
+
+  return {
+    success: true,
+    changed: changes.length,
+    lead: Object.assign({ rowIndex: rowIndex, state: state }, rowToObj(row))
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════
