@@ -1840,6 +1840,46 @@ function backfillNameParts() {
   return msg;
 }
 
+// Retires the seeded test leads. They carry plausible-looking phone numbers
+// that belong to real people, so leaving them mixed into a live pool means
+// an agent eventually dials a stranger. Archived, not deleted, so the row
+// and its history survive.
+function removeDummyLeads() {
+  const names = {};
+  DUMMY_LEADS.forEach(function(d) { names[String(d[0]).toLowerCase()] = true; });
+  const phones = {};
+  DUMMY_LEADS.forEach(function(d) { phones[String(d[1]).replace(/\D/g, '')] = true; });
+
+  const report = [];
+  Object.keys(SHEETS).forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+    if (!sheet) return;
+    const lr = sheet.getLastRow();
+    if (lr < 2) return;
+
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+    let hit = 0;
+    data.forEach(function(row, i) {
+      const nm = String(row[ix_('Name')] || '').toLowerCase();
+      const ph = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+      const already = String(row[ix_('Status')] || '').toLowerCase() === STATUS.ARCHIVED;
+      // Both must match, so a real lead who happens to share a test name stays.
+      if (already || !names[nm] || !phones[ph]) return;
+      sheet.getRange(i + 2, COL['Status']).setValue(STATUS.ARCHIVED);
+      sheet.getRange(i + 2, COL['Status Reason']).setValue('seeded test lead');
+      sheet.getRange(i + 2, COL['Archived At']).setValue(stamp_());
+      sheet.getRange(i + 2, COL['Archived By']).setValue('system');
+      hit++;
+    });
+    if (hit) report.push(code + ': ' + hit);
+  });
+  recountStates();
+  const msg = report.length ? 'Archived test leads — ' + report.join(', ')
+                            : 'No seeded test leads found.';
+  Logger.log(msg);
+  return msg;
+}
+
 // Read-only: the header and one row side by side, so column drift is
 // obvious before a large upload lands on top of it. Pass a state code.
 function inspectLeadRow(stateCode) {
