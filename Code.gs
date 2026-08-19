@@ -1840,6 +1840,43 @@ function backfillNameParts() {
   return msg;
 }
 
+// Read-only: the header and one row side by side, so column drift is
+// obvious before a large upload lands on top of it. Pass a state code.
+function inspectLeadRow(stateCode) {
+  const code = String(stateCode || 'OH').toUpperCase();
+  if (!SHEETS[code]) return 'No sheet for ' + code;
+  const sheet = SpreadsheetApp.openById(SHEETS[code]).getSheetByName('Leads');
+  if (!sheet) return code + ': no Leads tab';
+
+  const width = sheet.getLastColumn();
+  const header = sheet.getRange(1, 1, 1, width).getValues()[0];
+  const lines = [code + ': ' + width + ' columns, ' +
+                 Math.max(0, sheet.getLastRow() - 1) + ' rows'];
+
+  const mismatch = [];
+  LEAD_COLS.forEach(function(name, i) {
+    if (String(header[i] || '').trim() !== name) {
+      mismatch.push('col ' + (i + 1) + ' expected "' + name + '" got "' + (header[i] || '') + '"');
+    }
+  });
+  lines.push(mismatch.length ? 'HEADER MISMATCH:\n  ' + mismatch.join('\n  ')
+                             : 'Header matches the schema exactly.');
+
+  if (sheet.getLastRow() >= 2) {
+    const row = sheet.getRange(2, 1, 1, width).getValues()[0];
+    lines.push('\nFirst row:');
+    header.forEach(function(h, i) {
+      const v = row[i];
+      if (v !== '' && v !== null && v !== undefined) {
+        lines.push('  ' + (String(h) + '                    ').slice(0, 20) + ' = ' + v);
+      }
+    });
+  }
+  const msg = lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
 // What state is each spreadsheet actually in? Read-only.
 function inspectSheets() {
   const out = [];
