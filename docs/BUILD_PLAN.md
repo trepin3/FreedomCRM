@@ -1,6 +1,6 @@
 # FreedomCRM — MVP build plan and state
 
-Working doc for the multi-tenant rebuild. Last updated 2026-08-17 (schema rewrite).
+Working doc for the multi-tenant rebuild. Last updated 2026-08-18.
 Read this first when resuming; it carries decisions that are not derivable from the code.
 
 ---
@@ -32,9 +32,19 @@ Read this first when resuming; it carries decisions that are not derivable from 
 
 OAuth client id is shared with Agent-HUD-Workstation — same `trepin3.github.io` origin, so no Cloud Console work was needed.
 
+- **Lead sources** in the auth spreadsheet, seeded with the three. "Other" queues as `pending`; admin adding one skips its own queue.
+- **CSV upload** — file picker, drag-drop or paste. Guesses the mapping from header names, previews five mapped rows, requires name + phone. Quoted fields honoured; Excel BOM stripped; `.xlsx` refused with export instructions.
+- **Name stored split** — `First Name`/`Last Name` columns with `Name` kept as the composed display value, so the UI still reads `.name`. Works whichever shape the file has.
+- **State decided by ZIP**, not the state column. Vendor state columns are unreliable — the Bang Bang file had 35 rows labelled GA/TX/NC that are all Cleveland ZIPs. Mixed files split by state, one upload request per state, each with its own batch id. Rows for a state with no sheet are named and refused.
+- **Blank cities filled from ZIP** via zippopotam.us (free, keyless, CORS-open), button-triggered, cached in localStorage. Not a built-in table — an invented ZIP-to-city map would put wrong data in the CRM.
+- **All 51 states supported.** Sheets are created on first upload and recorded in Script Properties; the dial picker shows only states holding leads the signed-in user can see, with counts, cached 120s.
+- **Batches** — every upload grouped, removable by flipping `Batch Status`, never deleted.
+
 ## Not built
 
-Lead sources UI · upload + column mapping · sharing + donate-to-pool UI · 150-lead reservation endpoint · add-to-calendar · DCID review + archive · sold workspace · stat drill-downs · Trellus receiver.
+Sharing + donate-to-pool UI · exclusivity toggle in the dialer · 150-lead reservation endpoint · leaderboard AP display · add-to-calendar · DCID review + archive · sold workspace · stat drill-downs · Trellus receiver.
+
+**Never exercised live:** the dial round-trip against the new schema. Dispositions, the lead rail and callbacks all work through `setStatus_` now, and none of it has been run against a real call — the TCPA window blocked testing on the night it was built. Callbacks are the piece most likely to bite: they moved from their own tab to a status on the lead row, and the 72-hour booking-agent hold (`Callback Hold Until`) has never fired.
 
 `docs/planned_lead_schema.gs` was the design sketch; it is now **applied** in `Code.gs` and kept only for reference. Two deliberate departures from it: `Locked By`/`Locked At` keep their old names rather than becoming `Reserved By`/`Reserved At` (name-based lookups meant renaming was the only thing that actually broke callers), and disposition extras keep their old names so `rowToObj`'s derived field names stay stable for the UI.
 
@@ -100,9 +110,21 @@ Kepler chose to build the **team portal before the lead schema rewrite**, so age
 
 ---
 
+## Functions to run from the editor
+
+| | |
+|---|---|
+| `inspectSheets()` | Read-only. Tabs and row counts per state, and whether each is migrated. |
+| `migrateLeadSchema()` | Once. Skips states already migrated. Renames old tabs, never deletes. |
+| `backfillNameParts()` | After any schema column is added. Widens sheets, rewrites the header, splits `Name`. Fills blanks only, so re-running is safe. |
+| `seedDummyLeads()` | Test data in the new shape. Appends. |
+| `setupAuth()` | Once, already done. Creates the auth spreadsheet. |
+
 ## Known weak points
 
 - **Stat scoping matches on display name**, because dispositions record names not ids. `agent_id` is in the planned schema and should replace this during the lead rewrite. Until then, `Users` display names must match the names written into lead rows.
+- **`listStates_` opens every registered spreadsheet.** Fine at a handful of states; at 20+ the 120s cache is the only thing keeping sign-in fast. If it gets slow, store per-state counts in the auth sheet and refresh them on upload and disposition.
+- **Multi-timezone states** use whichever zone holds most of the population, so a west-Texas or Florida-panhandle lead can be an hour off inside the TCPA window. Only a ZIP-level timezone lookup fixes this properly.
 - **Volume ceiling**: comfortable to ~10k *active* leads per state; 10–25k noticeable; 25k+ painful; beyond needs a real database. Archiving keeps the active count down independently of history.
 - 150-lead reservations mean 10 concurrent agents need ~1,500 available leads in a state.
 - No transactions. `LockService` covers ordinary contention only.
