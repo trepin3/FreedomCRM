@@ -1375,11 +1375,31 @@ function sourcesSheet_() {
     sh = ss.insertSheet('LeadSources');
     sh.appendRow(SOURCE_COLS);
     sh.setFrozenRows(1);
+  }
+  // A tab with a header and nothing under it leaves the picker empty with no
+  // way back, so re-seed instead of trusting it was populated once.
+  if (sh.getLastRow() < 2) {
     SEED_LEAD_SOURCES.forEach(function(name) {
       sh.appendRow([name, 'approved', 'system', stamp_()]);
     });
   }
   return sh;
+}
+
+// Read-only: what the sources tab actually holds, and whether it is reachable.
+function inspectSources() {
+  let msg;
+  try {
+    const sh = sourcesSheet_();
+    const all = sourcesAll_();
+    msg = 'Auth spreadsheet: ' + authSS_().getName() +
+          '\nLeadSources rows: ' + Math.max(0, sh.getLastRow() - 1) +
+          '\n' + all.map(function(x) { return '  ' + x.name + '  [' + x.status + ']'; }).join('\n');
+  } catch (err) {
+    msg = 'FAILED: ' + err.message + '\n' + err.stack;
+  }
+  Logger.log(msg);
+  return msg;
 }
 
 function sourcesAll_() {
