@@ -873,6 +873,7 @@ function doGet(e) {
       case 'listSources': result = listSources_(userByEmail_(user.email)); break;
       case 'listStates':  result = listStates_(userByEmail_(user.email)); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
+      case 'dcidQueue':   result = dcidQueue_(userByEmail_(user.email)); break;
       case 'roster':      result = rosterFor_(userByEmail_(user.email)); break;
       case 'donationInfo':result = donationInfo_(userByEmail_(user.email)); break;
       case 'myTeam': {
@@ -926,6 +927,7 @@ function doPost(e) {
       case 'shareBatch':     result = shareBatch_(userByEmail_(user.email), body); break;
       case 'donateBatch':    result = donateBatch_(userByEmail_(user.email), body); break;
       case 'updateLead':     result = updateLead_(userByEmail_(user.email), body); break;
+      case 'reviewDcid':     result = reviewDcid_(userByEmail_(user.email), body); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
@@ -2008,6 +2010,100 @@ function updateLead_(me, body) {
     changed: changes.length,
     lead: Object.assign({ rowIndex: rowIndex, state: state }, rowToObj(row))
   };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// DCID REVIEW
+// ══════════════════════════════════════════════════════════════════
+// DCID is a crash-out, and agents disposition it under pressure mid-call.
+// A manager or admin looks at them before they are lost: back to the pool if
+// the agent was hasty, archived if genuinely dead. Either way the lead row
+// survives — archiving is a status, not a delete, so the history stays.
+function dcidQueue_(me) {
+  if (!me || (me.role !== 'admin' && me.role !== 'manager')) return { error: 'not_permitted' };
+
+  const scope = scopeNamesFor_(me);      // null for admin = everyone
+  const items = [];
+
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    data.forEach(function(row, i) {
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.DCID) return;
+      if (String(row[ix_('DCID Review')] || '').toLowerCase() !== 'pending') return;
+      // Only this manager's branch; admin sees the lot.
+      if (!inScope_(scope, row[ix_('DCID Agent')])) return;
+
+      items.push({
+        state: code, rowIndex: i + 2,
+        leadId: String(row[ix_('Lead ID')] || ''),
+        name: String(row[ix_('Name')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        city: String(row[ix_('City')] || ''),
+        attempts: Number(row[ix_('Attempts')]) || 0,
+        agent: String(row[ix_('DCID Agent')] || ''),
+        reason: String(row[ix_('DCID Reason')] || ''),
+        at: fmtDateTime(row[ix_('DCID Date')])
+      });
+    });
+  });
+
+  items.sort(function(a, b) { return String(b.at).localeCompare(String(a.at)); });
+  return { items: items };
+}
+
+function reviewDcid_(me, body) {
+  if (!me || (me.role !== 'admin' && me.role !== 'manager')) return { error: 'not_permitted' };
+  const decision = String(body.decision || '');
+  if (['pool', 'archive'].indexOf(decision) === -1) return { error: 'Bad decision.' };
+
+  const items = body.items || [];
+  if (!items.length) return { error: 'Nothing selected.' };
+
+  const now = stamp_();
+  let done = 0;
+
+  // Group by state so each spreadsheet is opened once, not once per lead.
+  const byState = {};
+  items.forEach(function(it) {
+    (byState[it.state] = byState[it.state] || []).push(Number(it.rowIndex));
+  });
+
+  Object.keys(byState).forEach(function(code) {
+    if (!sheets_()[code]) return;
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    if (!sheet) return;
+
+    byState[code].forEach(function(rowIndex) {
+      if (!rowIndex || rowIndex < 2) return;
+      const row = sheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.DCID) return;
+
+      sheet.getRange(rowIndex, COL['DCID Review']).setValue(decision === 'pool' ? 'returned' : 'archived');
+      sheet.getRange(rowIndex, COL['DCID Reviewed By']).setValue(me.email);
+      sheet.getRange(rowIndex, COL['DCID Reviewed At']).setValue(now);
+
+      if (decision === 'pool') {
+        // Back into rotation, with the attempt history intact so it is not
+        // dialled straight back to the top of the queue.
+        sheet.getRange(rowIndex, COL['Status']).setValue(STATUS.NEW);
+        sheet.getRange(rowIndex, COL['Status Reason']).setValue('DCID returned by ' + me.name);
+        clearLock_(sheet, rowIndex);
+      } else {
+        sheet.getRange(rowIndex, COL['Status']).setValue(STATUS.ARCHIVED);
+        sheet.getRange(rowIndex, COL['Archived At']).setValue(now);
+        sheet.getRange(rowIndex, COL['Archived By']).setValue(me.email);
+      }
+      sheet.getRange(rowIndex, COL['Status At']).setValue(now);
+      done++;
+    });
+  });
+
+  logActivity_(me, 'reviewDcid', decision + ' x' + done, '');
+  return { success: true, changed: done };
 }
 
 // ══════════════════════════════════════════════════════════════════
