@@ -571,11 +571,6 @@ function downlineOf_(actor, includeSelf) {
   });
 }
 
-// The ids whose leads this user may see: everyone on their own upline chain.
-function visibleOwnerIds_(user) {
-  return String(user.path || '').split('>').filter(String);
-}
-
 // ── Mutations ────────────────────────────────────────────────────────────────
 function createUser_(actor, opts) {
   const email = String(opts.email || '').trim().toLowerCase();
@@ -2048,19 +2043,6 @@ function inspectSheets() {
   return msg;
 }
 
-// Next sequential Lead ID for a state, e.g. AZ-000042.
-function nextLeadId_(sheet, state) {
-  const lr = sheet.getLastRow();
-  if (lr < 2) return state + '-000001';
-  const ids = sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues();
-  let max = 0;
-  ids.forEach(function(r) {
-    const m = String(r[0] || '').match(/-(\d+)$/);
-    if (m) max = Math.max(max, Number(m[1]));
-  });
-  return state + '-' + ('000000' + (max + 1)).slice(-6);
-}
-
 // ══════════════════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════════════════
@@ -2082,12 +2064,6 @@ function rowToObj(row) {
   return obj;
 }
 
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-}
 
 // Format Sheets Date value → 'yyyy-MM-dd' string (empty if null/blank)
 function fmtDate(v) {

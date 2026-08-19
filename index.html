@@ -3025,6 +3025,14 @@ function stateNotice(usable) {
   const orphanCodes = Object.keys(split.orphans);
 
   let out = '';
+  // Overriding the vendor's own state column is a correction, not a detail.
+  // Say it happened — silently rewriting their data is how you lose trust in
+  // the number when it eventually matters.
+  const fixed = zipDisagreements();
+  if (fixed) {
+    out += '<div class="up-note">' + fixed + ' row' + (fixed === 1 ? ' has a' : 's have a') +
+           ' state code that contradicts its ZIP. Going with the ZIP.</div>';
+  }
   if (dests.length > 1) {
     out += '<div class="up-note">This file covers ' + dests.map(function(d) {
       return '<b>' + escapeHtml(CONFIG.STATE_NAMES[d]) + '</b> (' + split.groups[d].length + ')';
