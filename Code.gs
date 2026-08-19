@@ -1543,14 +1543,66 @@ function removeKeepWarm() {
 
 function keepWarm() {
   // Only during calling hours — warming a container nobody will use at 3am
-  // just burns quota.
+  // just burns quota. Log the skip: a run that does nothing and says nothing
+  // is indistinguishable from a broken one.
   const hour = Number(Utilities.formatDate(new Date(), TZ, 'H'));
-  if (hour < 6 || hour > 21) return;
+  if (hour < 6 || hour > 21) {
+    Logger.log('Outside 6am-9pm (' + hour + ':00) — skipping. This is normal.');
+    return;
+  }
   const url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
-  if (!url) return;
+  if (!url) { Logger.log('No WEB_APP_URL set. Run setupKeepWarm() first.'); return; }
+  const t0 = Date.now();
   try {
-    UrlFetchApp.fetch(url + '?action=ping', { muteHttpExceptions: true });
-  } catch (e) {}
+    const body = UrlFetchApp.fetch(url + '?action=ping', { muteHttpExceptions: true }).getContentText();
+    Logger.log('Ping ' + (Date.now() - t0) + 'ms — ' + String(body).slice(0, 120));
+  } catch (e) {
+    Logger.log('Ping failed: ' + e.message);
+  }
+}
+
+// Undoes createAllStateSheets for states that never received leads, returning
+// to creating a sheet on first upload. Empty state sheets buy nothing: the
+// picker hides them, uploads create them on demand, and 48 spreadsheets is a
+// lot of Drive activity for an account to be judged on.
+//
+// Only touches sheets with zero lead rows, never the three original states,
+// and trashes rather than deletes — recoverable from Drive trash for 30 days.
+function deleteEmptyStateSheets() {
+  const reg = stateRegistry_();
+  const keep = [], trashed = [], skipped = [];
+
+  Object.keys(reg).forEach(function(code) {
+    if (SHEET_SEED[code]) { keep.push(code); return; }
+    let rows = -1;
+    try {
+      const sh = SpreadsheetApp.openById(reg[code]).getSheetByName('Leads');
+      rows = sh ? Math.max(0, sh.getLastRow() - 1) : 0;
+    } catch (e) { skipped.push(code + '(unreadable)'); return; }
+
+    if (rows > 0) { keep.push(code + '(' + rows + ')'); return; }
+    try {
+      DriveApp.getFileById(reg[code]).setTrashed(true);
+      trashed.push(code);
+    } catch (e) { skipped.push(code + '(' + e.message + ')'); }
+  });
+
+  // Rewrite the registry with only what survived.
+  const next = {};
+  Object.keys(reg).forEach(function(code) {
+    if (SHEET_SEED[code]) return;                       // seeds are not stored
+    if (trashed.indexOf(code) === -1) next[code] = reg[code];
+  });
+  PropertiesService.getScriptProperties().setProperty('STATE_SHEETS', JSON.stringify(next));
+  _sheets = null;                                        // drop the per-execution cache
+  recountStates();
+
+  const msg = 'Trashed ' + trashed.length + ' empty state sheets.' +
+              '\nKept: ' + keep.join(', ') +
+              (skipped.length ? '\nSkipped: ' + skipped.join(', ') : '') +
+              '\nStates are created again on first upload.';
+  Logger.log(msg);
+  return msg;
 }
 
 // Read-only: what the sources tab actually holds, and whether it is reachable.
