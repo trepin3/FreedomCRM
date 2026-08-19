@@ -363,6 +363,17 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-block a{color:var(--accent);cursor:pointer;text-decoration:underline;font-weight:600;}
 .up-note{font-size:12px;background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.25);
   color:var(--text-secondary);border-radius:8px;padding:8px 12px;margin-bottom:10px;}
+.batch-info{flex:1;min-width:0;}
+.batch-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
+.vis-badge{font-size:10px;padding:2px 7px;border-radius:999px;margin-left:6px;white-space:nowrap;}
+.vis-badge.pool{background:rgba(37,99,235,.12);color:var(--accent);}
+.vis-badge.excl{background:rgba(196,127,0,.15);color:#8a5a00;}
+.share-list{max-height:320px;overflow-y:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px;}
+.share-row{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;font-size:13px;
+  border-bottom:1px solid var(--border);cursor:pointer;}
+.share-row:last-child{border-bottom:none;}
+.share-row.on{background:rgba(37,99,235,.06);}
+.share-role{font-size:10px;color:var(--text-secondary);text-transform:uppercase;}
 .batch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px;}
 .batch-row.removed{opacity:.55;}
@@ -631,6 +642,21 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       </div>
       <div class="team-add-title" style="margin:22px 0 8px;">Your batches</div>
       <div id="upBatches"><div class="empty-state">Nothing uploaded yet.</div></div>
+    </div>
+
+    <div id="shareModal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-title">Share this batch</div>
+        <div class="modal-sub">They will see these leads even while the batch is exclusive.
+          Sharing replaces the current list.</div>
+        <input class="text-input" id="shareSearch" placeholder="Search by name or email"
+               oninput="renderShareList(this.value)" autocomplete="off">
+        <div id="shareList" class="share-list"></div>
+        <div class="modal-actions">
+          <button class="mini-btn" onclick="closeModal('shareModal')">Cancel</button>
+          <button class="mini-btn team-add-btn" onclick="saveShare()">Save</button>
+        </div>
+      </div>
     </div>
 
     <div id="adminStatsPanel">
@@ -3115,20 +3141,133 @@ async function submitUpload() {
   loadBatches();
 }
 
+let rosterCache = [];
+let donationDest = '';
+
 async function loadBatches() {
   const box = document.getElementById('upBatches');
   const data = await api('GET', { action: 'myBatches' });
   const list = (data && data.batches) || [];
   if (!list.length) { box.innerHTML = '<div class="empty-state">Nothing uploaded yet.</div>'; return; }
+
+  if (!rosterCache.length) {
+    const r = await api('GET', { action: 'roster' });
+    rosterCache = (r && r.roster) || [];
+  }
+  if (!donationDest) {
+    const d = await api('GET', { action: 'donationInfo' });
+    donationDest = (d && d.destination) || '';
+  }
+
   box.innerHTML = list.map(function(b) {
     const gone = b.batchStatus === 'removed';
+    const exclusive = String(b.visibility || 'pool') === 'exclusive';
+    const shared = String(b.sharedWith || '').split(',').filter(Boolean);
+    const sharedNames = shared.map(function(id) {
+      const u = rosterCache.filter(function(x) { return x.id === id; })[0];
+      return u ? u.name : id;
+    });
+
     return '<div class="batch-row' + (gone ? ' removed' : '') + '">' +
-      '<div><div>' + b.count + ' leads · ' + escapeHtml(b.state) + ' · ' + escapeHtml(b.source || '—') + '</div>' +
-      '<div class="batch-meta">' + escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '') +
-      (gone ? ' · removed' : '') + '</div></div>' +
-      '<button class="tiny-btn" onclick="toggleBatch(\'' + escapeHtml(b.batchId) + '\', \'' + b.state + '\', ' + (gone ? 'true' : 'false') + ')">' +
-      (gone ? 'Restore' : 'Remove') + '</button></div>';
+      '<div class="batch-info">' +
+        '<div>' + b.count + ' leads · ' + escapeHtml(b.state) + ' · ' + escapeHtml(b.source || '—') +
+          ' <span class="vis-badge ' + (exclusive ? 'excl' : 'pool') + '">' +
+          (exclusive ? '🔒 Exclusive' : '👥 Pool') + '</span>' +
+        '</div>' +
+        '<div class="batch-meta">' + escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '') +
+          (b.locked ? ' · ' + b.locked + ' being dialed' : '') +
+          (gone ? ' · removed' : '') +
+          (sharedNames.length ? ' · shared with ' + escapeHtml(sharedNames.join(', ')) : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="batch-actions">' +
+        '<button class="tiny-btn" onclick="setBatchVis(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
+          (exclusive ? 'pool' : 'exclusive') + '\')">' +
+          (exclusive ? 'Make pool' : 'Make exclusive') + '</button>' +
+        '<button class="tiny-btn" onclick="openShare(\'' + b.batchId + '\',\'' + b.state + '\')">Share…</button>' +
+        (donationDest ? '<button class="tiny-btn" onclick="donateBatch(\'' + b.batchId + '\',\'' + b.state + '\')">Donate</button>' : '') +
+        '<button class="tiny-btn" onclick="toggleBatch(\'' + b.batchId + '\',\'' + b.state + '\',' + (gone ? 'true' : 'false') + ')">' +
+          (gone ? 'Restore' : 'Remove') + '</button>' +
+      '</div>' +
+    '</div>';
   }).join('');
+}
+
+function batchResult(out) {
+  if (!out || out.error) return out && out.error ? out.error : 'Something went wrong.';
+  const bits = [out.changed + ' updated'];
+  // Naming what was skipped matters — silently missing rows looks like a bug.
+  if (out.skippedLocked) bits.push(out.skippedLocked + ' skipped, being dialed right now');
+  if (out.notMine) bits.push(out.notMine + ' skipped, not yours');
+  return bits.join(' · ');
+}
+
+async function setBatchVis(batchId, stateCode, visibility) {
+  const msg = document.getElementById('upMsg');
+  msg.textContent = 'Updating…';
+  const out = await api('POST', {
+    action: 'setBatchVisibility', batchId: batchId, state: stateCode, visibility: visibility
+  });
+  msg.textContent = batchResult(out);
+  loadBatches();
+}
+
+async function donateBatch(batchId, stateCode) {
+  if (!confirm('Donate this batch to ' + donationDest + '?\n\n' +
+               'They become pool leads anyone there can dial. Leads being dialed right now are left alone.')) return;
+  const msg = document.getElementById('upMsg');
+  msg.textContent = 'Donating…';
+  const out = await api('POST', { action: 'donateBatch', batchId: batchId, state: stateCode });
+  msg.textContent = (out && out.destination)
+    ? batchResult(out) + ' · now owned by ' + out.destination
+    : batchResult(out);
+  loadBatches();
+}
+
+// ── share picker ────────────────────────────────────────────────
+let shareCtx = null;
+
+function openShare(batchId, stateCode) {
+  shareCtx = { batchId: batchId, state: stateCode, chosen: {} };
+  const list = document.getElementById('shareList');
+  document.getElementById('shareSearch').value = '';
+  renderShareList('');
+  document.getElementById('shareModal').classList.add('show');
+}
+
+function renderShareList(q) {
+  const needle = String(q || '').toLowerCase();
+  const list = document.getElementById('shareList');
+  const rows = rosterCache.filter(function(u) {
+    return !needle || String(u.name).toLowerCase().indexOf(needle) !== -1 ||
+           String(u.email).toLowerCase().indexOf(needle) !== -1;
+  });
+  list.innerHTML = rows.length ? rows.map(function(u) {
+    const on = !!shareCtx.chosen[u.id];
+    return '<label class="share-row' + (on ? ' on' : '') + '">' +
+      '<input type="checkbox" ' + (on ? 'checked' : '') +
+      ' onchange="toggleShare(\'' + u.id + '\', this.checked)">' +
+      '<span><b>' + escapeHtml(u.name) + '</b> <span class="share-role">' +
+      escapeHtml(u.role) + '</span><br><span class="batch-meta">' + escapeHtml(u.email) + '</span></span>' +
+    '</label>';
+  }).join('') : '<div class="empty-state">Nobody matches that.</div>';
+}
+
+function toggleShare(id, on) {
+  if (on) shareCtx.chosen[id] = true; else delete shareCtx.chosen[id];
+}
+
+async function saveShare() {
+  const ids = Object.keys(shareCtx.chosen);
+  const msg = document.getElementById('upMsg');
+  closeModal('shareModal');
+  msg.textContent = 'Sharing…';
+  const out = await api('POST', {
+    action: 'shareBatch', batchId: shareCtx.batchId, state: shareCtx.state, userIds: ids
+  });
+  msg.textContent = ids.length ? batchResult(out) : batchResult(out) + ' · sharing cleared';
+  shareCtx = null;
+  loadBatches();
 }
 
 async function toggleBatch(batchId, state, active) {
