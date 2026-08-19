@@ -267,6 +267,13 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .script-iframe{flex:1;width:100%;border:none;background:var(--bg);}
 
 /* Leaderboard */
+.lb-total{text-align:center;font-size:13px;color:var(--text-secondary);margin-bottom:12px;}
+.lb-total strong{color:var(--text);font-size:16px;}
+.lb-main{flex:1;min-width:0;}
+.lb-ap-bar{height:4px;background:var(--input-bg);border-radius:2px;margin-top:6px;overflow:hidden;}
+.lb-ap-bar span{display:block;height:100%;background:var(--accent);border-radius:2px;}
+.lb-ap{font-weight:700;font-size:15px;}
+.lb-sub{font-size:11px;color:var(--text-secondary);margin-top:2px;}
 .lb-row{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;}
 .lb-row.me{border-color:var(--primary);background:linear-gradient(135deg,rgba(0,113,227,0.08),rgba(0,113,227,0.02));}
 .lb-rank{font-size:16px;font-weight:800;color:var(--text-secondary);min-width:24px;}
@@ -1691,6 +1698,99 @@ async function confirmCallback() {
   state.callbackContext = null;
 }
 
+
+// ══════════════════════════════════════════════════
+// ADD TO CALENDAR
+// ══════════════════════════════════════════════════
+// A downloaded .ics rather than an API insert: writing to someone's calendar
+// needs the sensitive calendar.events scope and Google review. This works
+// today, in whatever calendar app they already use.
+function icsStamp(d) {
+  return d.getUTCFullYear() +
+    String(d.getUTCMonth() + 1).padStart(2, '0') +
+    String(d.getUTCDate()).padStart(2, '0') + 'T' +
+    String(d.getUTCHours()).padStart(2, '0') +
+    String(d.getUTCMinutes()).padStart(2, '0') + '00Z';
+}
+
+function icsEscape(t) {
+  return String(t || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;')
+                        .replace(/,/g, '\\,').replace(/\n/g, '\\n');
+}
+
+// The appointment is in the lead's timezone, not the agent's — an Ohio
+// callback at 2pm means 2pm for the lead.
+function callbackMoment(cb) {
+  const iso = toISODate(cb.callbackDate);
+  const time = String(cb.callbackTime || '').trim();
+  if (!iso || !time) return null;
+  const m = time.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (!m) return null;
+  let hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const ap = (m[3] || '').toLowerCase();
+  if (ap === 'pm' && hh < 12) hh += 12;
+  if (ap === 'am' && hh === 12) hh = 0;
+
+  const tz = CONFIG.STATE_TIMEZONES[cb.state] || 'America/New_York';
+  // Find the UTC instant whose local time in tz is the wall clock we want.
+  const guess = new Date(iso + 'T' + String(hh).padStart(2, '0') + ':' +
+                         String(mm).padStart(2, '0') + ':00Z');
+  const shown = new Date(guess.toLocaleString('en-US', { timeZone: tz }));
+  const utcRef = new Date(guess.toLocaleString('en-US', { timeZone: 'UTC' }));
+  return new Date(guess.getTime() + (utcRef.getTime() - shown.getTime()));
+}
+
+function addCallbackToCalendar(stateCode, rowIndex) {
+  const cb = (state.myCallbacks || []).filter(function(c) {
+    return c.state === stateCode && String(c.rowIndex) === String(rowIndex);
+  })[0];
+  if (!cb) return;
+
+  const start = callbackMoment(cb);
+  if (!start) { alert('That callback has no usable date and time yet.'); return; }
+  const end = new Date(start.getTime() + 30 * 60000);
+
+  const phone = formatPhone(cb.phone);
+  const title = 'Callback: ' + (cb.name || 'Lead') + ' (' + phone + ')';
+  const body = [
+    'FreedomCRM callback',
+    'Name: ' + (cb.name || ''),
+    'Phone: ' + phone,
+    cb.city ? 'City: ' + cb.city + ', ' + cb.state : 'State: ' + cb.state,
+    cb.email ? 'Email: ' + cb.email : '',
+    cb.lead_id ? 'Lead ID: ' + cb.lead_id : ''
+  ].filter(Boolean).join('\n');
+
+  // Two alarms, as asked: a day before and half an hour before.
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//FreedomCRM//Callback//EN',
+    'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    'UID:' + (cb.lead_id || (stateCode + '-' + rowIndex)) + '@freedomcrm',
+    'DTSTAMP:' + icsStamp(new Date()),
+    'DTSTART:' + icsStamp(start),
+    'DTEND:' + icsStamp(end),
+    'SUMMARY:' + icsEscape(title),
+    'DESCRIPTION:' + icsEscape(body),
+    'BEGIN:VALARM', 'TRIGGER:-P1D', 'ACTION:DISPLAY',
+    'DESCRIPTION:' + icsEscape('Tomorrow: ' + title), 'END:VALARM',
+    'BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY',
+    'DESCRIPTION:' + icsEscape('In 30 minutes: ' + title), 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR'
+  ].join('\r\n');
+
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'callback-' + (cb.name || 'lead').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.ics';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
 // Opens the same callback modal from any context (dial, reschedule, leadView)
 function openCallbackModalFor(context) {
   state.callbackContext = context;
@@ -1987,6 +2087,7 @@ function renderMyCallbacks() {
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
           <a class="cb-mini-btn" href="tel:+${phoneClean}">📞 Call</a>
+          <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
         </div>
@@ -2087,26 +2188,54 @@ async function returnCallbackToPool(stateCode, rowIndex) {
 // ══════════════════════════════════════════════════
 // LEADERBOARD
 // ══════════════════════════════════════════════════
+let lbRange = 'today';
+const LB_RANGES = [['today','Today'],['week','This Week'],['month','This Month'],['ytd','This Year'],['all','All Time']];
+
+function switchLbRange(r) { lbRange = r; loadLeaderboard(); }
+
+function money(n) {
+  const v = Number(n) || 0;
+  return '$' + Math.round(v).toLocaleString('en-US');
+}
+
 async function loadLeaderboard() {
   const c = document.getElementById('leaderboardContent');
+  const tabs = '<div class="admin-tabs" style="margin-bottom:14px;">' + LB_RANGES.map(function(r) {
+    return '<button class="admin-tab' + (r[0] === lbRange ? ' active' : '') +
+           '" onclick="switchLbRange(\'' + r[0] + '\')">' + r[1] + '</button>';
+  }).join('') + '</div>';
+
   try {
-    const data = await api('GET', { action: 'leaderboard' });
+    const data = await api('GET', { action: 'leaderboard', range: lbRange });
     const rows = data.leaderboard || [];
-    if (rows.length === 0) {
-      c.innerHTML = '<div class="empty-state"><div class="empty-icon">🏆</div><div class="empty-title">No activity yet today</div><div class="empty-msg">Be the first!</div></div>';
+    if (!rows.length) {
+      c.innerHTML = tabs + '<div class="empty-state"><div class="empty-icon">🏆</div>' +
+        '<div class="empty-title">No activity in this range</div>' +
+        '<div class="empty-msg">Be the first!</div></div>';
       return;
     }
-    c.innerHTML = rows.map((r, i) => `
-      <div class="lb-row ${r.agent === state.agentName ? 'me' : ''}">
-        <div class="lb-rank ${i < 3 ? 'top' : ''}">${i + 1}</div>
-        <div class="lb-name">${escapeHtml(r.agent)}</div>
-        <div class="lb-stats">
-          <div>📞 <strong>${r.calls}</strong></div>
-          <div>✅ <strong>${r.sales}</strong></div>
-        </div>
-      </div>
-    `).join('') +
-    '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
+    // Ranked on annual premium — the number the business runs on.
+    const topAp = Math.max.apply(null, rows.map(function(r) { return Number(r.ap) || 0; })) || 1;
+    const totalAp = rows.reduce(function(n, r) { return n + (Number(r.ap) || 0); }, 0);
+
+    c.innerHTML = tabs +
+      '<div class="lb-total">Team AP <strong>' + money(totalAp) + '</strong></div>' +
+      rows.map(function(r, i) {
+        const ap = Number(r.ap) || 0;
+        const pct = Math.round((ap / topAp) * 100);
+        return '<div class="lb-row ' + (r.agent === state.agentName ? 'me' : '') + '">' +
+          '<div class="lb-rank ' + (i < 3 ? 'top' : '') + '">' + (i + 1) + '</div>' +
+          '<div class="lb-main">' +
+            '<div class="lb-name">' + escapeHtml(r.agent) + '</div>' +
+            '<div class="lb-ap-bar"><span style="width:' + pct + '%"></span></div>' +
+          '</div>' +
+          '<div class="lb-stats">' +
+            '<div class="lb-ap">' + money(ap) + '</div>' +
+            '<div class="lb-sub">📞 ' + r.calls + ' · ✅ ' + r.sales + ' · 📅 ' + (r.callbacks || 0) + '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('') +
+      '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
   } catch (e) {
     c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load leaderboard.</div></div>';
   }
