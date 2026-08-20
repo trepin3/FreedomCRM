@@ -161,7 +161,14 @@ function listStates_(me) {
           if (!canSee_(row, me)) return;
           total++;
           const st = String(row[ix_('Status')] || '').toLowerCase();
-          if (DIALABLE.indexOf(st) !== -1 && !row[ix_('Locked By')]) available++;
+          if (DIALABLE.indexOf(st) === -1) return;
+          // A lead this user already holds still counts for them. Excluding
+          // every locked row made a state disappear from the picker of the one
+          // agent working it — reserve a stack, refresh, and your own leads
+          // become unreachable.
+          const lockedBy = String(row[ix_('Locked By')] || '');
+          if (lockedBy && lockedBy !== String(me && me.name || '')) return;
+          available++;
         });
       }
     } catch (e) { return; }
@@ -170,8 +177,16 @@ function listStates_(me) {
 
   states.sort(function(a, b) { return b.available - a.available || a.name.localeCompare(b.name); });
   const out = { states: states, all: US_STATES };
-  cache.put(key, JSON.stringify(out), 120);
+  // Short: a release by one agent makes leads available to everyone else, and
+  // nobody should stare at a stale picker waiting for it to catch up.
+  cache.put(key, JSON.stringify(out), 30);
   return out;
+}
+
+function invalidateStates_(me) {
+  try {
+    CacheService.getScriptCache().remove('states_' + (me ? me.id : 'anon'));
+  } catch (e) {}
 }
 const BATCH_SIZE = 5;
 const LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -912,6 +927,9 @@ function doPost(e) {
     const user = verifySession_(body.s);
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
+    // Any POST here can change what is dialable, so the caller's cached
+    // picker counts are dropped rather than left to expire.
+    invalidateStates_(userByEmail_(user.email));
     logActivity_(user, action, body.rowIndex ? ('row ' + body.rowIndex) : '', body.state);
 
     const ua = userAction_(user, action, body);
@@ -979,12 +997,25 @@ function getLeads(stateCode, agent, me, size) {
     const iAtt = ix_('Attempts'), iStart = ix_('Last Call Start');
     const iHold = ix_('Callback Hold Until'), iCbAgent = ix_('Scheduled By');
 
+    // Leads this agent already holds come back to them. Treating their own
+    // locks as unavailable meant a refresh reserved a second stack on top of
+    // the first, and the leads they were part-way through vanished.
+    const mine = [];
     const avail = [];
     data.forEach(function(row, i) {
       const st = String(row[iStatus] || '').toLowerCase();
       if (DIALABLE.indexOf(st) === -1) return;
-      if (row[iLockBy]) return;                       // someone holds it
       if (!canSee_(row, me)) return;                  // not mine to dial
+
+      const lockedBy = String(row[iLockBy] || '');
+      if (lockedBy) {
+        if (lockedBy === String(agent || '')) {
+          mine.push({ rowIndex: i + 2, row: row,
+                      attempts: Number(row[iAtt]) || 0,
+                      last: row[iStart] ? new Date(row[iStart]).getTime() : 0 });
+        }
+        return;                                       // held, by them or someone else
+      }
 
       // A callback stays with the agent who booked it until the hold expires.
       const hold = row[iHold] ? new Date(row[iHold]).getTime() : 0;
@@ -1010,20 +1041,26 @@ function getLeads(stateCode, agent, me, size) {
       return a.last - b.last;
     });
 
-    const batch = avail.slice(0, want);
+    // Top the existing stack back up to a full one rather than replacing it.
+    const fresh = avail.slice(0, Math.max(0, want - mine.length));
+    const batch = mine.concat(fresh);
     if (!batch.length) return { leads: [], state: stateCode };
 
     const nowStr = stamp_();
     const lockRange = sheet.getRange(2, LOCK_COL, lastRow - 1, LOCK_W);
     const lockVals = lockRange.getValues();
-    batch.forEach(function(item) {
+    fresh.forEach(function(item) {
       const r = item.rowIndex - 2;
       lockVals[r][0] = agent || '';   // Locked By
       lockVals[r][1] = nowStr;        // Locked At
       lockVals[r][2] = nowStr;        // Last Activity At
     });
+    // Held leads keep their original lock time but the idle clock restarts,
+    // so a stack cannot expire underneath someone still working it.
+    mine.forEach(function(item) { lockVals[item.rowIndex - 2][2] = nowStr; });
     lockRange.setValues(lockVals);
     SpreadsheetApp.flush();
+    invalidateStates_(me);
 
     return {
       state: stateCode,
