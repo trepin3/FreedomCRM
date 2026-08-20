@@ -231,6 +231,8 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .action-dcid{background:var(--danger);}
 .action-wrong{background:var(--text-secondary);}
 .action-callback{background:var(--warning);grid-column:span 2;}
+.action-reschedule{background:var(--warning);}
+.action-next{background:var(--accent);grid-column:span 2;}
 
 /* Nav row (back + tabs stay in header) */
 .nav-row{display:flex;gap:8px;margin-bottom:12px;}
@@ -2409,8 +2411,7 @@ function checkCallbackAlerts() {
     div.className = 'cb-alert';
     div.innerHTML = `
       <div class="cb-alert-text">📅 Callback due: ${escapeHtml(cb.name)}</div>
-      <button class="cb-alert-call" onclick="openCbFromAlert('${cbId}')" style="margin-right:4px;">👁️ View</button>
-      <a class="cb-alert-call" href="tel:+${phoneClean}">📞 Call</a>
+      <button class="cb-alert-call" onclick="openCbFromAlert('${cbId}')">👁️ View</button>
       <button class="cb-alert-close" onclick="this.parentElement.remove()">✕</button>
     `;
     container.appendChild(div);
@@ -2554,7 +2555,8 @@ function renderLeadView() {
         <button class="action-btn action-sold" onclick="leadViewDo('sold')">✅ Sold</button>
         <button class="action-btn action-dcid" onclick="leadViewDo('dcid')">🚫 DCID</button>
         <button class="action-btn action-wrong" onclick="leadViewDo('wrong')">📵 Wrong #</button>
-        <button class="action-btn action-callback" onclick="leadViewDo('reschedule')">📅 Reschedule</button>
+        <button class="action-btn action-reschedule" onclick="leadViewDo('reschedule')">📅 Reschedule</button>
+        <button class="action-btn action-next" onclick="leaveLeadView()">➡️ Next</button>
       </div>
       <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
     `;
@@ -2607,6 +2609,17 @@ function doneLeadViewCall() {
   checkCallMilestones();
   renderLeadView();
 }
+// Closing a callback without dispositioning it. The callback stays booked and
+// the lead keeps its hold — this is "I'm done looking", not an outcome, so it
+// must not touch the lead the way the disposition buttons do.
+function leaveLeadView() {
+  closeLeadView();
+  switchTab('dial');
+  // Someone who went straight to Callbacks has no batch yet, and Next would
+  // drop them on an empty dialer. Their existing batch is left alone.
+  if (!state.leads || !state.leads.length) loadLeads();
+}
+
 function leadViewDo(action) {
   const lv = leadViewState;
   if (!lv) return;
