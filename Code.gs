@@ -993,10 +993,16 @@ function getLeads(stateCode, agent, me, size) {
       });
     });
 
-    // Never-dialled first, then longest since the last attempt.
+    // Never-dialled first, then longest since the last attempt. Within the
+    // never-dialled group the order is random: they all tie on both keys, so a
+    // plain sort falls back to sheet order and every agent is handed the same
+    // top rows, queueing them behind each other's locks. It also means the
+    // oldest rows are dialled to death while newer ones are never reached.
+    avail.forEach(function(item) { item.shuffle = Math.random(); });
     avail.sort(function(a, b) {
       if (a.attempts === 0 && b.attempts !== 0) return -1;
       if (b.attempts === 0 && a.attempts !== 0) return 1;
+      if (a.attempts === 0 && b.attempts === 0) return a.shuffle - b.shuffle;
       return a.last - b.last;
     });
 
