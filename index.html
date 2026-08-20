@@ -2614,10 +2614,11 @@ function doneLeadViewCall() {
 // must not touch the lead the way the disposition buttons do.
 function leaveLeadView() {
   closeLeadView();
+  // Someone who went straight to Callbacks has no batch yet. Send them to the
+  // state picker rather than reserving leads they did not ask for — a batch
+  // pulled behind their back locks rows away from everyone else.
+  if (!state.leads || !state.leads.length) { goToCrm(); return; }
   switchTab('dial');
-  // Someone who went straight to Callbacks has no batch yet, and Next would
-  // drop them on an empty dialer. Their existing batch is left alone.
-  if (!state.leads || !state.leads.length) loadLeads();
 }
 
 function leadViewDo(action) {
