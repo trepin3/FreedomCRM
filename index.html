@@ -872,7 +872,7 @@ const CONFIG = {
   GOOGLE_CLIENT_ID: '416228276690-41m3pskc2ga2he06jvgusp23j1fvaepk.apps.googleusercontent.com',
   ADMIN_EMAILS: ['kepler.benefic.ins@gmail.com'],   // UI routing only — the backend decides for real
   SCRIPT_TOOL_URL: 'https://trepin3.github.io/The-Basics/',
-  BATCH_SIZE: 5,
+  BATCH_SIZE: 150,   // matches RESERVE_SIZE in Code.gs; the server decides for real
   // Every state, because the TCPA window is computed from this. A missing
   // entry would silently fall back to Pacific and let an agent dial at a
   // legally wrong hour. States spanning two zones use the one holding most

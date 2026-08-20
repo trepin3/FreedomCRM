@@ -956,7 +956,11 @@ function getLeads(stateCode, agent, me, size) {
   if (!sheets_()[stateCode]) return { error: 'invalid state' };
   const ss = SpreadsheetApp.openById(sheets_()[stateCode]);
   const sheet = ss.getSheetByName('Leads');
-  const want = Number(size) || BATCH_SIZE;
+  // A full stack, not a handful. Locked By/At, Last Activity At and Call Open
+  // At are columns 6-9, so the whole block is read and written once — at this
+  // size, setting cells one at a time would be 600 calls and time out.
+  const want = Number(size) || RESERVE_SIZE;
+  const LOCK_COL = COL['Locked By'], LOCK_W = 4;
 
   // One agent at a time, or two can reserve the same row.
   const lock = LockService.getScriptLock();
@@ -1010,11 +1014,15 @@ function getLeads(stateCode, agent, me, size) {
     if (!batch.length) return { leads: [], state: stateCode };
 
     const nowStr = stamp_();
+    const lockRange = sheet.getRange(2, LOCK_COL, lastRow - 1, LOCK_W);
+    const lockVals = lockRange.getValues();
     batch.forEach(function(item) {
-      sheet.getRange(item.rowIndex, COL['Locked By']).setValue(agent || '');
-      sheet.getRange(item.rowIndex, COL['Locked At']).setValue(nowStr);
-      sheet.getRange(item.rowIndex, COL['Last Activity At']).setValue(nowStr);
+      const r = item.rowIndex - 2;
+      lockVals[r][0] = agent || '';   // Locked By
+      lockVals[r][1] = nowStr;        // Locked At
+      lockVals[r][2] = nowStr;        // Last Activity At
     });
+    lockRange.setValues(lockVals);
     SpreadsheetApp.flush();
 
     return {
@@ -1038,6 +1046,10 @@ function releaseStale_(sheet) {
   const now = Date.now();
   const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'), iOpen = ix_('Call Open At');
 
+  const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
+  const lockVals = lockRange.getValues();
+  let freed = 0;
+
   data.forEach(function(row, i) {
     if (!row[iLockBy]) return;
     const openAt = row[iOpen] ? new Date(row[iOpen]).getTime() : 0;
@@ -1047,8 +1059,16 @@ function releaseStale_(sheet) {
       const act = row[iAct] ? new Date(row[iAct]).getTime() : 0;
       if (act && now - act < IDLE_RELEASE_MS) return;
     }
-    clearLock_(sheet, i + 2);
+    lockVals[i][0] = '';   // Locked By
+    lockVals[i][1] = '';   // Locked At
+    lockVals[i][3] = '';   // Call Open At
+    row[iLockBy] = '';     // so the caller sees it as available in this pass
+    freed++;
   });
+
+  // One write, however many were stale. Releasing a 150-lead stack row by row
+  // would be 450 calls.
+  if (freed) lockRange.setValues(lockVals);
 }
 
 function clearLock_(sheet, rowIndex) {
@@ -1246,10 +1266,17 @@ function releaseAgentLocks(ss, agent) {
   const sheet = ss.getSheetByName('Leads');
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const vals = sheet.getRange(2, COL['Locked By'], lastRow - 1, 1).getValues();
-  vals.forEach(function(r, i) {
-    if (String(r[0] || '') === String(agent || '')) clearLock_(sheet, i + 2);
+
+  const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
+  const lockVals = lockRange.getValues();
+  let freed = 0;
+  lockVals.forEach(function(r) {
+    if (String(r[0] || '') !== String(agent || '')) return;
+    r[0] = ''; r[1] = ''; r[3] = '';
+    freed++;
   });
+  // Signing out of a 150-lead stack is one write, not four hundred and fifty.
+  if (freed) lockRange.setValues(lockVals);
 }
 
 // ══════════════════════════════════════════════════════════════════
