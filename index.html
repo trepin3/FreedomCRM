@@ -417,6 +417,11 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .team-msg{font-size:12px;font-weight:700;margin-top:9px;display:none;}
 .team-msg.err{display:block;color:var(--danger);}
 .team-msg.ok{display:block;color:var(--success);}
+.team-row.nested{position:relative;}
+.team-row.nested::before{content:'';position:absolute;left:-10px;top:50%;
+  width:8px;height:1.5px;background:var(--border);}
+.team-row.nested::after{content:'';position:absolute;left:-10px;top:-7px;bottom:50%;
+  width:1.5px;background:var(--border);}
 .team-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;box-shadow:var(--shadow);}
 .team-row.me{border-color:var(--primary);background:rgba(0,113,227,0.05);}
 .team-row.inactive{opacity:0.55;}
@@ -4019,6 +4024,43 @@ function parentOptions(exceptId) {
     .map(function(u) { return u; });
 }
 
+// Sorting by depth then name puts every manager on one line and every agent
+// on the next, so an agent sits under whichever manager happens to sort last
+// rather than their own. Walk the tree instead: each person immediately
+// followed by their own reports.
+function orderAsTree(users, me) {
+  const byParent = {};
+  users.forEach(function(u) {
+    (byParent[u.parentId || ''] = byParent[u.parentId || ''] || []).push(u);
+  });
+  Object.keys(byParent).forEach(function(k) {
+    // Managers above agents, then alphabetical — the people with reports of
+    // their own read better at the top of a branch.
+    byParent[k].sort(function(a, b) {
+      if (a.role !== b.role) return a.role === 'manager' ? -1 : 1;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  });
+
+  const seen = {};
+  const out = [];
+  (function walk(id) {
+    (byParent[id] || []).forEach(function(u) {
+      if (seen[u.id]) return;          // a cycle would otherwise hang the page
+      seen[u.id] = true;
+      out.push(u);
+      walk(u.id);
+    });
+  })(me && me.parentId ? me.parentId : '');
+
+  // Anyone whose parent is outside this view — a manager sees their own branch
+  // but not the person above them — still has to appear.
+  users.forEach(function(u) {
+    if (!seen[u.id]) { seen[u.id] = true; out.push(u); }
+  });
+  return out;
+}
+
 function renderTeam() {
   const me = teamCache.me || {};
   const isAdmin = me.role === 'admin';
@@ -4031,9 +4073,7 @@ function renderTeam() {
     }).join('');
   }
 
-  const rows = teamCache.users.slice().sort(function(a, b) {
-    return (a.depth - b.depth) || a.name.localeCompare(b.name);
-  });
+  const rows = orderAsTree(teamCache.users, me);
 
   document.getElementById('teamTree').innerHTML = rows.map(function(u) {
     const isMe = u.id === me.id;
@@ -4064,6 +4104,7 @@ function renderTeam() {
       ? '<span class="team-badge badge-' + escapeHtml(u.status) + '">' + escapeHtml(u.status) + '</span>' : '';
 
     return '<div class="team-row' + (isMe ? ' me' : '') + (u.status !== 'active' ? ' inactive' : '') +
+             (indent ? ' nested' : '') +
              '" style="margin-left:' + indent + 'px;">' +
              '<div class="team-who">' +
                '<div class="team-name">' + escapeHtml(u.name) + (isMe ? ' (you)' : '') + '</div>' +
