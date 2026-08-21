@@ -1125,7 +1125,22 @@ async function loadStates() {
   ensureDonationDest();
   const grid = document.getElementById('stateGrid');
   if (!grid) return;
-  const data = await api('GET', { action: 'listStates' });
+
+  // Clear first. Leaving the previous tiles up meant the counts from whoever
+  // was signed in last stayed on screen until the new answer arrived — and
+  // they are counts of leads this account may not be able to see at all.
+  grid.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  state.availableStates = [];
+
+  let data;
+  try {
+    data = await api('GET', { action: 'listStates' });
+  } catch (e) {
+    grid.innerHTML = '<div class="empty-state">Could not load your states. ' +
+      '<a onclick="loadStates()" style="color:var(--accent);cursor:pointer;' +
+      'text-decoration:underline;">Try again</a></div>';
+    return;
+  }
   const list = ((data && data.states) || []).filter(function(s) { return s.available > 0; });
   state.availableStates = list.map(function(s) { return s.code; });
 
@@ -1238,6 +1253,21 @@ async function doLogout() {
   state.history = [];
   state.seenIds.clear();
   state.stats = { calls: 0, sales: 0, dcid: 0, wrong: 0, callbacks: 0 };
+
+  // Everything cached about the last account. These are module-level and
+  // survive a sign-out otherwise, so the next person sees the previous
+  // person's team, batches, roster and donation destination.
+  state.availableStates = [];
+  state.myCallbacks = [];
+  rosterCache = [];
+  donationDest = '';
+  teamCache = { me: null, users: [] };
+  dcidCache = [];
+  lbRows = [];
+  uploadState.sources = [];
+  uploadState.pending = [];
+  const grid = document.getElementById('stateGrid');
+  if (grid) grid.innerHTML = '';
   const err = document.getElementById('loginError');
   if (err) err.style.display = 'none';
   show('loginView');
