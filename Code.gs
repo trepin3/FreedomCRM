@@ -793,7 +793,14 @@ function actionLogin_(body) {
 
   const agent = findAgent_(g.email);
   if (!agent)                      return { error: 'That account is not on the agent list.' };
-  if (agent.status !== 'active')   return { error: 'That account has been disabled.' };
+  // Paused and revoked are different situations and deserve different words.
+  // Paused is a probation an upline can lift; revoked is not.
+  if (agent.status === 'paused') {
+    return { error: 'Access restricted due to excessive inactivity. Call your upline to gain access.' };
+  }
+  if (agent.status !== 'active') {
+    return { error: 'This account no longer has access. Contact your admin.' };
+  }
 
   // Stamp Last Login on the Users row. This previously wrote column 5 of the
   // legacy Agents tab using a row index taken from Users — a different sheet
