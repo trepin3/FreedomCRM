@@ -288,6 +288,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .script-iframe{flex:1;width:100%;border:none;background:var(--bg);}
 
 /* Leaderboard */
+.lb-metrics{margin-bottom:14px;}
 .lb-total{text-align:center;font-size:13px;color:var(--text-secondary);margin-bottom:12px;}
 .lb-total strong{color:var(--text);font-size:16px;}
 .lb-main{flex:1;min-width:0;}
@@ -2487,56 +2488,113 @@ async function returnCallbackToPool(stateCode, rowIndex) {
 // LEADERBOARD
 // ══════════════════════════════════════════════════
 let lbRange = 'today';
-const LB_RANGES = [['today','Today'],['week','This Week'],['month','This Month'],['ytd','This Year'],['all','All Time']];
+let lbMetric = 'ap';
 
-function switchLbRange(r) { lbRange = r; loadLeaderboard(); }
+const LB_RANGES = [['today','Today'],['week','This Week'],['month','This Month'],
+                   ['ytd','This Year'],['all','All Time']];
+
+// The three things a life agent is actually measured on. Ranking by any one
+// of them tells a different story — dials reward effort, policies reward
+// closing, premium rewards the size of what was closed — so which one is
+// showing has to be unmissable rather than inferred from the numbers.
+const LB_METRICS = {
+  calls: { label: '📞 Dials',          unit: 'dials',    total: 'Team dials',
+           get: function(r) { return Number(r.calls) || 0; },
+           fmt: function(v) { return v.toLocaleString('en-US'); } },
+  sales: { label: '✅ Policies',       unit: 'policies', total: 'Policies written',
+           get: function(r) { return Number(r.sales) || 0; },
+           fmt: function(v) { return v.toLocaleString('en-US'); } },
+  ap:    { label: '💵 Annual Premium', unit: 'AP',       total: 'Team AP',
+           get: function(r) { return Number(r.ap) || 0; },
+           fmt: function(v) { return money(v); } }
+};
+
+function switchLbRange(r)  { lbRange = r;  loadLeaderboard(); }
+function switchLbMetric(m) { lbMetric = m; renderLeaderboard(); }
 
 function money(n) {
   const v = Number(n) || 0;
   return '$' + Math.round(v).toLocaleString('en-US');
 }
 
-async function loadLeaderboard() {
-  const c = document.getElementById('leaderboardContent');
-  const tabs = '<div class="admin-tabs" style="margin-bottom:14px;">' + LB_RANGES.map(function(r) {
+let lbRows = [];
+
+function lbControls() {
+  const ranges = '<div class="admin-tabs" style="margin-bottom:10px;">' + LB_RANGES.map(function(r) {
     return '<button class="admin-tab' + (r[0] === lbRange ? ' active' : '') +
            '" onclick="switchLbRange(\'' + r[0] + '\')">' + r[1] + '</button>';
   }).join('') + '</div>';
 
+  const metrics = '<div class="admin-tabs lb-metrics">' + Object.keys(LB_METRICS).map(function(k) {
+    return '<button class="admin-tab' + (k === lbMetric ? ' active' : '') +
+           '" onclick="switchLbMetric(\'' + k + '\')">' + LB_METRICS[k].label + '</button>';
+  }).join('') + '</div>';
+
+  return ranges + metrics;
+}
+
+async function loadLeaderboard() {
+  const c = document.getElementById('leaderboardContent');
   try {
     const data = await api('GET', { action: 'leaderboard', range: lbRange });
-    const rows = data.leaderboard || [];
-    if (!rows.length) {
-      c.innerHTML = tabs + '<div class="empty-state"><div class="empty-icon">🏆</div>' +
-        '<div class="empty-title">No activity in this range</div>' +
-        '<div class="empty-msg">Be the first!</div></div>';
-      return;
-    }
-    // Ranked on annual premium — the number the business runs on.
-    const topAp = Math.max.apply(null, rows.map(function(r) { return Number(r.ap) || 0; })) || 1;
-    const totalAp = rows.reduce(function(n, r) { return n + (Number(r.ap) || 0); }, 0);
-
-    c.innerHTML = tabs +
-      '<div class="lb-total">Team AP <strong>' + money(totalAp) + '</strong></div>' +
-      rows.map(function(r, i) {
-        const ap = Number(r.ap) || 0;
-        const pct = Math.round((ap / topAp) * 100);
-        return '<div class="lb-row ' + (r.agent === state.agentName ? 'me' : '') + '">' +
-          '<div class="lb-rank ' + (i < 3 ? 'top' : '') + '">' + (i + 1) + '</div>' +
-          '<div class="lb-main">' +
-            '<div class="lb-name">' + escapeHtml(r.agent) + '</div>' +
-            '<div class="lb-ap-bar"><span style="width:' + pct + '%"></span></div>' +
-          '</div>' +
-          '<div class="lb-stats">' +
-            '<div class="lb-ap">' + money(ap) + '</div>' +
-            '<div class="lb-sub">📞 ' + r.calls + ' · ✅ ' + r.sales + ' · 📅 ' + (r.callbacks || 0) + '</div>' +
-          '</div>' +
-        '</div>';
-      }).join('') +
-      '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
+    lbRows = data.leaderboard || [];
+    renderLeaderboard();
   } catch (e) {
-    c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load leaderboard.</div></div>';
+    c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div>' +
+      '<div class="empty-msg">Failed to load leaderboard.</div></div>';
   }
+}
+
+// Re-ranks what is already loaded — switching metric is not a new question for
+// the server, just a different way of reading the same answer.
+function renderLeaderboard() {
+  const c = document.getElementById('leaderboardContent');
+  const m = LB_METRICS[lbMetric];
+
+  if (!lbRows.length) {
+    c.innerHTML = lbControls() + '<div class="empty-state"><div class="empty-icon">🏆</div>' +
+      '<div class="empty-title">No activity in this range</div>' +
+      '<div class="empty-msg">Be the first!</div></div>';
+    return;
+  }
+
+  // Ties break on the other two, so an agent who wrote more premium on the
+  // same policy count still places above.
+  const rows = lbRows.slice().sort(function(a, b) {
+    return m.get(b) - m.get(a) ||
+           (Number(b.ap) || 0) - (Number(a.ap) || 0) ||
+           (Number(b.sales) || 0) - (Number(a.sales) || 0) ||
+           (Number(b.calls) || 0) - (Number(a.calls) || 0);
+  });
+
+  const top = m.get(rows[0]) || 1;
+  const teamTotal = rows.reduce(function(n, r) { return n + m.get(r); }, 0);
+
+  c.innerHTML = lbControls() +
+    '<div class="lb-total">' + m.total + ' <strong>' + m.fmt(teamTotal) + '</strong></div>' +
+    rows.map(function(r, i) {
+      const v = m.get(r);
+      const pct = Math.round((v / top) * 100);
+      // The two metrics not being ranked on, so the ranking can be understood
+      // rather than just trusted.
+      const others = Object.keys(LB_METRICS)
+        .filter(function(k) { return k !== lbMetric; })
+        .map(function(k) { return LB_METRICS[k].label.split(' ')[0] + ' ' + LB_METRICS[k].fmt(LB_METRICS[k].get(r)); })
+        .join(' · ');
+
+      return '<div class="lb-row ' + (r.agent === state.agentName ? 'me' : '') + '">' +
+        '<div class="lb-rank ' + (i < 3 ? 'top' : '') + '">' + (i + 1) + '</div>' +
+        '<div class="lb-main">' +
+          '<div class="lb-name">' + escapeHtml(r.agent) + '</div>' +
+          '<div class="lb-ap-bar"><span style="width:' + pct + '%"></span></div>' +
+        '</div>' +
+        '<div class="lb-stats">' +
+          '<div class="lb-ap">' + m.fmt(v) + '</div>' +
+          '<div class="lb-sub">' + others + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('') +
+    '<button class="admin-refresh" style="margin:16px auto;" onclick="loadLeaderboard()">↻ Refresh</button>';
 }
 
 // ══════════════════════════════════════════════════
