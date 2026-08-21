@@ -4028,14 +4028,26 @@ function parentOptions(exceptId) {
 // on the next, so an agent sits under whichever manager happens to sort last
 // rather than their own. Walk the tree instead: each person immediately
 // followed by their own reports.
-function orderAsTree(users, me) {
+// Sorting by depth then name puts every manager on one row band and every
+// agent on the next, so an agent appears under whichever manager happens to
+// sort last rather than their own. Walk the tree instead.
+//
+// Roots are worked out from the data rather than from the viewer: a manager
+// sees their own branch but not the person above them, so the top of their
+// list is someone whose parent is simply absent.
+function orderAsTree(users) {
+  const present = {};
+  users.forEach(function(u) { present[u.id] = true; });
+
+  const ROOT = '\u0000root';
   const byParent = {};
   users.forEach(function(u) {
-    (byParent[u.parentId || ''] = byParent[u.parentId || ''] || []).push(u);
+    const key = present[u.parentId] ? u.parentId : ROOT;
+    (byParent[key] = byParent[key] || []).push(u);
   });
   Object.keys(byParent).forEach(function(k) {
-    // Managers above agents, then alphabetical — the people with reports of
-    // their own read better at the top of a branch.
+    // Managers above agents, then alphabetical — people with reports of their
+    // own read better at the top of a branch.
     byParent[k].sort(function(a, b) {
       if (a.role !== b.role) return a.role === 'manager' ? -1 : 1;
       return String(a.name).localeCompare(String(b.name));
@@ -4051,10 +4063,8 @@ function orderAsTree(users, me) {
       out.push(u);
       walk(u.id);
     });
-  })(me && me.parentId ? me.parentId : '');
+  })(ROOT);
 
-  // Anyone whose parent is outside this view — a manager sees their own branch
-  // but not the person above them — still has to appear.
   users.forEach(function(u) {
     if (!seen[u.id]) { seen[u.id] = true; out.push(u); }
   });
@@ -4073,12 +4083,17 @@ function renderTeam() {
     }).join('');
   }
 
-  const rows = orderAsTree(teamCache.users, me);
+  const rows = orderAsTree(teamCache.users);
+  // Indent relative to the shallowest person shown, not to the viewer —
+  // teamCache.me carries no depth, so anchoring on it indented everyone.
+  const baseDepth = rows.reduce(function(m, u) {
+    return Math.min(m, Number(u.depth) || 0);
+  }, Infinity);
 
   document.getElementById('teamTree').innerHTML = rows.map(function(u) {
     const isMe = u.id === me.id;
     const canTouch = !isMe && u.role !== 'admin';
-    const indent = Math.max(0, u.depth - (me.depth || 0)) * 18;
+    const indent = Math.max(0, (Number(u.depth) || 0) - baseDepth) * 18;
 
     let acts = '';
     if (canTouch) {
