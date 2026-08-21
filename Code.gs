@@ -1859,22 +1859,30 @@ function uploadLeads_(me, body) {
   try {
     // Duplicate check is per-owner-pool only. A number already worked by
     // another branch is reported, not blocked — it is a different pool.
+    // Keyed on number AND name. Final expense leads are households: a husband
+    // and wife request cover on the same line, and matching on the number
+    // alone silently discards the second of them. Two rows with the same
+    // number and the same name are a genuine duplicate; same number, different
+    // person is two prospects.
     const lr = sheet.getLastRow();
     const mine = {};
     if (lr >= 2) {
       const existing = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
       existing.forEach(function(row) {
         const digits = String(row[ix_('Phone')] || '').replace(/\D/g, '');
-        if (digits && String(row[ix_('Owner ID')] || '') === me.id) mine[digits] = true;
+        if (digits && String(row[ix_('Owner ID')] || '') === me.id) {
+          mine[digits + '|' + String(row[ix_('Name')] || '').trim().toLowerCase()] = true;
+        }
       });
     }
 
     const batchId = 'B' + Utilities.formatDate(new Date(), TZ, 'yyyyMMdd-HHmmss') + '-' + me.id;
     const idBase = nextLeadSeq_(sheet, state);
     const now = stamp_();
-    let seq = 0, skipped = 0, noPhone = 0, wrongState = 0;
+    let seq = 0, skipped = 0, noPhone = 0, wrongState = 0, households = 0;
     const out = [];
     const seenInBatch = {};
+    const seenPhone = {};
 
     incoming.forEach(function(item) {
       const name  = String(item['Name'] || '').trim();
@@ -1885,8 +1893,13 @@ function uploadLeads_(me, body) {
       // the wrong state sheet gets dialled against the wrong TCPA window.
       const rowState = String(item['State'] || '').trim().toUpperCase();
       if (rowState && rowState !== state) { wrongState++; return; }
-      if (mine[phone] || seenInBatch[phone]) { skipped++; return; }
-      seenInBatch[phone] = true;
+      const key = phone + '|' + name.toLowerCase();
+      if (mine[key] || seenInBatch[key]) { skipped++; return; }
+      // Same line, different person — kept, and counted so the number is
+      // explainable rather than looking like leads went missing.
+      if (seenPhone[phone]) households++;
+      seenInBatch[key] = true;
+      seenPhone[phone] = true;
 
       const row = new Array(LEAD_COLS.length).fill('');
       LEAD_COLS.forEach(function(col) {
@@ -1929,7 +1942,8 @@ function uploadLeads_(me, body) {
     logActivity_(me, 'uploadLeads', out.length + ' into ' + state + ' (' + source + ', ' + batchId + ')', state);
     return {
       success: true, added: out.length, batchId: batchId,
-      skippedDuplicate: skipped, skippedIncomplete: noPhone, skippedWrongState: wrongState
+      skippedDuplicate: skipped, skippedIncomplete: noPhone, skippedWrongState: wrongState,
+      households: households
     };
   } finally {
     lock.releaseLock();
