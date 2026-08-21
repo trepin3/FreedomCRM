@@ -3674,7 +3674,7 @@ async function submitUpload() {
   btn.disabled = true;
   const visibility = document.getElementById('upVisibility').value;
   const done = [];
-  let addedTotal = 0, dupes = 0, incomplete = 0, refused = 0, failed = '';
+  let addedTotal = 0, dupes = 0, incomplete = 0, refused = 0, sharedLine = 0, failed = '';
 
   // One request per state, so each batch lands in its own sheet with its
   // own batch id and can be pulled back independently.
@@ -3692,13 +3692,15 @@ async function submitUpload() {
     dupes      += out.skippedDuplicate || 0;
     incomplete += out.skippedIncomplete || 0;
     refused    += out.skippedWrongState || 0;
+    sharedLine += out.households || 0;
     done.push(out.added + ' to ' + CONFIG.STATE_NAMES[st]);
   }
   btn.disabled = false;
 
   if (failed) { msg.textContent = failed; return; }
   const bits = ['Added ' + addedTotal + ' leads — ' + done.join(', ') + '.'];
-  if (dupes) bits.push(dupes + ' already in your pool.');
+  if (dupes) bits.push(dupes + ' were duplicates.');
+  if (sharedLine) bits.push(sharedLine + ' share a phone with another lead and were kept.');
   if (incomplete) bits.push(incomplete + ' missing a name or phone.');
   if (refused) bits.push(refused + ' rejected by the server as wrong-state.');
   const orphanTotal = Object.keys(split.orphans).reduce(function(n, k) { return n + split.orphans[k]; }, 0);
