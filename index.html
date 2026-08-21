@@ -57,14 +57,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 body:not(.is-admin) .admin-only{display:none !important;}
 .admin-only{display:none;}
 body.is-admin .admin-only{display:flex;}
-.admin-jump{position:fixed;top:12px;right:112px;z-index:60;padding:10px 18px;border-radius:999px;
+.admin-jump{flex-shrink:0;padding:10px 18px;border-radius:999px;
   border:none;background:var(--primary);color:#fff;font-size:14px;font-weight:800;
   font-family:inherit;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:7px;
   box-shadow:0 2px 10px rgba(37,99,235,.35);transition:transform .12s,box-shadow .12s;}
 .admin-jump:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(37,99,235,.45);}
 .admin-jump:active{transform:translateY(0);}
 .admin-jump:focus-visible{outline:2px solid var(--primary);outline-offset:3px;}
-@media(max-width:560px){.admin-jump{right:100px;padding:9px 13px;font-size:13px;}}
+@media(max-width:560px){.admin-jump{padding:9px 13px;font-size:13px;}}
 .theme-fixed{position:fixed;top:16px;right:16px;z-index:200;width:36px;height:36px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:var(--shadow);}
 
 /* ── STATE PICKER ── */
@@ -95,7 +95,7 @@ body.is-admin .admin-only{display:flex;}
 .hud-logo-icon{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#0071e3,#30d158);display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff;flex-shrink:0;}
 .hud-title{font-size:15px;font-weight:800;letter-spacing:-0.3px;white-space:nowrap;}
 .hud-title span{color:var(--primary);}
-.hud-actions{display:flex;gap:6px;}
+.hud-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;}
 .icon-btn{width:32px;height:32px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform 0.15s;flex-shrink:0;}
 .icon-btn:active{transform:scale(0.9);}
 
@@ -564,12 +564,12 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <div class="hud-title">Freedom<span>CRM</span></div>
       </div>
       <div class="hud-actions">
+        <button class="admin-jump admin-only" id="portalJump" onclick="goToAdmin()"
+                title="Back to your portal">🛡️ Admin Portal</button>
         <button class="icon-btn" onclick="openSearch()" title="Search">🔍</button>
         <button class="icon-btn" onclick="goToUpload()" title="Upload your own leads">📥</button>
         <button class="icon-btn" onclick="toggleTheme()" id="dialerThemeBtn">🌙</button>
         <button class="icon-btn" onclick="endDialSession()" title="End Session">⏹</button>
-        <button class="admin-jump admin-only" id="portalJump" onclick="goToAdmin()"
-                title="Back to your portal">🛡️ Admin Portal</button>
       </div>
     </div>
     <div class="hud-header-row" style="margin-bottom:0;">
@@ -626,7 +626,6 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
      ADMIN DASHBOARD VIEW
 ══════════════════════════════════════════════════ -->
 <div id="adminView" class="view">
-  <button class="admin-jump" onclick="goToCrm()" title="Go to the dialer">📞 Open CRM</button>
   <div class="hud-header">
     <div class="hud-header-row">
       <div class="hud-brand">
@@ -634,9 +633,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <div class="hud-title" id="adminTitle">Admin <span>Dashboard</span></div>
       </div>
       <div class="hud-actions">
+        <button class="admin-jump" onclick="goToCrm()" title="Go to the dialer">📞 Open CRM</button>
         <button class="icon-btn" onclick="toggleTheme()" id="adminThemeBtn">🌙</button>
-        <button class="icon-btn admin-only" onclick="goToAdmin()" title="Admin view">🛡️</button>
-      <button class="icon-btn" onclick="doLogout()" title="Sign out">🚪</button>
+        <button class="icon-btn" onclick="doLogout()" title="Sign out">🚪</button>
       </div>
     </div>
   </div>
