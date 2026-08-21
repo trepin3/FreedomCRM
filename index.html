@@ -155,6 +155,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .lead-card{background:var(--card);border-radius:var(--radius);padding:20px;border:1px solid var(--border);box-shadow:var(--shadow-lg);}
 .lead-flag{padding:8px 12px;background:rgba(255,159,10,0.1);border:1px solid var(--warning);border-radius:var(--radius-sm);color:var(--warning);font-size:12px;font-weight:700;margin-bottom:12px;text-align:center;}
 .lead-name{font-size:24px;font-weight:800;color:var(--text);letter-spacing:-0.4px;margin-bottom:4px;line-height:1.2;}
+.lead-toast{position:sticky;bottom:8px;margin:10px auto 0;max-width:420px;text-align:center;
+  background:var(--accent);color:#fff;font-size:13px;font-weight:600;
+  padding:9px 14px;border-radius:9px;box-shadow:0 4px 14px rgba(0,0,0,.18);}
 .lead-header-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .lead-header-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;}
 .lead-header-row .lead-name{margin-bottom:0;flex:1;min-width:0;word-break:break-word;}
@@ -1110,7 +1113,16 @@ const STATE_ICONS = {
   CO:'🏔️', LA:'🎷', NV:'🎰', AK:'🐻', WA:'🌲', MI:'🚗', TN:'🎸', KY:'🐎'
 };
 
+async function ensureDonationDest() {
+  if (donationDest) return;
+  try {
+    const d = await api('GET', { action: 'donationInfo' });
+    donationDest = (d && d.destination) || '';
+  } catch (e) {}
+}
+
 async function loadStates() {
+  ensureDonationDest();
   const grid = document.getElementById('stateGrid');
   if (!grid) return;
   const data = await api('GET', { action: 'listStates' });
@@ -1470,6 +1482,8 @@ function renderLead() {
         <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
         <div class="lead-header-actions">
           <button class="lead-cb-btn" onclick="openEditLead('dial')">✏️ Edit</button>
+          ${lead.ownerIsMe ? '<button class="lead-cb-btn" onclick="openShareLead()">🤝 Share</button>' +
+                             '<button class="lead-cb-btn" onclick="donateThisLead()">🎁 Donate</button>' : ''}
           <button class="lead-cb-btn" onclick="openCallback()">📅 Schedule Callback</button>
         </div>
       </div>
@@ -3694,8 +3708,28 @@ async function donateBatch(batchId, stateCode) {
 let shareCtx = null;
 
 function openShare(batchId, stateCode) {
-  shareCtx = { batchId: batchId, state: stateCode, chosen: {} };
-  const list = document.getElementById('shareList');
+  shareCtx = { kind: 'batch', batchId: batchId, state: stateCode, chosen: {} };
+  openSharePicker('Share this batch',
+    'They will see these leads even while the batch is exclusive. Sharing replaces the current list.');
+}
+
+// Same picker, one lead. Handing a single lead to a colleague is a far more
+// common thing to want than handing over a hundred.
+async function openShareLead() {
+  const lead = state.leads[state.currentIdx];
+  if (!lead) return;
+  if (!rosterCache.length) {
+    const r = await api('GET', { action: 'roster' });
+    rosterCache = (r && r.roster) || [];
+  }
+  shareCtx = { kind: 'lead', state: lead.state, rowIndex: lead.rowIndex, chosen: {} };
+  openSharePicker('Share ' + (lead.name || 'this lead'),
+    'They will be able to see and dial this lead. Sharing replaces anyone it is already shared with.');
+}
+
+function openSharePicker(title, sub) {
+  document.querySelector('#shareModal .modal-title').textContent = title;
+  document.querySelector('#shareModal .modal-sub').textContent = sub;
   document.getElementById('shareSearch').value = '';
   renderShareList('');
   document.getElementById('shareModal').classList.add('show');
@@ -3725,15 +3759,62 @@ function toggleShare(id, on) {
 
 async function saveShare() {
   const ids = Object.keys(shareCtx.chosen);
-  const msg = document.getElementById('upMsg');
+  const ctx = shareCtx;
   closeModal('shareModal');
+  shareCtx = null;
+
+  if (ctx.kind === 'lead') {
+    const out = await api('POST', {
+      action: 'shareLead', state: ctx.state, rowIndex: ctx.rowIndex, userIds: ids
+    });
+    if (out && out.error) { alert(out.error); return; }
+    const who = ids.map(function(id) {
+      const u = rosterCache.filter(function(x) { return x.id === id; })[0];
+      return u ? u.name : id;
+    });
+    toastLead(ids.length ? 'Shared with ' + who.join(', ') : 'Sharing cleared for this lead');
+    return;
+  }
+
+  const msg = document.getElementById('upMsg');
   msg.textContent = 'Sharing…';
   const out = await api('POST', {
-    action: 'shareBatch', batchId: shareCtx.batchId, state: shareCtx.state, userIds: ids
+    action: 'shareBatch', batchId: ctx.batchId, state: ctx.state, userIds: ids
   });
   msg.textContent = ids.length ? batchResult(out) : batchResult(out) + ' · sharing cleared';
-  shareCtx = null;
   loadBatches();
+}
+
+// Donating from the card. The lead leaves this agent's list entirely, so the
+// card has to move on rather than sit on something that is no longer theirs.
+async function donateThisLead() {
+  const lead = state.leads[state.currentIdx];
+  if (!lead) return;
+  if (!confirm('Donate ' + (lead.name || 'this lead') + ' to ' + (donationDest || 'your upline') + '?\n\n' +
+               'It goes into their pool for other agents to work, and you will not be offered it again.')) return;
+
+  const out = await api('POST', {
+    action: 'donateLead', state: lead.state, rowIndex: lead.rowIndex
+  });
+  if (out && out.error) { alert(out.error); return; }
+
+  toastLead('Donated to ' + (out.destination || 'your upline'));
+  state.leads.splice(state.currentIdx, 1);
+  if (state.currentIdx >= state.leads.length) state.currentIdx = Math.max(0, state.leads.length - 1);
+  if (!state.leads.length) { loadLeads(); return; }
+  renderLead();
+  renderLeadRail();
+}
+
+// A brief note on the card itself — an alert here would interrupt dialling.
+function toastLead(text) {
+  const host = document.getElementById('dialContent');
+  if (!host) return;
+  const el = document.createElement('div');
+  el.className = 'lead-toast';
+  el.textContent = text;
+  host.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3200);
 }
 
 async function toggleBatch(batchId, state, active) {
