@@ -1559,6 +1559,16 @@ function markWorked() {
   const l = state.leads[state.currentIdx];
   if (l) l._worked = true;
 }
+
+// By identity rather than by position. A callback can be booked from the dial
+// card, the lead view or a reschedule, and only the first of those is looking
+// at state.leads[currentIdx].
+function markLeadWorked(stateCode, rowIndex) {
+  const l = (state.leads || []).filter(function(x) {
+    return x.state === stateCode && String(x.rowIndex) === String(rowIndex);
+  })[0];
+  if (l) l._worked = true;
+}
 function renderLeadRail() {
   const list = document.getElementById('railList');
   const count = document.getElementById('railCount');
@@ -1976,6 +1986,12 @@ async function confirmCallback() {
     callStart: state.callStart, callEnd: state.callEnd, callDuration: state.callDuration
   };
   api('POST', payload).catch(() => {});
+
+  // Booking an appointment is an outcome like any other, and the rail was the
+  // only disposition that did not say so — the lead sat there looking untouched
+  // while the agent had already set a time with them.
+  markLeadWorked(lead.state, lead.rowIndex);
+
   // Refresh callback cache so the due-alert loop knows about it
   setTimeout(loadMyCallbacks, 1500);
   if (ctx.source === 'reschedule') {
@@ -1983,9 +1999,11 @@ async function confirmCallback() {
     const idx = state.myCallbacks.findIndex(c => c.state === lead.state && c.rowIndex === lead.rowIndex);
     if (idx >= 0) { state.myCallbacks[idx].callbackDate = date; state.myCallbacks[idx].callbackTime = time; }
     renderMyCallbacks();
+    renderLeadRail();
   } else if (ctx.source === 'leadView') {
     // Scheduled from View Lead modal — close it and refresh
     closeLeadView();
+    renderLeadRail();
   } else {
     state.stats.callbacks++; updateStats();
     advanceLead();
@@ -1997,9 +2015,10 @@ async function confirmCallback() {
 // ══════════════════════════════════════════════════
 // ADD TO CALENDAR
 // ══════════════════════════════════════════════════
-// A downloaded .ics rather than an API insert: writing to someone's calendar
-// needs the sensitive calendar.events scope and Google review. This works
-// today, in whatever calendar app they already use.
+// Opens Google Calendar's own event page. Writing to a calendar directly needs
+// the sensitive calendar.events scope and Google's review; this needs neither
+// and lands where the agents actually keep their day. The .ics below stays as
+// a fallback for when the tab cannot be opened.
 function icsStamp(d) {
   return d.getUTCFullYear() +
     String(d.getUTCMonth() + 1).padStart(2, '0') +
@@ -2123,7 +2142,7 @@ function downloadCallbackIcs(cb, quiet) {
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//FreedomCRM//Callback//EN',
     'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
     'BEGIN:VEVENT',
-    'UID:' + (cb.lead_id || (stateCode + '-' + rowIndex)) + '@freedomcrm',
+    'UID:' + (cb.lead_id || (cb.state + '-' + (cb.rowIndex || Date.now()))) + '@freedomcrm',
     'DTSTAMP:' + icsStamp(new Date()),
     'DTSTART:' + icsStamp(start),
     'DTEND:' + icsStamp(end),
