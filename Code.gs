@@ -1952,7 +1952,10 @@ function setBatchStatus_(me, batchId, state, active) {
   data.forEach(function(row, i) {
     if (String(row[ix_('Batch ID')] || '') !== batchId) return;
     // Uploader can pull their own batch; admin can pull anyone's.
-    if (me.role !== 'admin' && String(row[ix_('Uploaded By')] || '') !== me.email) return;
+    // Ownership, not authorship. Keyed on Uploaded By, the donor could pull a
+    // batch out of rotation after giving it away — yanking a hundred leads
+    // back out of their upline's pool.
+    if (me.role !== 'admin' && String(row[ix_('Owner ID')] || '') !== String(me.id || '')) return;
     sheet.getRange(i + 2, COL['Batch Status']).setValue(active ? 'active' : 'removed');
     sheet.getRange(i + 2, COL['Status']).setValue(active ? STATUS.NEW : STATUS.REMOVED);
     touched++;
@@ -2028,6 +2031,9 @@ function myBatches_(me) {
       b.sharedWith = variants[0] || '';
       b.sharedOn = b._share[b.sharedWith] || 0;
       b.sharedMixed = variants.length > 1;
+      // A donated batch stays visible to the donor as a record, but it is not
+      // theirs to change any more.
+      b.ownerIsMe = String(b.ownerId || '') === String(me.id || '');
       delete b._share;
       out.push(b);
     });

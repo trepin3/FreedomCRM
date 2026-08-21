@@ -3599,6 +3599,7 @@ async function loadBatches() {
     // manager receiving it needs to see who it came from without asking.
     const donated = !!b.donatedBy;
     const mine = b.uploadedBy === state.agentEmail;
+    const canAct = b.ownerIsMe || state.role === 'admin';
     const origin = donated
       ? '🎁 Donated by ' + escapeHtml(b.donatedBy) + (b.donatedAt ? ' · ' + escapeHtml(b.donatedAt) : '')
       : escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '');
@@ -3620,7 +3621,12 @@ async function loadBatches() {
         '</div>' +
       '</div>' +
       '<div class="batch-actions">' +
-        '<button class="tiny-btn" onclick="setBatchVis(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
+        // Donated away: still listed so the agent can see where it went, but
+        // offering buttons that will only answer "not yours" is worse than
+        // offering none.
+        (!canAct
+          ? '<span class="batch-meta">no longer yours to change</span>'
+          : '<button class="tiny-btn" onclick="setBatchVis(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
           (exclusive ? 'pool' : 'exclusive') + '\')">' +
           (exclusive ? 'Make pool' : 'Make exclusive') + '</button>' +
         '<button class="tiny-btn" onclick="openShare(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
@@ -3628,7 +3634,7 @@ async function loadBatches() {
           ')">Share…</button>' +
         (donationDest ? '<button class="tiny-btn" onclick="donateBatch(\'' + b.batchId + '\',\'' + b.state + '\')">Donate</button>' : '') +
         '<button class="tiny-btn" onclick="toggleBatch(\'' + b.batchId + '\',\'' + b.state + '\',' + (gone ? 'true' : 'false') + ')">' +
-          (gone ? 'Restore' : 'Remove') + '</button>' +
+          (gone ? 'Restore' : 'Remove') + '</button>') +
       '</div>' +
     '</div>';
   }).join('');
