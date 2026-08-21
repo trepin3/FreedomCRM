@@ -408,6 +408,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .dup-row{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;
   background:var(--card);opacity:.55;transition:opacity .12s,border-color .12s;}
 .dup-row.on{opacity:1;border-color:var(--accent);background:rgba(37,99,235,.04);}
+.dup-row.existing{opacity:1;background:var(--input-bg);border-style:dashed;}
 .dup-row:last-child{margin-bottom:0;}
 .dup-pick{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;
   cursor:pointer;margin-bottom:8px;}
@@ -3103,7 +3104,8 @@ const UPLOAD_FIELDS = ['Name','First Name','Last Name','Phone','Email','Address'
   'Lead Type','Beneficiary','Hobby','Age','DOB'];
 // Composed into Name rather than stored — the sheet has one name column.
 const NAME_PARTS = { 'First Name': 1, 'Last Name': 1 };
-let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [], zipCity: {} };
+let uploadState = { headers: [], rows: [], map: {}, sources: [], pending: [], zipCity: {},
+                    existing: {}, existingChoice: {}, dupChoice: {}, dupEdits: {} };
 
 // ZIP -> city, looked up once and kept. Vendors leave City blank far more
 // often than Zip, and the same ZIPs recur across batches, so this survives
@@ -3247,11 +3249,111 @@ function parseUpload() {
   uploadState.map = {};
   uploadState.dupChoice = {};
   uploadState.dupEdits = {};
+  uploadState.existing = {};
+  uploadState.existingChoice = {};
   UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = guessColumn(uploadState.headers, f); });
   uploadState.autoState = autoPickState();
   renderMapping();
+  checkExistingLeads();      // async; re-renders when the answer arrives
 }
 
+
+
+// ── ALREADY IN THE CRM ───────────────────────────────────────────
+// Buying the same list twice, or overlapping lists from one vendor, is
+// ordinary. Checked against what this user can already see, so a lead is not
+// uploaded a second time and then dialled twice by two different people.
+let existingCheckToken = 0;
+
+async function checkExistingLeads() {
+  const token = ++existingCheckToken;
+  const parsed = uploadState.rows.map(mapRow).filter(rowReady);
+  if (!parsed.length) { uploadState.existing = {}; return; }
+
+  const split = groupByDestination(parsed);
+  const found = {};
+
+  for (const st of Object.keys(split.groups)) {
+    const phones = split.groups[st].map(dupPhone).filter(Boolean);
+    if (!phones.length) continue;
+    let out;
+    try {
+      out = await api('POST', { action: 'existingLeads', state: st, phones: phones });
+    } catch (e) { continue; }               // a failed check must not block the upload
+    if (token !== existingCheckToken) return;   // a newer file was loaded meanwhile
+    if (out && out.matches) {
+      Object.keys(out.matches).forEach(function(p) { found[st + '|' + p] = out.matches[p]; });
+    }
+  }
+
+  if (token !== existingCheckToken) return;
+  uploadState.existing = found;
+  renderMapping();
+}
+
+function existingMatch(o) {
+  const dest = rowDestination(o);
+  if (!dest) return null;
+  return (uploadState.existing || {})[dest + '|' + dupPhone(o)] || null;
+}
+
+function renderExistingReview(objs) {
+  const hits = [];
+  objs.forEach(function(o, i) {
+    const m = existingMatch(o);
+    if (m) hits.push({ idx: i, lead: o, match: m });
+  });
+  if (!hits.length) return '';
+
+  const body = hits.map(function(h) {
+    const on = uploadState.existingChoice[h.idx] === true;   // default: leave it out
+    const m = h.match;
+    const detail = [m.status, m.attempts + (m.attempts === 1 ? ' attempt' : ' attempts'),
+                    m.source || null, m.lastCall ? 'last called ' + m.lastCall : null]
+                   .filter(Boolean).join(' · ');
+
+    const fields = DUP_FIELDS.map(function(f) {
+      return '<label class="dup-field"><span>' + f + '</span>' +
+        '<input value="' + escapeHtml(String(dupValue(h.idx, f, objs))) + '"' +
+        ' oninput="editDupField(\'existing\',' + h.idx + ',\'' + f + '\',this.value)"></label>';
+    }).join('');
+
+    return '<div class="dup-group">' +
+      '<div class="dup-head">' + escapeHtml(formatPhone(dupPhone(h.lead))) +
+        ' <span class="batch-meta">already in your CRM</span></div>' +
+      '<div class="dup-row existing">' +
+        '<div class="dup-pick">In the CRM now: <b>' + escapeHtml(m.name) + '</b>' +
+        (m.leadId ? ' · ' + escapeHtml(m.leadId) : '') + '</div>' +
+        '<div class="batch-meta">' + escapeHtml(detail) + '</div>' +
+      '</div>' +
+      '<div class="dup-row' + (on ? ' on' : '') + '">' +
+        '<label class="dup-pick"><input type="checkbox" ' + (on ? 'checked' : '') +
+        ' onchange="toggleExistingRow(' + h.idx + ',this.checked)">' +
+        ' Upload this one anyway</label>' +
+        '<div class="dup-fields">' + fields + '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  return '<div class="dup-review">' +
+    '<div class="team-add-title">Already in your CRM — ' + hits.length + '</div>' +
+    '<div class="up-hint">These numbers are already leads you can see, so they are left out ' +
+    'by default. Leads you marked DCID are not listed — re-uploading one is how it gets ' +
+    'another try.</div>' + body + '</div>';
+}
+
+function toggleExistingRow(rowIdx, on) {
+  uploadState.existingChoice[rowIdx] = on;
+  renderMapping();
+}
+
+// Drops anything already in the CRM unless the uploader asked for it.
+function applyExistingResolution(objs) {
+  return objs.filter(function(o, i) {
+    if (!existingMatch(o)) return true;
+    return uploadState.existingChoice[i] === true;
+  });
+}
 
 // ── DUPLICATE REVIEW ─────────────────────────────────────────────
 // Two rows sharing a phone number are not automatically the same lead. Some
@@ -3355,7 +3457,7 @@ function toggleDupRow(phone, rowIdx, on) {
   renderMapping();
 }
 
-function editDupField(phone, rowIdx, field, value) {
+function editDupField(_group, rowIdx, field, value) {
   uploadState.dupEdits[rowIdx] = uploadState.dupEdits[rowIdx] || {};
   uploadState.dupEdits[rowIdx][field] = value;
   // Deliberately not re-rendering: it would steal focus mid-word.
@@ -3662,7 +3764,7 @@ function renderMapping() {
   // Reflect the review decisions, or the count promises rows that duplicate
   // resolution is about to drop.
   ensureDupState(complete);
-  const usable = applyDupResolution(complete).filter(rowStateOk).length;
+  const usable = applyExistingResolution(applyDupResolution(complete)).filter(rowStateOk).length;
   const wrongState = complete.length - usable;   // no sheet exists for these
   const short = uploadState.rows.length - complete.length;
 
@@ -3672,7 +3774,7 @@ function renderMapping() {
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
     (wrongState ? '<span class="up-warn"> · ' + wrongState + ' have no matching state sheet</span>' : '') +
-    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable) + renderDupReview(complete);
+    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable) + renderExistingReview(complete) + renderDupReview(complete);
 
   document.getElementById('upBtn').disabled = usable === 0;
 }
@@ -3833,8 +3935,8 @@ async function submitUpload() {
   const parsed = uploadState.rows.map(mapRow).filter(rowReady);
   if (!parsed.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
   ensureDupState(parsed);
-  const objs = applyDupResolution(parsed);
-  if (!objs.length) { msg.textContent = 'Every row was excluded in the duplicate review.'; return; }
+  const objs = applyExistingResolution(applyDupResolution(parsed));
+  if (!objs.length) { msg.textContent = 'Every row was excluded in the review.'; return; }
 
   const split = groupByDestination(objs);
   const dests = Object.keys(split.groups);
