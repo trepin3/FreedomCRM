@@ -1996,17 +1996,31 @@ function myBatches_(me) {
         source: String(b[i][iSource] || ''),
         batchStatus: String(b[i][iStatus] || ''),
         visibility: String(a[i][iVis] || VISIBILITY.POOL),
-        sharedWith: String(a[i][iShared] || ''),
         ownerId: String(a[i][iOwner] || ''),
         added: String(a[i][iAdded] || ''),
         donatedBy: String(c[i][iDonBy] || ''),
         donatedAt: String(c[i][iDonAt] || ''),
-        count: 0, locked: 0
+        count: 0, locked: 0, _share: {}
       };
       acc[batchId].count++;
       if (a[i][iLock]) acc[batchId].locked++;
+      // Sharing is stored per lead, so a batch can hold several different
+      // answers once someone revokes an individual one. Tally them rather
+      // than reporting whichever row happened to come first.
+      const sw = String(a[i][iShared] || '');
+      acc[batchId]._share[sw] = (acc[batchId]._share[sw] || 0) + 1;
     }
-    Object.keys(acc).forEach(function(k) { out.push(acc[k]); });
+    Object.keys(acc).forEach(function(k) {
+      const b = acc[k];
+      const variants = Object.keys(b._share);
+      // The most common answer is what the picker should open on.
+      variants.sort(function(x, y) { return b._share[y] - b._share[x]; });
+      b.sharedWith = variants[0] || '';
+      b.sharedOn = b._share[b.sharedWith] || 0;
+      b.sharedMixed = variants.length > 1;
+      delete b._share;
+      out.push(b);
+    });
   });
 
   out.sort(function(a, b) { return String(b.added).localeCompare(String(a.added)); });
