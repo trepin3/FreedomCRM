@@ -210,7 +210,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .dial-again-hint{font-size:11px;font-weight:700;opacity:0.9;margin-top:2px;}
 .lead-phone-wrap{margin:12px 0 16px;}
 .lead-phone{display:inline-flex;align-items:center;gap:6px;font-size:22px;font-weight:700;color:var(--primary);text-decoration:none;padding:6px 12px;background:rgba(0,113,227,0.08);border-radius:10px;}
-.lead-localtime{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:6px;}
+.lead-localtime,.lead-meta{font-size:12px;color:var(--text-secondary);font-weight:600;margin-top:6px;}
 /* Label above value, in pairs. Right-aligned values sat a long way from their
    label, so the eye had to travel to match them up mid-call. */
 .cb-time-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;align-items:start;}
@@ -1551,6 +1551,7 @@ function renderLead() {
       <div class="lead-phone-wrap">
         <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
+        ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
       <div class="lead-details">
         ${lead.age ? '<div class="detail-row"><span class="detail-key">Age</span><span class="detail-val">' + escapeHtml(String(lead.age)) + '</span></div>' : ''}
@@ -2843,6 +2844,7 @@ function renderLeadView() {
       <div class="lead-phone-wrap">
         <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
+        ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
       <div class="lead-details">
         ${lead.age ? '<div class="detail-row"><span class="detail-key">Age</span><span class="detail-val">' + escapeHtml(String(lead.age)) + '</span></div>' : ''}
