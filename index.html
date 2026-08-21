@@ -2935,13 +2935,35 @@ function leadViewDo(action) {
 // ══════════════════════════════════════════════════
 // SCRIPT TOOL IFRAME
 // ══════════════════════════════════════════════════
-let scriptToolLoaded = false;
+let scriptToolSrc = '';
+// A Bang Bang lead needs the Bang Bang script, opened with the two details
+// that script asks the prospect to confirm. Anything else gets the tool's own
+// front door.
+function scriptToolUrlFor(lead) {
+  const base = CONFIG.SCRIPT_TOOL_URL;
+  const source = String((lead && lead.lead_source) || '').toLowerCase();
+  if (source.indexOf('bang bang') === -1) return base;
+
+  const q = [];
+  if (lead.last_name) q.push('lastName=' + encodeURIComponent(lead.last_name));
+  if (lead.address)   q.push('address=' + encodeURIComponent(lead.address));
+  return base + 'bang-bang.html' + (q.length ? '?' + q.join('&') : '');
+}
+
 function openScriptTool() {
   const m = document.getElementById('scriptIframeModal');
   const f = document.getElementById('scriptIframe');
-  if (!scriptToolLoaded) {
-    f.src = CONFIG.SCRIPT_TOOL_URL;
-    scriptToolLoaded = true;
+
+  // Whichever card is actually in front of them.
+  const lead = (leadViewState && leadViewState.lead) || state.leads[state.currentIdx];
+  const url = scriptToolUrlFor(lead);
+
+  // Reload when the target changes, or the second lead would open on the
+  // first lead's name. Unchanged means no reload, so the agent keeps their
+  // place in the script.
+  if (scriptToolSrc !== url) {
+    f.src = url;
+    scriptToolSrc = url;
   }
   m.classList.add('show');
 }
