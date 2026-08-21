@@ -158,10 +158,11 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .lead-toast{position:sticky;bottom:8px;margin:10px auto 0;max-width:420px;text-align:center;
   background:var(--accent);color:#fff;font-size:13px;font-weight:600;
   padding:9px 14px;border-radius:9px;box-shadow:0 4px 14px rgba(0,0,0,.18);}
-.lead-header-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex:0 1 auto;}
-.lead-header-row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;
+.lead-header-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+.lead-actions-stack{display:flex;flex-direction:column;gap:8px;align-items:flex-end;flex:0 1 auto;}
+.lead-header-row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;
   gap:10px 12px;margin-bottom:4px;}
-.lead-header-row .lead-name{margin-bottom:0;flex:1 1 260px;min-width:0;
+.lead-header-row .lead-name{margin-bottom:0;flex:1 1 200px;min-width:0;
   word-break:normal;overflow-wrap:anywhere;}
 /* Callback calendar picker */
 .cal-wrap{background:var(--input-bg);border-radius:var(--radius);padding:12px;margin-bottom:4px;}
@@ -1517,11 +1518,15 @@ function renderLead() {
     <div class="lead-card">
       <div class="lead-header-row">
         <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
-        <div class="lead-header-actions">
-          <button class="lead-cb-btn" onclick="openEditLead('dial')">✏️ Edit</button>
-          ${lead.ownerIsMe ? '<button class="lead-cb-btn" onclick="openShareLead()">🤝 Share</button>' +
-                             '<button class="lead-cb-btn" onclick="donateThisLead()">🎁 Donate</button>' : ''}
-          <button class="lead-cb-btn" onclick="openCallback()">📅 Callback</button>
+        <div class="lead-actions-stack">
+          <div class="lead-header-actions">
+            <button class="lead-cb-btn" onclick="openEditLead('dial')">✏️ Edit</button>
+            ${lead.ownerIsMe ? '<button class="lead-cb-btn" onclick="openShareLead()">🤝 Share</button>' +
+                               '<button class="lead-cb-btn" onclick="donateThisLead()">🎁 Donate</button>' : ''}
+          </div>
+          <div class="lead-header-actions">
+            <button class="lead-cb-btn" onclick="openCallback()">📅 Schedule Callback</button>
+          </div>
         </div>
       </div>
       <div class="lead-phone-wrap">
