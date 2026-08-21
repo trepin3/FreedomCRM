@@ -145,7 +145,7 @@ function createAllStateSheets() {
 // is hit on every sign-in and this reads every registered spreadsheet.
 function listStates_(me) {
   const cache = CacheService.getScriptCache();
-  const key = 'states_' + (me ? me.id : 'anon');
+  const key = 'states_' + (me ? me.id : 'anon') + '_' + statesVersion_();
   const hit = cache.get(key);
   if (hit) { try { return JSON.parse(hit); } catch (e) {} }
 
@@ -183,11 +183,21 @@ function listStates_(me) {
   return out;
 }
 
-function invalidateStates_(me) {
+// Cached counts are per user, but the thing they count is shared: unsharing a
+// batch changes what someone else can see, and their cache key is not one this
+// request could name. So the version forms part of every key and bumping it
+// retires all of them at once.
+function statesVersion_() {
   try {
-    const id = me ? me.id : 'anon';
-    CacheService.getScriptCache().removeAll(['states_' + id, 'batches_' + id]);
-  } catch (e) {}
+    const c = CacheService.getScriptCache();
+    let v = c.get('states_ver');
+    if (!v) { v = String(Date.now()); c.put('states_ver', v, 21600); }
+    return v;
+  } catch (e) { return '0'; }
+}
+
+function invalidateStates_(me) {
+  try { CacheService.getScriptCache().put('states_ver', String(Date.now()), 21600); } catch (e) {}
 }
 const BATCH_SIZE = 5;
 const LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -1953,7 +1963,7 @@ function setBatchStatus_(me, batchId, state, active) {
 
 function myBatches_(me) {
   const cache = CacheService.getScriptCache();
-  const key = 'batches_' + (me ? me.id : 'anon');
+  const key = 'batches_' + (me ? me.id : 'anon') + '_' + statesVersion_();
   const hit = cache.get(key);
   if (hit) { try { return JSON.parse(hit); } catch (e) {} }
 
@@ -2094,6 +2104,7 @@ function setBatchVisibility_(me, body) {
   });
   if (out.error) return out;
   logActivity_(me, 'setVisibility', body.batchId + ' -> ' + vis + ' (' + out.changed + ')', body.state);
+  invalidateStates_(me);
   return out;
 }
 
@@ -2107,6 +2118,7 @@ function shareBatch_(me, body) {
   });
   if (out.error) return out;
   logActivity_(me, 'shareBatch', body.batchId + ' -> [' + value + '] (' + out.changed + ')', body.state);
+  invalidateStates_(me);
   return out;
 }
 
@@ -2126,6 +2138,7 @@ function donateBatch_(me, body) {
   if (out.error) return out;
   out.destination = target.label;
   logActivity_(me, 'donateBatch', body.batchId + ' -> ' + target.ownerId + ' (' + out.changed + ')', body.state);
+  invalidateStates_(me);
   return out;
 }
 
@@ -2348,6 +2361,7 @@ function shareLead_(me, body) {
   ctx.sheet.getRange(ctx.rowIndex, COL['Shared With']).setValue(ids.join(','));
   logActivity_(me, 'shareLead',
     (ctx.row[ix_('Lead ID')] || ('row ' + ctx.rowIndex)) + ' -> [' + ids.join(',') + ']', ctx.state);
+  invalidateStates_(me);
   return { success: true, shared: ids.length };
 }
 
