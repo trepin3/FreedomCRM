@@ -119,6 +119,26 @@ body.is-admin .admin-only{display:flex;}
 /* Stats bar */
 .stats-bar{display:flex;gap:4px;padding:6px 14px 8px;border-bottom:1px solid var(--border);background:var(--card);font-size:11px;font-weight:700;overflow-x:auto;scrollbar-width:none;}
 .stats-bar::-webkit-scrollbar{display:none;}
+.stat-chip[data-tip]{position:relative;}
+.stat-chip[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);
+  left:50%;transform:translateX(-50%) translateY(-3px);white-space:nowrap;
+  background:var(--text);color:var(--card);font-size:11.5px;font-weight:700;
+  padding:5px 9px;border-radius:6px;pointer-events:none;opacity:0;
+  transition:opacity .12s,transform .12s;z-index:80;}
+.stat-chip[data-tip]::before{content:'';position:absolute;top:calc(100% + 2px);left:50%;
+  transform:translateX(-50%);border:5px solid transparent;border-bottom-color:var(--text);
+  pointer-events:none;opacity:0;transition:opacity .12s;z-index:80;}
+.stat-chip[data-tip]:hover::after,.stat-chip[data-tip]:focus::after{
+  opacity:1;transform:translateX(-50%) translateY(0);}
+.stat-chip[data-tip]:hover::before,.stat-chip[data-tip]:focus::before{opacity:1;}
+/* The first and last chips would otherwise push their tooltip off-screen. */
+.stat-chip[data-tip]:first-child::after{left:0;transform:translateX(0) translateY(-3px);}
+.stat-chip[data-tip]:first-child:hover::after,
+.stat-chip[data-tip]:first-child:focus::after{transform:translateX(0) translateY(0);}
+.stat-chip[data-tip]:last-child::after{left:auto;right:0;transform:translateX(0) translateY(-3px);}
+.stat-chip[data-tip]:last-child:hover::after,
+.stat-chip[data-tip]:last-child:focus::after{transform:translateX(0) translateY(0);}
+.stat-chip[data-tip]:focus{outline:2px solid var(--primary);outline-offset:2px;}
 .stat-chip{flex-shrink:0;padding:4px 10px;background:var(--input-bg);border-radius:20px;color:var(--text);}
 .stat-chip strong{color:var(--primary);font-weight:800;}
 
@@ -606,11 +626,11 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
   </div>
 
   <div class="stats-bar">
-    <div class="stat-chip">📞 <strong id="statCalls">0</strong></div>
-    <div class="stat-chip">✅ <strong id="statSales">0</strong></div>
-    <div class="stat-chip">🚫 <strong id="statDCID">0</strong></div>
-    <div class="stat-chip">📅 <strong id="statCallbacks">0</strong></div>
-    <div class="stat-chip">📵 <strong id="statWrong">0</strong></div>
+    <div class="stat-chip" tabindex="0" data-tip="Calls made this session">📞 <strong id="statCalls">0</strong></div>
+    <div class="stat-chip" tabindex="0" data-tip="Policies sold this session">✅ <strong id="statSales">0</strong></div>
+    <div class="stat-chip" tabindex="0" data-tip="DCID — not interested">🚫 <strong id="statDCID">0</strong></div>
+    <div class="stat-chip" tabindex="0" data-tip="Callbacks booked this session">📅 <strong id="statCallbacks">0</strong></div>
+    <div class="stat-chip" tabindex="0" data-tip="Wrong numbers this session">📵 <strong id="statWrong">0</strong></div>
   </div>
 
   <div class="tab-nav">
