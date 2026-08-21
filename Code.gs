@@ -963,6 +963,7 @@ function doPost(e) {
     let result;
     switch (action) {
       case 'uploadLeads':    result = uploadLeads_(userByEmail_(user.email), body); break;
+      case 'existingLeads':  result = existingLeads_(userByEmail_(user.email), body); break;
       case 'addSource':      result = addSource_(userByEmail_(user.email), body.name); break;
       case 'decideSource':   result = decideSource_(userByEmail_(user.email), body.name, body.decision, body.rename); break;
       case 'setBatchStatus': result = setBatchStatus_(userByEmail_(user.email), body.batchId, body.state, !!body.active); break;
@@ -2422,6 +2423,60 @@ function changeUserEmail_(actor, userId, newEmail) {
   // Sessions are keyed on email, so any existing session for the old address
   // stops resolving and they sign in again — correct, and worth saying so.
   return { success: true, email: email, wasSignedIn: !!target.lastLogin };
+}
+
+// Which of these numbers the uploader already has in a state. Checked before
+// upload so a list bought twice, or overlapping lists from the same vendor,
+// do not quietly become two copies of the same person to call.
+//
+// DCID is deliberately excluded: that lead crashed out, and re-uploading is
+// how it gets another attempt. Flagging it would block the one case where a
+// second copy is wanted.
+function existingLeads_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const state = String(body.state || '').toUpperCase();
+  if (!sheets_()[state]) return { matches: {} };
+
+  const wanted = {};
+  (body.phones || []).forEach(function(p) {
+    const d = String(p || '').replace(/\D/g, '');
+    if (d) wanted[d] = true;
+  });
+  if (!Object.keys(wanted).length) return { matches: {} };
+
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const lr = sheet ? sheet.getLastRow() : 0;
+  if (lr < 2) return { matches: {} };
+
+  const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+  const matches = {};
+
+  data.forEach(function(row) {
+    const phone = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+    if (!phone || !wanted[phone]) return;
+    if (!canSee_(row, me)) return;                 // not theirs to know about
+
+    const status = String(row[ix_('Status')] || '').toLowerCase();
+    if (status === STATUS.DCID) return;            // re-uploading is how it gets retried
+    if (status === STATUS.ARCHIVED || status === STATUS.REMOVED) return;
+
+    // Several rows can share a number; report the one furthest along.
+    const rank = { sold: 5, callback: 4, wrong: 3, review: 2, new: 1 };
+    const prev = matches[phone];
+    if (prev && (rank[prev.status] || 0) >= (rank[status] || 0)) return;
+
+    matches[phone] = {
+      name: String(row[ix_('Name')] || ''),
+      status: status || 'new',
+      leadId: String(row[ix_('Lead ID')] || ''),
+      attempts: Number(row[ix_('Attempts')]) || 0,
+      source: String(row[ix_('Lead Source')] || ''),
+      added: fmtDateTime(row[ix_('Date Added')]),
+      lastCall: fmtDateTime(row[ix_('Last Call Start')])
+    };
+  });
+
+  return { matches: matches };
 }
 
 // ══════════════════════════════════════════════════════════════════
