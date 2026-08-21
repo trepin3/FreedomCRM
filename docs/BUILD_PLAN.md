@@ -1,6 +1,6 @@
 # FreedomCRM — MVP build plan and state
 
-Working doc for the multi-tenant rebuild. Last updated 2026-08-18.
+Working doc for the multi-tenant rebuild. Last updated 2026-08-20.
 Read this first when resuming; it carries decisions that are not derivable from the code.
 
 ---
@@ -39,12 +39,22 @@ OAuth client id is shared with Agent-HUD-Workstation — same `trepin3.github.io
 - **Blank cities filled from ZIP** via zippopotam.us (free, keyless, CORS-open), button-triggered, cached in localStorage. Not a built-in table — an invented ZIP-to-city map would put wrong data in the CRM.
 - **All 51 states supported.** Sheets are created on first upload and recorded in Script Properties; the dial picker shows only states holding leads the signed-in user can see, with counts, cached 120s.
 - **Batches** — every upload grouped, removable by flipping `Batch Status`, never deleted.
+- **Ownership** — exclusivity, sharing and donate-to-pool, per batch and per lead. Donated leads never return to the donor's own queue (`Donated By` is checked in `getLeads`); a donated batch stays visible to the donor as a record but is read-only to them, and shows who it came from to the receiver.
+- **150-lead reservation.** Locks are written as one block (columns 6-9) rather than per cell — at this size, per-cell writes timed out. Your own reservation counts as available to you, and `getLeads` returns your existing stack topped up rather than issuing a second one.
+- **Force release** targets the named agent (via `body.target`, which `doPost` does not overwrite), and the agent's tab notices within ten seconds and returns to the picker. `setStatus_` refuses a disposition on a lead the caller no longer holds.
+- **Lead editing** by anyone who can see a lead, logged field by field before-and-after.
+- **DCID review** — scoped queue, bulk return-to-pool or archive, attempt counts preserved on return.
+- **Leaderboard** — dials, policies or annual premium, over five ranges, re-ranked client-side.
+- **Callbacks → Google Calendar** on booking and from the list, at the lead's local time.
+- **Script tool integration** — a `$1 Bang Bang` lead opens `bang-bang.html` prefilled with first name, last name and address.
 
 ## Not built
 
-Sharing + donate-to-pool UI · exclusivity toggle in the dialer · 150-lead reservation endpoint · leaderboard AP display · add-to-calendar · DCID review + archive · sold workspace · stat drill-downs · Trellus receiver.
+**Sold workspace + ERS follow-ups** · **stat drill-down modals** · **Trellus receiver** · **automatic calendar insert**.
 
-**Never exercised live:** the dial round-trip against the new schema. Dispositions, the lead rail and callbacks all work through `setStatus_` now, and none of it has been run against a real call — the TCPA window blocked testing on the night it was built. Callbacks are the piece most likely to bite: they moved from their own tab to a status on the lead row, and the 72-hour booking-agent hold (`Callback Hold Until`) has never fired.
+The last two are blocked on things outside the code: Trellus needs the Cloudflare Worker relay, and calendar insert needs Google's review of the `calendar.events` scope.
+
+**Still unproven:** the 72-hour callback hold (`Callback Hold Until`) has never actually expired in use, and no second agent has been handed a lead whose hold lapsed. Everything else in the dial round-trip has now been exercised live.
 
 `docs/planned_lead_schema.gs` was the design sketch; it is now **applied** in `Code.gs` and kept only for reference. Two deliberate departures from it: `Locked By`/`Locked At` keep their old names rather than becoming `Reserved By`/`Reserved At` (name-based lookups meant renaming was the only thing that actually broke callers), and disposition extras keep their old names so `rowToObj`'s derived field names stay stable for the UI.
 
