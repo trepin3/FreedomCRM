@@ -4004,19 +4004,31 @@ async function toggleBatch(batchId, state, active) {
   loadBatches();
 }
 
+// One table for panels and buttons. The old version toggled Stats on whenever
+// the section was not Team, so Upload and DCID Review left Stats lit and never
+// lit themselves — the tab bar said you were somewhere you were not. Driving
+// both from the same map means a section added later cannot reintroduce that.
+const ADMIN_SECTIONS = {
+  stats:  { panel: 'adminStatsPanel',  tab: 'secStats' },
+  team:   { panel: 'adminTeamPanel',   tab: 'secTeam',   load: function() { loadTeam(); } },
+  upload: { panel: 'adminUploadPanel', tab: 'secUpload', load: function() { loadUpload(); } },
+  dcid:   { panel: 'adminDcidPanel',   tab: 'secDcid',   load: function() { loadDcid(); } }
+};
+
 function switchAdminSection(which) {
-  const team = which === 'team';
-  const upload = which === 'upload';
-  const dcid   = which === 'dcid';
-  document.getElementById('adminTeamPanel').style.display   = team ? 'block' : 'none';
-  document.getElementById('adminUploadPanel').style.display = upload ? 'block' : 'none';
-  document.getElementById('adminDcidPanel').style.display   = dcid ? 'block' : 'none';
-  document.getElementById('adminStatsPanel').style.display  = (team || upload || dcid) ? 'none' : 'block';
-  document.getElementById('secTeam').classList.toggle('active', team);
-  document.getElementById('secStats').classList.toggle('active', !team);
-  if (team) loadTeam();
-  if (upload) loadUpload();
-  if (dcid) loadDcid();
+  if (!ADMIN_SECTIONS[which]) which = 'stats';
+
+  Object.keys(ADMIN_SECTIONS).forEach(function(key) {
+    const sec = ADMIN_SECTIONS[key];
+    const on = key === which;
+    const panel = document.getElementById(sec.panel);
+    if (panel) panel.style.display = on ? 'block' : 'none';
+    const tab = document.getElementById(sec.tab);
+    if (tab) tab.classList.toggle('active', on);
+  });
+
+  const load = ADMIN_SECTIONS[which].load;
+  if (load) load();
 }
 
 async function loadTeam() {
