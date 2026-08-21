@@ -1948,16 +1948,21 @@ async function confirmCallback() {
   // Written while the modal is still up, so the download is plainly the
   // result of the button just pressed rather than something that appears
   // after the screen has already moved on.
-  addToGoogleCalendar({
-    state: lead.state,
-    name: lead.name,
-    phone: lead.phone,
-    city: lead.city,
-    email: lead.email,
-    lead_id: lead.lead_id,
-    callbackDate: date,
-    callbackTime: time
-  }, true);
+  // Booking the callback is the job; adding it to a calendar is a courtesy.
+  // A failure in the courtesy must never stop the job — that is exactly what
+  // happened when this threw and the modal stayed open with nothing saved.
+  try {
+    addToGoogleCalendar({
+      state: lead.state,
+      name: lead.name,
+      phone: lead.phone,
+      city: lead.city,
+      email: lead.email,
+      lead_id: lead.lead_id,
+      callbackDate: date,
+      callbackTime: time
+    }, true);
+  } catch (e) {}
 
   closeModal('callbackModal');
   const payload = {
@@ -2066,10 +2071,21 @@ function addToGoogleCalendar(cb, quiet) {
     if (!quiet) alert('That callback has no usable date and time yet.');
     return;
   }
-  const win = window.open(url, '_blank');
-  // Blocked popups leave the agent with nothing, so fall back to the file
-  // rather than silently doing nothing.
-  if (!win) downloadCallbackIcs(cb, quiet);
+  // A real link click rather than window.open — Safari treats window.open as a
+  // popup and blocks it even inside a click handler, which is what left this
+  // silently doing nothing.
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) {
+    // Never let the calendar step take the booking down with it.
+    try { downloadCallbackIcs(cb, quiet); } catch (e2) {}
+  }
 }
 
 function addCallbackToCalendar(stateCode, rowIndex) {
@@ -2084,6 +2100,7 @@ function addCallbackToCalendar(stateCode, rowIndex) {
 // been made can be added straight away — it will not be in the cached list
 // until the next refresh, which is well after the agent has moved on.
 function downloadCallbackIcs(cb, quiet) {
+  const start = callbackMoment(cb);
   if (!start) {
     if (!quiet) alert('That callback has no usable date and time yet.');
     return;
