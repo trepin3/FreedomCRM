@@ -1324,9 +1324,31 @@ function startTimers() {
   loadMyCallbacks();
   // Leaderboard polling only when tab is active
   state.lbPollTimer = setInterval(() => { if (state.activeTab === 'leaderboard') loadLeaderboard(); }, 60000);
+  // Notice if this stack gets pulled out from under us — an admin force
+  // release, or the idle timer expiring. Reads one column, so it is cheap.
+  state.holdTimer = setInterval(checkStillHolding, 30000);
+}
+
+async function checkStillHolding() {
+  if (!state.currentState || !state.leads || !state.leads.length) return;
+  if (document.hidden) return;                 // a background tab is not working
+  let out;
+  try {
+    out = await api('GET', { action: 'heartbeat', state: state.currentState });
+  } catch (e) { return; }                      // a blip is not a release
+  if (!out || typeof out.held !== 'number' || out.held > 0) return;
+
+  state.leads = [];
+  state.currentIdx = 0;
+  state.history = [];
+  state.seenIds.clear();
+  alert('Your reserved leads have been released and are back in the pool.\n\n' +
+        'Pick a state to start a new stack.');
+  goToCrm();
 }
 function stopTimers() {
-  [state.timeUpdateTimer, state.cbPollTimer, state.cbRefreshTimer, state.lbPollTimer].forEach(t => t && clearInterval(t));
+  [state.timeUpdateTimer, state.cbPollTimer, state.cbRefreshTimer,
+   state.lbPollTimer, state.holdTimer].forEach(t => t && clearInterval(t));
   if (state.callTimerId) clearInterval(state.callTimerId);
 }
 
@@ -3845,8 +3867,12 @@ function statBox(label, num) {
 }
 
 async function forceReleaseAgent(agent) {
-  if (!confirm('Force release all locks for ' + agent + '?')) return;
-  await api('POST', { action: 'forceRelease', agent: agent });
+  if (!confirm('Force release all locks for ' + agent + '?\n\n' +
+               'Their leads go back to the pool and they will be returned to the state picker.')) return;
+  // 'target', not 'agent': the server overwrites body.agent with the caller's
+  // own name, so sending it under that key released the admin's own leads.
+  const out = await api('POST', { action: 'forceRelease', target: agent });
+  if (out && out.error) { alert(out.error); return; }
   loadAdminData();
 }
 

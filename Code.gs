@@ -887,6 +887,7 @@ function doGet(e) {
       }
       case 'listSources': result = listSources_(userByEmail_(user.email)); break;
       case 'listStates':  result = listStates_(userByEmail_(user.email)); break;
+      case 'heartbeat':   result = heartbeat_(user, e.parameter.state); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
       case 'dcidQueue':   result = dcidQueue_(userByEmail_(user.email)); break;
       case 'roster':      result = rosterFor_(userByEmail_(user.email)); break;
@@ -952,7 +953,7 @@ function doPost(e) {
       case 'wrong': result = actionWrong(body); break;
       case 'callback': result = actionCallback(body); break;
       case 'releaseAll': result = actionReleaseAll(body); break;
-      case 'forceRelease': result = actionForceRelease(body); break;
+      case 'forceRelease': result = actionForceRelease(userByEmail_(user.email), body); break;
       case 'returnToPool': result = actionReturnToPool(body); break;
       default: result = { error: 'unknown action: ' + action };
     }
@@ -1291,18 +1292,50 @@ function actionReleaseAll(body) {
   return { success: true };
 }
 
-function actionForceRelease(body) {
+// Releasing someone else's locks, so the target cannot come from body.agent —
+// doPost overwrites that with the caller's own name to stop clients claiming an
+// identity, which meant this quietly released the admin's own leads instead.
+function actionForceRelease(me, body) {
+  if (!me || (me.role !== 'admin' && me.role !== 'manager')) return { error: 'not_permitted' };
+
+  const target = String(body.target || '').trim();
+  if (!target) return { error: 'No agent named.' };
+
+  // A manager may only do this to their own branch.
+  if (me.role !== 'admin' && !inScope_(scopeNamesFor_(me), target)) {
+    return { error: 'That agent is not in your team.' };
+  }
+
   const states = body.state ? [body.state] : activeStates_();
+  let freed = 0;
   states.forEach(function(state) {
-    releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), body.agent);
+    if (!sheets_()[state]) return;
+    freed += releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), target);
   });
-  return { success: true };
+  logActivity_(me, 'forceRelease', target + ' (' + freed + ')', body.state || '');
+  return { success: true, released: freed, agent: target };
+}
+
+// How many leads this user is holding right now. One narrow column read, so
+// the dialer can poll it without cost — it is how an agent finds out their
+// stack was pulled while they were sitting on it.
+function heartbeat_(user, stateCode) {
+  const code = String(stateCode || '').toUpperCase();
+  if (!sheets_()[code]) return { held: 0 };
+  const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+  const lr = sheet ? sheet.getLastRow() : 0;
+  if (lr < 2) return { held: 0 };
+
+  const vals = sheet.getRange(2, COL['Locked By'], lr - 1, 1).getValues();
+  let held = 0;
+  vals.forEach(function(r) { if (String(r[0] || '') === String(user.name || '')) held++; });
+  return { held: held };
 }
 
 function releaseAgentLocks(ss, agent) {
   const sheet = ss.getSheetByName('Leads');
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) return 0;
 
   const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
   const lockVals = lockRange.getValues();
@@ -1314,6 +1347,7 @@ function releaseAgentLocks(ss, agent) {
   });
   // Signing out of a 150-lead stack is one write, not four hundred and fifty.
   if (freed) lockRange.setValues(lockVals);
+  return freed;
 }
 
 // ══════════════════════════════════════════════════════════════════
