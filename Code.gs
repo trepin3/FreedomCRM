@@ -841,7 +841,8 @@ function logActivity_(user, action, detail, stateCode) {
 // costs nothing and means a caller can't miss by picking the wrong one.
 // Returns null when `action` isn't one of ours, so the caller falls through.
 const USER_ACTIONS_ = ['createUser', 'reassignUser', 'disableUser', 'promoteUser',
-                       'demoteUser', 'revokeUser', 'pauseUser', 'resumeUser'];
+                       'demoteUser', 'revokeUser', 'pauseUser', 'resumeUser',
+                       'changeUserEmail'];
 
 function userAction_(user, action, body) {
   if (USER_ACTIONS_.indexOf(action) === -1) return null;
@@ -859,6 +860,7 @@ function userAction_(user, action, body) {
     case 'revokeUser':   return revokeUser_(me, body.userId);
     case 'pauseUser':    return setPaused_(me, body.userId, true);
     case 'resumeUser':   return setPaused_(me, body.userId, false);
+    case 'changeUserEmail': return changeUserEmail_(me, body.userId, body.email);
   }
 }
 
@@ -2376,6 +2378,36 @@ function shareLead_(me, body) {
     (ctx.row[ix_('Lead ID')] || ('row ' + ctx.rowIndex)) + ' -> [' + ids.join(',') + ']', ctx.state);
   invalidateStates_(me);
   return { success: true, shared: ids.length };
+}
+
+// Correcting a mistyped email. Without this a single wrong character means the
+// account can never be signed into and has to be abandoned, since sign-in is
+// matched on the Google address.
+function changeUserEmail_(actor, userId, newEmail) {
+  if (!actor) return { error: 'No user record.' };
+  const target = userById_(userId);
+  if (!target) return { error: 'No such user.' };
+  if (!canManage_(actor, target)) return { error: 'not_permitted' };
+
+  const email = String(newEmail || '').trim().toLowerCase();
+  if (!email || email.indexOf('@') === -1 || /\s/.test(email)) {
+    return { error: 'That is not a valid email address.' };
+  }
+  if (email === String(target.email || '').toLowerCase()) {
+    return { error: 'That is already their email.' };
+  }
+  const clash = userByEmail_(email);
+  if (clash && clash.id !== target.id) {
+    return { error: 'Another account already uses that email.' };
+  }
+
+  const sh = authSS_().getSheetByName(USERS_SHEET);
+  sh.getRange(target.row, USER_COLS.indexOf('Email') + 1).setValue(email);
+  logActivity_(actor, 'changeUserEmail', target.email + ' -> ' + email, '');
+
+  // Sessions are keyed on email, so any existing session for the old address
+  // stops resolving and they sign in again — correct, and worth saying so.
+  return { success: true, email: email, wasSignedIn: !!target.lastLogin };
 }
 
 // ══════════════════════════════════════════════════════════════════

@@ -51,9 +51,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Robot
 .login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(255,69,58,0.1);border:1.5px solid var(--danger);border-radius:var(--radius-sm);font-size:14px;font-weight:600;color:var(--danger);text-align:center;}
 .login-hint{text-align:center;margin-top:14px;font-size:12px;color:var(--text-secondary);}
 .login-hint a{color:var(--primary);text-decoration:none;font-weight:600;cursor:pointer;}
+/* Hiding has to outrank whatever the element's own class sets for display —
+   .admin-jump declares display:flex and, being a later single-class rule,
+   would otherwise win and show agents an Admin Portal button. */
+body:not(.is-admin) .admin-only{display:none !important;}
 .admin-only{display:none;}
 body.is-admin .admin-only{display:flex;}
-.admin-jump{position:fixed;top:14px;right:120px;z-index:60;}
+.admin-jump{position:fixed;top:12px;right:112px;z-index:60;padding:10px 18px;border-radius:999px;
+  border:none;background:var(--primary);color:#fff;font-size:14px;font-weight:800;
+  font-family:inherit;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:7px;
+  box-shadow:0 2px 10px rgba(37,99,235,.35);transition:transform .12s,box-shadow .12s;}
+.admin-jump:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(37,99,235,.45);}
+.admin-jump:active{transform:translateY(0);}
+.admin-jump:focus-visible{outline:2px solid var(--primary);outline-offset:3px;}
+@media(max-width:560px){.admin-jump{right:100px;padding:9px 13px;font-size:13px;}}
 .theme-fixed{position:fixed;top:16px;right:16px;z-index:200;width:36px;height:36px;border-radius:50%;border:none;background:var(--input-bg);color:var(--text);font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:var(--shadow);}
 
 /* ── STATE PICKER ── */
@@ -416,6 +427,11 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .team-msg{font-size:12px;font-weight:700;margin-top:9px;display:none;}
 .team-msg.err{display:block;color:var(--danger);}
 .team-msg.ok{display:block;color:var(--success);}
+.revoked-toggle{display:flex;justify-content:flex-end;margin:0 0 10px;}
+.email-edit{background:none;border:none;padding:0 0 0 4px;cursor:pointer;
+  font-size:11px;opacity:.55;line-height:1;}
+.email-edit:hover{opacity:1;}
+.email-edit:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px;}
 .team-row.nested{position:relative;}
 .team-row.nested::before{content:'';position:absolute;left:-10px;top:50%;
   width:8px;height:1.5px;background:var(--border);}
@@ -552,6 +568,8 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <button class="icon-btn" onclick="goToUpload()" title="Upload your own leads">📥</button>
         <button class="icon-btn" onclick="toggleTheme()" id="dialerThemeBtn">🌙</button>
         <button class="icon-btn" onclick="endDialSession()" title="End Session">⏹</button>
+        <button class="admin-jump admin-only" id="portalJump" onclick="goToAdmin()"
+                title="Back to your portal">🛡️ Admin Portal</button>
       </div>
     </div>
     <div class="hud-header-row" style="margin-bottom:0;">
@@ -608,7 +626,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
      ADMIN DASHBOARD VIEW
 ══════════════════════════════════════════════════ -->
 <div id="adminView" class="view">
-  <button class="mini-btn admin-jump" onclick="goToCrm()" title="Back to dialing">→ Open CRM</button>
+  <button class="admin-jump" onclick="goToCrm()" title="Go to the dialer">📞 Open CRM</button>
   <div class="hud-header">
     <div class="hud-header-row">
       <div class="hud-brand">
@@ -645,6 +663,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         </div>
         <div class="team-msg" id="npMsg"></div>
       </div>
+      <div id="revokedToggle" class="revoked-toggle" style="display:none;"></div>
       <div id="teamTree"><div class="empty-state"><div class="spinner"></div></div></div>
     </div>
 
@@ -1094,6 +1113,8 @@ function enterAfterSignIn() {
   if (title) {
     title.innerHTML = state.role === 'admin' ? 'Admin <span>Dashboard</span>' : 'Team <span>Dashboard</span>';
   }
+  const jump = document.getElementById('portalJump');
+  if (jump) jump.textContent = state.role === 'admin' ? '🛡️ Admin Portal' : '🛡️ Team Portal';
   if (leads) {
     ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
       const el = document.getElementById(id);
@@ -4068,6 +4089,31 @@ function orderAsTree(users) {
   return out;
 }
 
+let showRevoked = false;
+
+function toggleRevoked(on) {
+  showRevoked = on;
+  renderTeam();
+}
+
+// Correcting a mistyped address. A single wrong character means that person
+// can never sign in, since sign-in matches on the Google address.
+async function editUserEmail(userId) {
+  const u = (teamCache.users || []).filter(function(x) { return x.id === userId; })[0];
+  if (!u) return;
+  const next = prompt('Google email for ' + u.name + ':', u.email);
+  if (next === null) return;
+  if (String(next).trim().toLowerCase() === String(u.email).toLowerCase()) return;
+
+  const out = await api('POST', {
+    action: 'changeUserEmail', userId: userId, email: String(next).trim()
+  });
+  if (out && out.error) return teamMsg(out.error, false);
+  teamMsg(u.name + ' now signs in as ' + out.email +
+          '. If they were signed in, they will need to sign in again.', true);
+  loadTeam();
+}
+
 function renderTeam() {
   const me = teamCache.me || {};
   const isAdmin = me.role === 'admin';
@@ -4080,7 +4126,23 @@ function renderTeam() {
     }).join('');
   }
 
-  const rows = orderAsTree(teamCache.users);
+  // Revoked people are kept for the record, not for the roster. Leaving them
+  // in the list makes a team look bigger than it is and buries the people who
+  // actually work here.
+  const revoked = teamCache.users.filter(function(u) { return u.status === 'revoked'; });
+  const visible = showRevoked
+    ? teamCache.users
+    : teamCache.users.filter(function(u) { return u.status !== 'revoked'; });
+
+  const toggle = document.getElementById('revokedToggle');
+  if (toggle) {
+    toggle.style.display = revoked.length ? 'flex' : 'none';
+    toggle.innerHTML = '<label class="dcid-all"><input type="checkbox" ' +
+      (showRevoked ? 'checked ' : '') + 'onchange="toggleRevoked(this.checked)"> ' +
+      'Show revoked (' + revoked.length + ')</label>';
+  }
+
+  const rows = orderAsTree(visible);
   // Indent relative to the shallowest person shown, not to the viewer —
   // teamCache.me carries no depth, so anchoring on it indented everyone.
   const baseDepth = rows.reduce(function(m, u) {
@@ -4120,7 +4182,10 @@ function renderTeam() {
              '" style="margin-left:' + indent + 'px;">' +
              '<div class="team-who">' +
                '<div class="team-name">' + escapeHtml(u.name) + (isMe ? ' (you)' : '') + '</div>' +
-               '<div class="team-email">' + escapeHtml(u.email) + '</div>' +
+               '<div class="team-email">' + escapeHtml(u.email) +
+                 (canTouch ? ' <button class="email-edit" title="Correct this email" ' +
+                             'onclick="editUserEmail(\'' + u.id + '\')">✏️</button>' : '') +
+               '</div>' +
              '</div>' +
              '<span class="team-badge badge-' + escapeHtml(u.role) + '">' + escapeHtml(u.role) + '</span>' +
              statusBadge + parentSel +
