@@ -952,6 +952,8 @@ function doPost(e) {
       case 'donateBatch':    result = donateBatch_(userByEmail_(user.email), body); break;
       case 'updateLead':     result = updateLead_(userByEmail_(user.email), body); break;
       case 'reviewDcid':     result = reviewDcid_(userByEmail_(user.email), body); break;
+      case 'donateLead':     result = donateLead_(userByEmail_(user.email), body); break;
+      case 'shareLead':      result = shareLead_(userByEmail_(user.email), body); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
@@ -1002,6 +1004,7 @@ function getLeads(stateCode, agent, me, size) {
     const iStatus = ix_('Status'), iLockBy = ix_('Locked By');
     const iAtt = ix_('Attempts'), iStart = ix_('Last Call Start');
     const iHold = ix_('Callback Hold Until'), iCbAgent = ix_('Scheduled By');
+    const iDonBy = ix_('Donated By');
 
     // Leads this agent already holds come back to them. Treating their own
     // locks as unavailable meant a refresh reserved a second stack on top of
@@ -1012,6 +1015,11 @@ function getLeads(stateCode, agent, me, size) {
       const st = String(row[iStatus] || '').toLowerCase();
       if (DIALABLE.indexOf(st) === -1) return;
       if (!canSee_(row, me)) return;                  // not mine to dial
+
+      // Donating puts the lead in the upline's pool, and the upline's id is in
+      // the donor's own path — so canSee_ hands it straight back. Giving a
+      // lead away has to mean you stop being offered it.
+      if (String(row[iDonBy] || '') === String(agent || '')) return;
 
       const lockedBy = String(row[iLockBy] || '');
       if (lockedBy) {
@@ -1071,7 +1079,13 @@ function getLeads(stateCode, agent, me, size) {
     return {
       state: stateCode,
       leads: batch.map(function(item) {
-        return Object.assign({ rowIndex: item.rowIndex, state: stateCode }, rowToObj(item.row));
+        return Object.assign({
+          rowIndex: item.rowIndex,
+          state: stateCode,
+          // Only an owner may donate or share, so the card is told rather than
+          // guessing from fields it would have to be given anyway.
+          ownerIsMe: String(item.row[ix_('Owner ID')] || '') === String(me && me.id || '')
+        }, rowToObj(item.row));
       })
     };
   } finally {
@@ -2260,6 +2274,67 @@ function reviewDcid_(me, body) {
 
   logActivity_(me, 'reviewDcid', decision + ' x' + done, '');
   return { success: true, changed: done };
+}
+
+// One lead rather than a whole batch. An agent working a list wants to hand
+// off the ones that went nowhere without giving up the rest.
+function oneLead_(me, body) {
+  const state = String(body.state || '').toUpperCase();
+  if (!sheets_()[state]) return { error: 'Unknown state: ' + state };
+  const rowIndex = Number(body.rowIndex);
+  if (!rowIndex || rowIndex < 2) return { error: 'Bad row.' };
+
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const row = sheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+  if (!canSee_(row, me)) return { error: 'not_permitted' };
+
+  // Giving a lead away or sharing it is an owner's decision, not a viewer's.
+  const owner = String(row[ix_('Owner ID')] || '');
+  if (me.role !== 'admin' && owner !== me.id) {
+    return { error: 'That lead is not yours to give away.' };
+  }
+  return { sheet: sheet, row: row, rowIndex: rowIndex, state: state };
+}
+
+function donateLead_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const target = donationTarget_(me);
+  if (!target) return { error: 'You have no manager above you to donate to.' };
+
+  const ctx = oneLead_(me, body);
+  if (ctx.error) return ctx;
+
+  // Someone else mid-call on it keeps it; the donor's own lock is fine, they
+  // are the one handing it over.
+  const lockedBy = String(ctx.row[ix_('Locked By')] || '');
+  if (lockedBy && lockedBy !== String(me.name || '')) {
+    return { error: 'Someone is dialing that lead right now.' };
+  }
+
+  const now = stamp_();
+  ctx.sheet.getRange(ctx.rowIndex, COL['Owner ID']).setValue(target.ownerId);
+  ctx.sheet.getRange(ctx.rowIndex, COL['Visibility']).setValue(VISIBILITY.POOL);
+  ctx.sheet.getRange(ctx.rowIndex, COL['Shared With']).setValue('');
+  ctx.sheet.getRange(ctx.rowIndex, COL['Donated By']).setValue(me.name || me.email);
+  ctx.sheet.getRange(ctx.rowIndex, COL['Donated At']).setValue(now);
+  clearLock_(ctx.sheet, ctx.rowIndex);
+
+  logActivity_(me, 'donateLead',
+    (ctx.row[ix_('Lead ID')] || ('row ' + ctx.rowIndex)) + ' -> ' + target.label, ctx.state);
+  invalidateStates_(me);
+  return { success: true, destination: target.label };
+}
+
+function shareLead_(me, body) {
+  if (!me) return { error: 'No user record.' };
+  const ctx = oneLead_(me, body);
+  if (ctx.error) return ctx;
+
+  const ids = (body.userIds || []).map(function(x) { return String(x).trim(); }).filter(Boolean);
+  ctx.sheet.getRange(ctx.rowIndex, COL['Shared With']).setValue(ids.join(','));
+  logActivity_(me, 'shareLead',
+    (ctx.row[ix_('Lead ID')] || ('row ' + ctx.rowIndex)) + ' -> [' + ids.join(',') + ']', ctx.state);
+  return { success: true, shared: ids.length };
 }
 
 // ══════════════════════════════════════════════════════════════════
