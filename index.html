@@ -3583,7 +3583,10 @@ async function loadBatches() {
         '<div class="batch-meta">' + origin +
           (b.locked ? ' · ' + b.locked + ' being dialed' : '') +
           (gone ? ' · removed' : '') +
-          (sharedNames.length ? ' · shared with ' + escapeHtml(sharedNames.join(', ')) : '') +
+          (sharedNames.length
+            ? ' · shared with ' + escapeHtml(sharedNames.join(', ')) +
+              (b.sharedMixed ? ' <span class="up-warn">(' + b.sharedOn + ' of ' + b.count + ' — some differ)</span>' : '')
+            : (b.sharedMixed ? ' · <span class="up-warn">sharing differs across these leads</span>' : '')) +
         '</div>' +
       '</div>' +
       '<div class="batch-actions">' +
@@ -3591,7 +3594,8 @@ async function loadBatches() {
           (exclusive ? 'pool' : 'exclusive') + '\')">' +
           (exclusive ? 'Make pool' : 'Make exclusive') + '</button>' +
         '<button class="tiny-btn" onclick="openShare(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
-          escapeHtml(String(b.sharedWith || '')) + '\')">Share…</button>' +
+          escapeHtml(String(b.sharedWith || '')) + '\',' + (b.sharedMixed ? 'true' : 'false') +
+          ')">Share…</button>' +
         (donationDest ? '<button class="tiny-btn" onclick="donateBatch(\'' + b.batchId + '\',\'' + b.state + '\')">Donate</button>' : '') +
         '<button class="tiny-btn" onclick="toggleBatch(\'' + b.batchId + '\',\'' + b.state + '\',' + (gone ? 'true' : 'false') + ')">' +
           (gone ? 'Restore' : 'Remove') + '</button>' +
@@ -3720,11 +3724,15 @@ function toChosen(csv) {
   return chosen;
 }
 
-function openShare(batchId, stateCode, sharedCsv) {
+function openShare(batchId, stateCode, sharedCsv, mixed) {
   shareCtx = { kind: 'batch', batchId: batchId, state: stateCode, chosen: toChosen(sharedCsv) };
   openSharePicker('Share this batch',
     'Ticked people can see these leads even while the batch is exclusive. ' +
-    'Untick someone to take their access away.');
+    'Untick someone to take their access away.' +
+    // Saving writes the same answer to every lead, so an individually revoked
+    // lead would quietly be re-shared. Better said before Save than after.
+    (mixed ? ' Some leads in this batch are shared differently — saving here ' +
+             'applies your choice to all of them.' : ''));
 }
 
 // Same picker, one lead. Handing a single lead to a colleague is a far more
