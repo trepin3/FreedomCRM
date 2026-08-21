@@ -73,6 +73,10 @@ body.is-admin .admin-only{display:flex;}
 .picker-sub{font-size:15px;color:var(--text-secondary);margin-bottom:28px;text-align:center;}
 .picker-agent{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:var(--primary);margin-bottom:20px;}
 .state-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;width:100%;max-width:520px;}
+/* A spinner is a grid item like any other, so it landed in the first column.
+   Let anything that is not a tile span the full width and centre itself. */
+.state-grid > .empty-state{grid-column:1 / -1;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:12px;padding:40px 20px;}
 .picker-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:24px;}
 .picker-btn{padding:11px 20px;border-radius:10px;border:1px solid var(--border);
   background:var(--accent);color:#fff;font-weight:700;font-size:14px;cursor:pointer;}
@@ -100,11 +104,16 @@ body.is-admin .admin-only{display:flex;}
 .icon-btn:active{transform:scale(0.9);}
 
 /* State switcher pills */
-.state-switcher{display:flex;gap:5px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
+.state-switcher{display:flex;gap:5px;}
+.switch-state-btn{display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:999px;
+  border:1.5px solid var(--border);background:var(--input-bg);color:var(--text);
+  font-family:inherit;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;
+  transition:border-color .12s,background .12s;}
+.switch-state-btn span{font-weight:600;color:var(--text-secondary);}
+.switch-state-btn:hover{border-color:var(--primary);background:var(--card);}
+.switch-state-btn:hover span{color:var(--primary);}
+.switch-state-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
 .state-switcher::-webkit-scrollbar{display:none;}
-.switcher-pill{flex-shrink:0;padding:4px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);color:var(--text-secondary);font-size:11px;font-weight:800;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;font-family:inherit;}
-.switcher-pill.active{background:var(--primary);color:#fff;border-color:var(--primary);}
-.switcher-pill:active{transform:scale(0.96);}
 .hud-counter{font-size:11px;font-weight:700;color:var(--text-secondary);white-space:nowrap;padding:4px 10px;background:var(--input-bg);border-radius:20px;flex-shrink:0;}
 
 /* Stats bar */
@@ -1347,36 +1356,36 @@ function pickState(stateCode) {
   loadLeads();
 }
 
-function switchState(stateCode) {
-  if (stateCode === state.currentState) return;
-  // Release current locks first
-  if (state.agentName) {
-    api('POST', { action: 'releaseAll', agent: state.agentName }).catch(() => {});
-  }
-  localStorage.setItem('fcrm_state', stateCode);
-  state.currentState = stateCode;
+
+
+// One button rather than a pill per state. Switching used to swap the state
+// underneath a reserved stack, which left those leads locked in a state the
+// agent had walked away from until the idle timer noticed. Going back through
+// the picker hands them back first.
+function updateStateSwitcher() {
+  const wrap = document.getElementById('stateSwitcher');
+  if (!wrap) return;
+  const code = state.currentState;
+  wrap.innerHTML = '<button class="switch-state-btn" onclick="switchStateFlow()">' +
+    (STATE_ICONS[code] || '📍') + ' ' + escapeHtml(code || '') +
+    ' <span>Switch State</span></button>';
+}
+
+async function switchStateFlow() {
+  const held = (state.leads || []).length;
+  if (held && !confirm('Switch state?\n\nYour ' + held + ' reserved lead' +
+      (held === 1 ? '' : 's') + ' go back to the pool for someone else to work.')) return;
+
+  // Hand the stack back before leaving. Not awaited — it scans a sheet per
+  // state, and the agent should not watch a spinner to change their mind.
+  releaseMyLeads(state.agentName, state.authToken);
+
   state.leads = [];
   state.currentIdx = 0;
   state.history = [];
   state.seenIds.clear();
-  updateStateSwitcher();
-  loadLeads();
-}
-
-function updateStateSwitcher() {
-  const wrap = document.getElementById('stateSwitcher');
-  if (!wrap) return;
-  // Built from the states that actually hold leads. It was hardcoded to
-  // AZ/VA/OH, so a lead uploaded anywhere else was unreachable from here.
-  const codes = (state.availableStates && state.availableStates.length)
-    ? state.availableStates
-    : [state.currentState].filter(Boolean);
-
-  wrap.innerHTML = codes.map(function(c) {
-    return '<button class="switcher-pill' + (c === state.currentState ? ' active' : '') +
-           '" id="pill-' + c + '" onclick="switchState(\'' + c + '\')">' +
-           (STATE_ICONS[c] || '📍') + ' ' + c + '</button>';
-  }).join('');
+  state.currentState = '';
+  goToCrm();
 }
 
 // ══════════════════════════════════════════════════
