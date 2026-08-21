@@ -3663,8 +3663,14 @@ async function setBatchVis(batchId, stateCode, visibility) {
 }
 
 async function donateBatch(batchId, stateCode) {
+  // Name whose downline, not "there". Which pool a batch lands in is the whole
+  // decision, and the destination varies by who is donating.
+  const whose = donationDest === 'your team'
+    ? 'your'
+    : donationDest + (/s$/i.test(donationDest) ? "'" : "'s");
   if (!confirm('Donate this batch to ' + donationDest + '?\n\n' +
-               'They become pool leads anyone there can dial. Leads being dialed right now are left alone.')) return;
+               'They become pool leads that anyone in ' + whose + ' downline can dial. ' +
+               'Leads being dialed right now are left alone.')) return;
   const msg = document.getElementById('upMsg');
   msg.textContent = 'Donating…';
   const out = await api('POST', { action: 'donateBatch', batchId: batchId, state: stateCode });
