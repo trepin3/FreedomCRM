@@ -2603,6 +2603,53 @@ function removeDummyLeads() {
   return msg;
 }
 
+// Empties every state of leads, ready for the first real upload.
+//
+// The current Leads tab is renamed rather than emptied, so nothing is actually
+// destroyed — if this is run by mistake, or the wrong batch turns out to have
+// been real, the data is still sitting there under a dated name. A fresh Leads
+// tab is created with the current header, so Lead IDs start from 000001 again.
+//
+// Delete the Leads_cleared_* tabs by hand once you are certain.
+function clearAllLeads() {
+  const stamp = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd_HHmm');
+  const report = [];
+  let wiped = 0;
+
+  Object.keys(sheets_()).forEach(function(code) {
+    const ss = SpreadsheetApp.openById(sheets_()[code]);
+    const sheet = ss.getSheetByName('Leads');
+    if (!sheet) return;
+
+    const rows = Math.max(0, sheet.getLastRow() - 1);
+    if (!rows) return;                       // already empty, leave it alone
+
+    renameUnique_(ss, sheet, 'Leads_cleared_' + stamp);
+
+    const fresh = ss.insertSheet('Leads');
+    fresh.getRange(1, 1, 1, LEAD_COLS.length)
+         .setValues([LEAD_COLS]).setFontWeight('bold').setBackground('#e8f0fe');
+    fresh.setFrozenRows(1);
+    fresh.getRange(2, COL['Phone'], fresh.getMaxRows() - 1, 1).setNumberFormat('@');
+    fresh.getRange(2, COL['Callback Date'], fresh.getMaxRows() - 1, 2).setNumberFormat('@');
+
+    report.push(code + ': ' + rows);
+    wiped += rows;
+  });
+
+  // Counts and cached pickers both describe leads that no longer exist.
+  recountStates();
+  try { CacheService.getScriptCache().put('states_ver', String(Date.now()), 21600); } catch (e) {}
+
+  const msg = wiped
+    ? 'Cleared ' + wiped + ' leads — ' + report.join(', ') +
+      '.\nOld data kept in Leads_cleared_' + stamp + ' in each sheet; delete those tabs when you are sure.' +
+      '\nEvery state now starts empty and Lead IDs restart at 000001.'
+    : 'Nothing to clear — every state was already empty.';
+  Logger.log(msg);
+  return msg;
+}
+
 // Retires every generated test lead, wherever it landed. They all carry a
 // number in the 555-0100..0199 block reserved for fiction, which nothing real
 // can use — so this is exact, and cannot catch a genuine lead.
