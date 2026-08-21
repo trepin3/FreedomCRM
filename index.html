@@ -402,6 +402,23 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .up-preview th{background:var(--input-bg);font-weight:600;}
 .up-count{font-size:12px;color:var(--text-secondary);margin-bottom:10px;}
 .up-warn{color:#c47f00;}
+.dup-review{margin-top:16px;border-top:1px solid var(--border);padding-top:14px;}
+.dup-group{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;}
+.dup-head{font-weight:800;font-size:14px;margin-bottom:10px;}
+.dup-row{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;
+  background:var(--card);opacity:.55;transition:opacity .12s,border-color .12s;}
+.dup-row.on{opacity:1;border-color:var(--accent);background:rgba(37,99,235,.04);}
+.dup-row:last-child{margin-bottom:0;}
+.dup-pick{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;
+  cursor:pointer;margin-bottom:8px;}
+.dup-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;}
+.dup-field{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.dup-field span{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--text-secondary);}
+.dup-field.differs span{color:var(--warn,#b45309);}
+.dup-field input{padding:7px 9px;border-radius:7px;border:1px solid var(--border);
+  background:var(--input-bg);color:var(--text);font-size:13px;width:100%;}
+.dup-field.differs input{border-color:rgba(196,127,0,.5);}
 .up-block{font-size:12px;background:rgba(196,127,0,.10);border:1px solid rgba(196,127,0,.35);
   color:#8a5a00;border-radius:8px;padding:8px 12px;margin-bottom:10px;}
 .up-block a{color:var(--accent);cursor:pointer;text-decoration:underline;font-weight:600;}
@@ -3228,9 +3245,155 @@ function parseUpload() {
   uploadState.headers = splitCsvLine(lines[0]);
   uploadState.rows = lines.slice(1).map(splitCsvLine);
   uploadState.map = {};
+  uploadState.dupChoice = {};
+  uploadState.dupEdits = {};
   UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = guessColumn(uploadState.headers, f); });
   uploadState.autoState = autoPickState();
   renderMapping();
+}
+
+
+// ── DUPLICATE REVIEW ─────────────────────────────────────────────
+// Two rows sharing a phone number are not automatically the same lead. Some
+// are the same person submitted twice with conflicting data, some are two
+// people in one house. Picking whichever came first is arbitrary and, on real
+// vendor files, often picks the worse record — so the uploader decides.
+const DUP_FIELDS = ['Name', 'Address', 'City', 'Zip', 'Age', 'Email'];
+
+function dupPhone(o) {
+  return String(o['Phone'] || '').replace(/\D/g, '');
+}
+
+// Groups of rows sharing a number, in the order they appear in the file.
+function findDuplicateGroups(objs) {
+  const by = {};
+  objs.forEach(function(o, i) {
+    const p = dupPhone(o);
+    if (!p) return;
+    (by[p] = by[p] || []).push(i);
+  });
+  return Object.keys(by).filter(function(p) { return by[p].length > 1; })
+    .map(function(p) { return { phone: p, rows: by[p] }; });
+}
+
+// Same name in every row means one person submitted twice — keep the first and
+// let them change it. Different names means a household, so keep them all.
+function defaultChoice(group, objs) {
+  const names = {};
+  group.rows.forEach(function(i) { names[String(objs[i]['Name'] || '').toLowerCase()] = true; });
+  const oneperson = Object.keys(names).length === 1;
+  const choice = {};
+  group.rows.forEach(function(i, n) { choice[i] = oneperson ? n === 0 : true; });
+  return choice;
+}
+
+function ensureDupState(objs) {
+  const groups = findDuplicateGroups(objs);
+  uploadState.dupGroups = groups;
+  uploadState.dupChoice = uploadState.dupChoice || {};
+  uploadState.dupEdits = uploadState.dupEdits || {};
+  groups.forEach(function(g) {
+    if (!uploadState.dupChoice[g.phone]) {
+      uploadState.dupChoice[g.phone] = defaultChoice(g, objs);
+    }
+  });
+  return groups;
+}
+
+function dupValue(rowIdx, field, objs) {
+  const e = uploadState.dupEdits[rowIdx];
+  if (e && e[field] !== undefined) return e[field];
+  return objs[rowIdx][field] || '';
+}
+
+function renderDupReview(objs) {
+  const groups = ensureDupState(objs);
+  if (!groups.length) return '';
+
+  const body = groups.map(function(g) {
+    // Only the fields that actually differ are worth their attention.
+    const differing = DUP_FIELDS.filter(function(f) {
+      const vals = {};
+      g.rows.forEach(function(i) { vals[String(objs[i][f] || '').trim()] = true; });
+      return Object.keys(vals).length > 1;
+    });
+
+    const rows = g.rows.map(function(i) {
+      const on = !!uploadState.dupChoice[g.phone][i];
+      const fields = DUP_FIELDS.map(function(f) {
+        const differs = differing.indexOf(f) !== -1;
+        return '<label class="dup-field' + (differs ? ' differs' : '') + '">' +
+          '<span>' + f + (differs ? ' •' : '') + '</span>' +
+          '<input value="' + escapeHtml(String(dupValue(i, f, objs))) + '"' +
+          ' oninput="editDupField(\'' + g.phone + '\',' + i + ',\'' + f + '\',this.value)"></label>';
+      }).join('');
+
+      return '<div class="dup-row' + (on ? ' on' : '') + '">' +
+        '<label class="dup-pick"><input type="checkbox" ' + (on ? 'checked' : '') +
+        ' onchange="toggleDupRow(\'' + g.phone + '\',' + i + ',this.checked)">' +
+        ' Upload this one</label>' +
+        '<div class="dup-fields">' + fields + '</div>' +
+      '</div>';
+    }).join('');
+
+    const picked = g.rows.filter(function(i) { return uploadState.dupChoice[g.phone][i]; }).length;
+    return '<div class="dup-group">' +
+      '<div class="dup-head">' + escapeHtml(formatPhone(g.phone)) +
+        ' <span class="batch-meta">' + g.rows.length + ' rows share this number · ' +
+        picked + ' selected</span></div>' + rows + '</div>';
+  }).join('');
+
+  return '<div class="dup-review">' +
+    '<div class="team-add-title">Duplicate numbers — ' + groups.length + ' to review</div>' +
+    '<div class="up-hint">Same number twice can be one person submitted twice, or two people in ' +
+    'one house. Tick what should upload, and correct anything wrong before it does.</div>' +
+    body + '</div>';
+}
+
+function toggleDupRow(phone, rowIdx, on) {
+  uploadState.dupChoice[phone][rowIdx] = on;
+  renderMapping();
+}
+
+function editDupField(phone, rowIdx, field, value) {
+  uploadState.dupEdits[rowIdx] = uploadState.dupEdits[rowIdx] || {};
+  uploadState.dupEdits[rowIdx][field] = value;
+  // Deliberately not re-rendering: it would steal focus mid-word.
+}
+
+// The rows that survive review, with edits applied. Anything not part of a
+// duplicate group passes through untouched.
+function applyDupResolution(objs) {
+  const groups = uploadState.dupGroups || [];
+  const inGroup = {};
+  const dropped = {};
+  groups.forEach(function(g) {
+    g.rows.forEach(function(i) {
+      inGroup[i] = true;
+      if (!uploadState.dupChoice[g.phone][i]) dropped[i] = true;
+    });
+  });
+
+  const out = [];
+  objs.forEach(function(o, i) {
+    if (dropped[i]) return;
+    if (!inGroup[i]) { out.push(o); return; }
+    const edits = uploadState.dupEdits[i];
+    if (!edits) { out.push(o); return; }
+    const copy = Object.assign({}, o);
+    Object.keys(edits).forEach(function(f) {
+      const v = String(edits[f]).trim();
+      if (v) copy[f] = v; else delete copy[f];
+    });
+    // Name is the composed display value; keep the halves in step with it.
+    if (edits['Name']) {
+      const parts = String(edits['Name']).trim().replace(/\s+/g, ' ').split(' ');
+      copy['First Name'] = parts[0] || '';
+      copy['Last Name'] = parts.length > 1 ? parts.slice(1).join(' ') : '';
+    }
+    out.push(copy);
+  });
+  return out;
 }
 
 // Single source of truth for what a pasted row becomes. Preview, the
@@ -3496,7 +3659,10 @@ function renderMapping() {
   }).join('');
 
   const complete = mapped.filter(rowReady);
-  const usable = complete.filter(rowStateOk).length;
+  // Reflect the review decisions, or the count promises rows that duplicate
+  // resolution is about to drop.
+  ensureDupState(complete);
+  const usable = applyDupResolution(complete).filter(rowStateOk).length;
   const wrongState = complete.length - usable;   // no sheet exists for these
   const short = uploadState.rows.length - complete.length;
 
@@ -3506,7 +3672,7 @@ function renderMapping() {
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
     (wrongState ? '<span class="up-warn"> · ' + wrongState + ' have no matching state sheet</span>' : '') +
-    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable);
+    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable) + renderDupReview(complete);
 
   document.getElementById('upBtn').disabled = usable === 0;
 }
@@ -3664,8 +3830,11 @@ async function submitUpload() {
   const source = document.getElementById('upSource').value;
   if (!source || source === '__other') { msg.textContent = 'Pick a lead source first.'; return; }
 
-  const objs = uploadState.rows.map(mapRow).filter(rowReady);
-  if (!objs.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
+  const parsed = uploadState.rows.map(mapRow).filter(rowReady);
+  if (!parsed.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
+  ensureDupState(parsed);
+  const objs = applyDupResolution(parsed);
+  if (!objs.length) { msg.textContent = 'Every row was excluded in the duplicate review.'; return; }
 
   const split = groupByDestination(objs);
   const dests = Object.keys(split.groups);
