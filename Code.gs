@@ -241,7 +241,11 @@ const LEAD_COLD = [
   // Stored split because that is how lead vendors export. 'Name' above stays
   // the composed display value, written whenever these are, so every reader
   // that already asks for Name keeps working.
-  'First Name', 'Last Name', 'Zip'
+  'First Name', 'Last Name', 'Zip',
+  // Provenance for a donated batch. Uploaded By stays the original agent, so
+  // without these the receiving manager cannot tell a donation from anything
+  // else that landed in their pool.
+  'Donated By', 'Donated At'
 ];
 
 const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
@@ -1949,6 +1953,8 @@ function myBatches_(me) {
         iAdded = COL['Date Added'] - A0;
   const iSource = COL['Lead Source'] - B0, iBatch = COL['Batch ID'] - B0,
         iBy = COL['Uploaded By'] - B0, iStatus = COL['Batch Status'] - B0;
+  const C0 = COL['Donated By'], CW = COL['Donated At'] - COL['Donated By'] + 1;
+  const iDonBy = COL['Donated By'] - C0, iDonAt = COL['Donated At'] - C0;
 
   const out = [];
   activeStates_().forEach(function(state) {
@@ -1958,13 +1964,18 @@ function myBatches_(me) {
 
     const a = sheet.getRange(2, A0, lr - 1, AW).getValues();
     const b = sheet.getRange(2, B0, lr - 1, BW).getValues();
+    const c = sheet.getRange(2, C0, lr - 1, CW).getValues();
 
     const acc = {};
     for (let i = 0; i < b.length; i++) {
       const batchId = String(b[i][iBatch] || '');
       if (!batchId) continue;
       const by = String(b[i][iBy] || '');
-      if (me.role !== 'admin' && by !== me.email) continue;
+      // Yours if you uploaded it, or if it was donated into your pool —
+      // filtering on Uploaded By alone hid every donation from the manager
+      // who now owns the leads.
+      const owned = String(a[i][iOwner] || '') === String(me.id || '');
+      if (me.role !== 'admin' && by !== me.email && !owned) continue;
 
       acc[batchId] = acc[batchId] || {
         batchId: batchId, state: state, uploadedBy: by,
@@ -1973,7 +1984,10 @@ function myBatches_(me) {
         visibility: String(a[i][iVis] || VISIBILITY.POOL),
         sharedWith: String(a[i][iShared] || ''),
         ownerId: String(a[i][iOwner] || ''),
-        added: String(a[i][iAdded] || ''), count: 0, locked: 0
+        added: String(a[i][iAdded] || ''),
+        donatedBy: String(c[i][iDonBy] || ''),
+        donatedAt: String(c[i][iDonAt] || ''),
+        count: 0, locked: 0
       };
       acc[batchId].count++;
       if (a[i][iLock]) acc[batchId].locked++;
@@ -2073,10 +2087,13 @@ function donateBatch_(me, body) {
   const target = donationTarget_(me);
   if (!target) return { error: 'You have no manager above you to donate to.' };
 
+  const donatedAt = stamp_();
   const out = eachBatchRow_(me, body.batchId, body.state, function(sheet, rowIndex) {
     sheet.getRange(rowIndex, COL['Owner ID']).setValue(target.ownerId);
     sheet.getRange(rowIndex, COL['Visibility']).setValue(VISIBILITY.POOL);
     sheet.getRange(rowIndex, COL['Shared With']).setValue('');
+    sheet.getRange(rowIndex, COL['Donated By']).setValue(me.name || me.email);
+    sheet.getRange(rowIndex, COL['Donated At']).setValue(donatedAt);
   });
   if (out.error) return out;
   out.destination = target.label;

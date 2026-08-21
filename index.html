@@ -397,6 +397,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .vis-badge{font-size:10px;padding:2px 7px;border-radius:999px;margin-left:6px;white-space:nowrap;}
 .vis-badge.pool{background:rgba(37,99,235,.12);color:var(--accent);}
 .vis-badge.excl{background:rgba(196,127,0,.15);color:#8a5a00;}
+.vis-badge.donated{background:rgba(10,125,63,.13);color:#0a7d3f;}
 .share-list{max-height:320px;overflow-y:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px;}
 .share-row{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;font-size:13px;
   border-bottom:1px solid var(--border);cursor:pointer;}
@@ -3550,13 +3551,22 @@ async function loadBatches() {
       return u ? u.name : id;
     });
 
+    // A donated batch is not the same thing as one you uploaded, and the
+    // manager receiving it needs to see who it came from without asking.
+    const donated = !!b.donatedBy;
+    const mine = b.uploadedBy === state.agentEmail;
+    const origin = donated
+      ? '🎁 Donated by ' + escapeHtml(b.donatedBy) + (b.donatedAt ? ' · ' + escapeHtml(b.donatedAt) : '')
+      : escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '');
+
     return '<div class="batch-row' + (gone ? ' removed' : '') + '">' +
       '<div class="batch-info">' +
         '<div>' + b.count + ' leads · ' + escapeHtml(b.state) + ' · ' + escapeHtml(b.source || '—') +
           ' <span class="vis-badge ' + (exclusive ? 'excl' : 'pool') + '">' +
           (exclusive ? '🔒 Exclusive' : '👥 Pool') + '</span>' +
+          (donated ? ' <span class="vis-badge donated">🎁 Donated' + (mine ? ' away' : '') + '</span>' : '') +
         '</div>' +
-        '<div class="batch-meta">' + escapeHtml(b.added || '') + ' · ' + escapeHtml(b.uploadedBy || '') +
+        '<div class="batch-meta">' + origin +
           (b.locked ? ' · ' + b.locked + ' being dialed' : '') +
           (gone ? ' · removed' : '') +
           (sharedNames.length ? ' · shared with ' + escapeHtml(sharedNames.join(', ')) : '') +
