@@ -3590,7 +3590,8 @@ async function loadBatches() {
         '<button class="tiny-btn" onclick="setBatchVis(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
           (exclusive ? 'pool' : 'exclusive') + '\')">' +
           (exclusive ? 'Make pool' : 'Make exclusive') + '</button>' +
-        '<button class="tiny-btn" onclick="openShare(\'' + b.batchId + '\',\'' + b.state + '\')">Share…</button>' +
+        '<button class="tiny-btn" onclick="openShare(\'' + b.batchId + '\',\'' + b.state + '\',\'' +
+          escapeHtml(String(b.sharedWith || '')) + '\')">Share…</button>' +
         (donationDest ? '<button class="tiny-btn" onclick="donateBatch(\'' + b.batchId + '\',\'' + b.state + '\')">Donate</button>' : '') +
         '<button class="tiny-btn" onclick="toggleBatch(\'' + b.batchId + '\',\'' + b.state + '\',' + (gone ? 'true' : 'false') + ')">' +
           (gone ? 'Restore' : 'Remove') + '</button>' +
@@ -3707,10 +3708,23 @@ async function donateBatch(batchId, stateCode) {
 // ── share picker ────────────────────────────────────────────────
 let shareCtx = null;
 
-function openShare(batchId, stateCode) {
-  shareCtx = { kind: 'batch', batchId: batchId, state: stateCode, chosen: {} };
+// Pre-ticked from what it is already shared with. Opening on an empty list
+// made Save a silent revoke — and left no way to remove one person without
+// remembering everyone else and re-adding them.
+function toChosen(csv) {
+  const chosen = {};
+  String(csv || '').split(',').forEach(function(id) {
+    const t = id.trim();
+    if (t) chosen[t] = true;
+  });
+  return chosen;
+}
+
+function openShare(batchId, stateCode, sharedCsv) {
+  shareCtx = { kind: 'batch', batchId: batchId, state: stateCode, chosen: toChosen(sharedCsv) };
   openSharePicker('Share this batch',
-    'They will see these leads even while the batch is exclusive. Sharing replaces the current list.');
+    'Ticked people can see these leads even while the batch is exclusive. ' +
+    'Untick someone to take their access away.');
 }
 
 // Same picker, one lead. Handing a single lead to a colleague is a far more
@@ -3722,9 +3736,10 @@ async function openShareLead() {
     const r = await api('GET', { action: 'roster' });
     rosterCache = (r && r.roster) || [];
   }
-  shareCtx = { kind: 'lead', state: lead.state, rowIndex: lead.rowIndex, chosen: {} };
+  shareCtx = { kind: 'lead', state: lead.state, rowIndex: lead.rowIndex,
+               chosen: toChosen(lead.shared_with) };
   openSharePicker('Share ' + (lead.name || 'this lead'),
-    'They will be able to see and dial this lead. Sharing replaces anyone it is already shared with.');
+    'Ticked people can see and dial this lead. Untick someone to take their access away.');
 }
 
 function openSharePicker(title, sub) {
