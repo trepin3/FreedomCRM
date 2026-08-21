@@ -2945,6 +2945,10 @@ function scriptToolUrlFor(lead) {
   if (source.indexOf('bang bang') === -1) return base;
 
   const q = [];
+  // Fall back to the first word of Name for leads uploaded before the schema
+  // stored the halves separately.
+  const first = lead.first_name || String(lead.name || '').trim().split(/\s+/)[0] || '';
+  if (first)          q.push('firstName=' + encodeURIComponent(first));
   if (lead.last_name) q.push('lastName=' + encodeURIComponent(lead.last_name));
   if (lead.address)   q.push('address=' + encodeURIComponent(lead.address));
   return base + 'bang-bang.html' + (q.length ? '?' + q.join('&') : '');
