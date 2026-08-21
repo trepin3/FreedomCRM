@@ -1948,7 +1948,7 @@ async function confirmCallback() {
   // Written while the modal is still up, so the download is plainly the
   // result of the button just pressed rather than something that appears
   // after the screen has already moved on.
-  downloadCallbackIcs({
+  addToGoogleCalendar({
     state: lead.state,
     name: lead.name,
     phone: lead.phone,
@@ -2031,12 +2031,53 @@ function callbackMoment(cb) {
   return new Date(guess.getTime() + (utcRef.getTime() - shown.getTime()));
 }
 
+// Google Calendar's own event URL rather than a file. An .ics is handed to
+// whatever the OS calls the default calendar — on a Mac that is Apple
+// Calendar, which is not where these agents keep their day.
+//
+// The trade is reminders: this URL cannot carry them, so the event picks up
+// whatever defaults that Google calendar already uses. Setting them from here
+// needs the sensitive calendar.events scope and Google's review.
+function googleCalendarUrl(cb) {
+  const start = callbackMoment(cb);
+  if (!start) return '';
+  const end = new Date(start.getTime() + 30 * 60000);
+  const stamp = function(d) { return icsStamp(d).replace(/[^0-9TZ]/g, ''); };
+
+  const phone = formatPhone(cb.phone);
+  const details = [
+    'FreedomCRM callback',
+    'Name: ' + (cb.name || ''),
+    'Phone: ' + phone,
+    cb.email ? 'Email: ' + cb.email : '',
+    cb.lead_id ? 'Lead ID: ' + cb.lead_id : ''
+  ].filter(Boolean).join('\n');
+
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
+    '&text=' + encodeURIComponent('Callback: ' + (cb.name || 'Lead') + ' (' + phone + ')') +
+    '&dates=' + stamp(start) + '/' + stamp(end) +
+    '&details=' + encodeURIComponent(details) +
+    (cb.city ? '&location=' + encodeURIComponent(cb.city + ', ' + cb.state) : '');
+}
+
+function addToGoogleCalendar(cb, quiet) {
+  const url = googleCalendarUrl(cb);
+  if (!url) {
+    if (!quiet) alert('That callback has no usable date and time yet.');
+    return;
+  }
+  const win = window.open(url, '_blank');
+  // Blocked popups leave the agent with nothing, so fall back to the file
+  // rather than silently doing nothing.
+  if (!win) downloadCallbackIcs(cb, quiet);
+}
+
 function addCallbackToCalendar(stateCode, rowIndex) {
   const cb = (state.myCallbacks || []).filter(function(c) {
     return c.state === stateCode && String(c.rowIndex) === String(rowIndex);
   })[0];
   if (!cb) return;
-  downloadCallbackIcs(cb);
+  addToGoogleCalendar(cb);
 }
 
 // Takes the callback rather than looking it up, so a booking that has just
@@ -2456,7 +2497,7 @@ function renderMyCallbacks() {
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
           <a class="cb-mini-btn" href="tel:+${phoneClean}">📞 Call</a>
-          <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
+          <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Google Calendar</button>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
         </div>
