@@ -1177,6 +1177,15 @@ function setStatus_(body, status, extra) {
   const row = Number(body.rowIndex);
   if (!row || row < 2) return { error: 'bad row' };
 
+  // Refuse to record an outcome for a lead this agent no longer holds. Without
+  // this, a stack released by an admin or the idle timer could still be
+  // dispositioned from a stale tab — overwriting whatever the agent who picked
+  // those leads up next had recorded.
+  const held = String(sheet.getRange(row, COL['Locked By']).getValue() || '');
+  if (held && held !== String(body.agent || '')) {
+    return { error: 'lead_released' };
+  }
+
   const now = stamp_();
   const write = Object.assign({
     'Status': status,

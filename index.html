@@ -1326,23 +1326,39 @@ function startTimers() {
   state.lbPollTimer = setInterval(() => { if (state.activeTab === 'leaderboard') loadLeaderboard(); }, 60000);
   // Notice if this stack gets pulled out from under us — an admin force
   // release, or the idle timer expiring. Reads one column, so it is cheap.
-  state.holdTimer = setInterval(checkStillHolding, 30000);
+  state.holdTimer = setInterval(checkStillHolding, 10000);
 }
 
+// Coming back to the tab is exactly when a stale stack is most likely, and
+// waiting out the next interval to find out is the worst time to wait.
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) checkStillHolding();
+});
+
+let holdCheckInFlight = false;
+
 async function checkStillHolding() {
+  if (holdCheckInFlight) return;
   if (!state.currentState || !state.leads || !state.leads.length) return;
   if (document.hidden) return;                 // a background tab is not working
   let out;
+  holdCheckInFlight = true;
   try {
     out = await api('GET', { action: 'heartbeat', state: state.currentState });
   } catch (e) { return; }                      // a blip is not a release
+  finally { holdCheckInFlight = false; }
   if (!out || typeof out.held !== 'number' || out.held > 0) return;
 
+  loseStack();
+}
+
+// Everything that has to happen when the leads are no longer ours.
+function loseStack(message) {
   state.leads = [];
   state.currentIdx = 0;
   state.history = [];
   state.seenIds.clear();
-  alert('Your reserved leads have been released and are back in the pool.\n\n' +
+  alert(message || 'Your reserved leads have been released and are back in the pool.\n\n' +
         'Pick a state to start a new stack.');
   goToCrm();
 }
@@ -3894,26 +3910,40 @@ async function api(method, params) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       if (state.authToken) params = Object.assign({}, params, { s: state.authToken });
+      let res;
       if (method === 'GET') {
         const qs = new URLSearchParams(params).toString();
-        const res = await fetch(CONFIG.APPS_SCRIPT_URL + '?' + qs);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return await res.json();
+        res = await fetch(CONFIG.APPS_SCRIPT_URL + '?' + qs);
       } else {
-        const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+        res = await fetch(CONFIG.APPS_SCRIPT_URL, {
           method: 'POST',
           body: JSON.stringify(params),
           headers: { 'Content-Type': 'text/plain;charset=utf-8' } // avoids CORS preflight
         });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return await res.json();
       }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const body = await res.json();
+
+      // Dispositions are fired and forgotten by their callers, so a refusal
+      // would be swallowed and the card would advance as though it worked.
+      // Caught here once, for every path, rather than at eight call sites.
+      if (body && body.error === 'lead_released') handleLeadReleased();
+      return body;
     } catch (e) {
       lastErr = e;
       if (i < maxRetries - 1) await new Promise(r => setTimeout(r, 3000));
     }
   }
   throw lastErr;
+}
+
+let releaseNoticeShown = false;
+function handleLeadReleased() {
+  if (releaseNoticeShown) return;          // one notice, not one per lead in flight
+  releaseNoticeShown = true;
+  setTimeout(function() { releaseNoticeShown = false; }, 5000);
+  loseStack('That lead is no longer yours — your stack was released and is back ' +
+            'in the pool.\n\nNothing was recorded. Pick a state to start again.');
 }
 
 // ══════════════════════════════════════════════════
