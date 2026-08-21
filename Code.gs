@@ -2603,6 +2603,78 @@ function removeDummyLeads() {
   return msg;
 }
 
+// Retires every generated test lead, wherever it landed. They all carry a
+// number in the 555-0100..0199 block reserved for fiction, which nothing real
+// can use — so this is exact, and cannot catch a genuine lead.
+//
+// Run before agents start. Otherwise a 150-lead stack comes back mostly
+// unroutable numbers and the agent spends the morning listening to dead air.
+// Archived, not deleted: the rows and their history stay.
+function removeTestLeads() {
+  const report = [];
+  let total = 0;
+
+  Object.keys(sheets_()).forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+    const now = stamp_();
+    let hit = 0;
+
+    data.forEach(function(row, i) {
+      const phone = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+      // 1 + area code + 555 + 01xx
+      if (!/^1\d{3}55501\d{2}$/.test(phone)) return;
+      if (String(row[ix_('Status')] || '').toLowerCase() === STATUS.ARCHIVED) return;
+
+      sheet.getRange(i + 2, COL['Status']).setValue(STATUS.ARCHIVED);
+      sheet.getRange(i + 2, COL['Status Reason']).setValue('generated test lead');
+      sheet.getRange(i + 2, COL['Archived At']).setValue(now);
+      sheet.getRange(i + 2, COL['Archived By']).setValue('system');
+      clearLock_(sheet, i + 2);
+      hit++;
+    });
+    if (hit) { report.push(code + ': ' + hit); total += hit; }
+  });
+
+  recountStates();
+  const msg = total
+    ? 'Archived ' + total + ' test leads — ' + report.join(', ') + '. Real leads untouched.'
+    : 'No test leads found.';
+  Logger.log(msg);
+  return msg;
+}
+
+// Counts what each state would actually hand an agent, and how much of it is
+// test data. Read-only — run it before and after.
+function poolReport() {
+  const out = [];
+  Object.keys(sheets_()).forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+    let dialable = 0, fake = 0;
+    data.forEach(function(row) {
+      const st = String(row[ix_('Status')] || '').toLowerCase();
+      if (DIALABLE.indexOf(st) === -1) return;
+      dialable++;
+      const phone = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+      if (/^1\d{3}55501\d{2}$/.test(phone)) fake++;
+    });
+    if (dialable) {
+      out.push(code + ': ' + dialable + ' dialable, ' + fake + ' of them test (' +
+               (dialable - fake) + ' real)');
+    }
+  });
+  const msg = out.length ? out.join('\n') : 'No dialable leads anywhere.';
+  Logger.log(msg);
+  return msg;
+}
+
 // Read-only: the header and one row side by side, so column drift is
 // obvious before a large upload lands on top of it. Pass a state code.
 function inspectLeadRow(stateCode) {
