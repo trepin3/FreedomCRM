@@ -185,7 +185,8 @@ function listStates_(me) {
 
 function invalidateStates_(me) {
   try {
-    CacheService.getScriptCache().remove('states_' + (me ? me.id : 'anon'));
+    const id = me ? me.id : 'anon';
+    CacheService.getScriptCache().removeAll(['states_' + id, 'batches_' + id]);
   } catch (e) {}
 }
 const BATCH_SIZE = 5;
@@ -1933,32 +1934,57 @@ function setBatchStatus_(me, batchId, state, active) {
 }
 
 function myBatches_(me) {
+  const cache = CacheService.getScriptCache();
+  const key = 'batches_' + (me ? me.id : 'anon');
+  const hit = cache.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+
+  // Nine fields out of sixty-one. Reading the full width made this the
+  // slowest screen in the app for no reason — the wanted columns sit in two
+  // runs, 3-16 and 25-28, so two narrow reads cover them.
+  const A0 = COL['Owner ID'], AW = COL['Date Added'] - COL['Owner ID'] + 1;
+  const B0 = COL['Lead Source'], BW = COL['Batch Status'] - COL['Lead Source'] + 1;
+  const iOwner = COL['Owner ID'] - A0, iVis = COL['Visibility'] - A0,
+        iShared = COL['Shared With'] - A0, iLock = COL['Locked By'] - A0,
+        iAdded = COL['Date Added'] - A0;
+  const iSource = COL['Lead Source'] - B0, iBatch = COL['Batch ID'] - B0,
+        iBy = COL['Uploaded By'] - B0, iStatus = COL['Batch Status'] - B0;
+
   const out = [];
   activeStates_().forEach(function(state) {
     const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
-    const lr = sheet.getLastRow();
+    const lr = sheet ? sheet.getLastRow() : 0;
     if (lr < 2) return;
-    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    const a = sheet.getRange(2, A0, lr - 1, AW).getValues();
+    const b = sheet.getRange(2, B0, lr - 1, BW).getValues();
+
     const acc = {};
-    data.forEach(function(row) {
-      const b = String(row[ix_('Batch ID')] || '');
-      if (!b) return;
-      const by = String(row[ix_('Uploaded By')] || '');
-      if (me.role !== 'admin' && by !== me.email) return;
-      acc[b] = acc[b] || { batchId: b, state: state, uploadedBy: by,
-                           source: String(row[ix_('Lead Source')] || ''),
-                           batchStatus: String(row[ix_('Batch Status')] || ''),
-                           visibility: String(row[ix_('Visibility')] || VISIBILITY.POOL),
-                           sharedWith: String(row[ix_('Shared With')] || ''),
-                           ownerId: String(row[ix_('Owner ID')] || ''),
-                           added: String(row[ix_('Date Added')] || ''), count: 0, locked: 0 };
-      acc[b].count++;
-      if (row[ix_('Locked By')]) acc[b].locked++;
-    });
+    for (let i = 0; i < b.length; i++) {
+      const batchId = String(b[i][iBatch] || '');
+      if (!batchId) continue;
+      const by = String(b[i][iBy] || '');
+      if (me.role !== 'admin' && by !== me.email) continue;
+
+      acc[batchId] = acc[batchId] || {
+        batchId: batchId, state: state, uploadedBy: by,
+        source: String(b[i][iSource] || ''),
+        batchStatus: String(b[i][iStatus] || ''),
+        visibility: String(a[i][iVis] || VISIBILITY.POOL),
+        sharedWith: String(a[i][iShared] || ''),
+        ownerId: String(a[i][iOwner] || ''),
+        added: String(a[i][iAdded] || ''), count: 0, locked: 0
+      };
+      acc[batchId].count++;
+      if (a[i][iLock]) acc[batchId].locked++;
+    }
     Object.keys(acc).forEach(function(k) { out.push(acc[k]); });
   });
+
   out.sort(function(a, b) { return String(b.added).localeCompare(String(a.added)); });
-  return { batches: out };
+  const result = { batches: out };
+  cache.put(key, JSON.stringify(result), 60);
+  return result;
 }
 
 // ══════════════════════════════════════════════════════════════════

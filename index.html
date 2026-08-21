@@ -673,7 +673,8 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <button class="mini-btn team-add-btn" id="upBtn" onclick="submitUpload()" disabled>Upload</button>
       </div>
       <div class="team-add-title" style="margin:22px 0 8px;">Your batches</div>
-      <div id="upBatches"><div class="empty-state">Nothing uploaded yet.</div></div>
+      <div id="upBatches"><div class="empty-state"><div class="spinner"></div>
+        <div class="empty-msg" style="margin-top:12px;">Loading your batches…</div></div></div>
     </div>
 
     <div id="shareModal" class="modal-overlay">
@@ -3509,7 +3510,25 @@ let donationDest = '';
 
 async function loadBatches() {
   const box = document.getElementById('upBatches');
-  const data = await api('GET', { action: 'myBatches' });
+  box.innerHTML = '<div class="empty-state"><div class="spinner"></div>' +
+    '<div class="empty-msg" style="margin-top:12px;">Loading your batches…</div></div>';
+
+  let data;
+  try {
+    data = await api('GET', { action: 'myBatches' });
+  } catch (e) {
+    // "Nothing uploaded yet" after a failed request is a lie, and the one an
+    // agent who just uploaded is least equipped to disbelieve.
+    box.innerHTML = '<div class="empty-state">Could not load your batches. ' +
+      '<a onclick="loadBatches()" style="color:var(--accent);cursor:pointer;' +
+      'text-decoration:underline;">Try again</a></div>';
+    return;
+  }
+  if (data && data.error) {
+    box.innerHTML = '<div class="empty-state">' + escapeHtml(data.error) + '</div>';
+    return;
+  }
+
   const list = (data && data.batches) || [];
   if (!list.length) { box.innerHTML = '<div class="empty-state">Nothing uploaded yet.</div>'; return; }
 
