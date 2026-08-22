@@ -362,7 +362,14 @@ const LEAD_COLD = [
   // files differ by source and always will; a column per field would mean a
   // schema change for every new vendor, and until that change happened the
   // data would simply be dropped. This keeps the tail instead.
-  'Extra Data'
+  'Extra Data',
+  // The ERS appointment is where referrals come from, so it is tracked on the
+  // sale that produced it rather than as a second lead. Appended after Extra
+  // Data for the same reason Extra Data was appended after Donated At.
+  'ERS At', 'ERS Status', 'ERS By', 'ERS Notes', 'Referral Count',
+  // On a referral lead: the Lead ID of the sale it came from. This is the only
+  // link between a policy and the leads it generated.
+  'Referred By'
 ];
 
 const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
@@ -394,6 +401,8 @@ const DIALABLE = [STATUS.NEW, ''];
 
 const VISIBILITY = { POOL: 'pool', EXCLUSIVE: 'exclusive' };
 
+const ERS = { BOOKED: 'booked', DONE: 'done', NO_SHOW: 'no_show' };
+
 // Reservation: 15 minutes idle releases a lead, but an open call holds it —
 // with a ceiling, so a crash mid-call cannot freeze 150 leads indefinitely.
 const RESERVE_SIZE         = 150;
@@ -402,7 +411,7 @@ const OPEN_CALL_CEILING_MS = 2 * 60 * 60 * 1000;
 const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it this long
 const SOLD_FOLLOWUP_DAYS   = 3;
 
-const SEED_LEAD_SOURCES = ['$1 Bang Bang', '$1 Goat', 'DashlyPro'];
+const SEED_LEAD_SOURCES = ['$1 Bang Bang', '$1 Goat', 'DashlyPro', 'ERS Referral'];
 
 // Dummy test leads (same 10 across all 3 states)
 const DUMMY_LEADS = [
@@ -1014,6 +1023,7 @@ function doGet(e) {
     let result;
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
+      case 'getSold':     result = getSold(userByEmail_(user.email), e.parameter.range); break;
       case 'getLeads':    result = getLeads(e.parameter.state, user.name, userByEmail_(user.email), e.parameter.size);
                           logActivity_(user, 'getLeads', '', e.parameter.state); break;
       case 'search':      result = search(e.parameter.q, userByEmail_(user.email)); break;
@@ -1096,6 +1106,8 @@ function doPost(e) {
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
       case 'sold': result = actionSold(body); break;
+      case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
+      case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
       case 'wrong': result = actionWrong(body); break;
       case 'callback': result = actionCallback(body); break;
       case 'releaseAll': result = actionReleaseAll(body); break;
@@ -1451,6 +1463,223 @@ function actionSold(body) {
     'Sold Agent': body.agent || '',
     'Follow Up At': Utilities.formatDate(followUp, TZ, 'yyyy-MM-dd')
   });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SOLD WORKSPACE — the policies an agent has written, and the ERS
+// appointment on each one. Referrals collected at that appointment
+// become leads, which is the whole point of running it.
+// ══════════════════════════════════════════════════════════════════
+
+// Every sale this user can see, newest first. Scoped exactly like the dial
+// queue: your own, plus anyone below you in the tree.
+function getSold(me, range) {
+  if (!me) return { error: 'auth_required' };
+  const cutoff = getRangeCutoff(range || 'all');
+  const out = [];
+
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    data.forEach(function(row, i) {
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) return;
+      if (!canSee_(row, me)) return;
+      const soldAt = row[ix_('Sold Date')];
+      if (cutoff && !dateInRange(soldAt, cutoff)) return;
+
+      out.push({
+        state: state,
+        rowIndex: i + 2,
+        leadId: String(row[ix_('Lead ID')] || ''),
+        name: String(row[ix_('Name')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        premium: row[ix_('Monthly Premium')],
+        ap: Number(row[ix_('AP Amount')]) || 0,
+        carrier: String(row[ix_('Carrier')] || ''),
+        firstDraft: fmtDate(row[ix_('First Draft Date')]),
+        recurringDraft: String(row[ix_('Recurring Draft Date')] || ''),
+        reason: String(row[ix_('Reason for Policy')] || ''),
+        notes: String(row[ix_('Sale Notes')] || ''),
+        soldDate: fmtDateTime(soldAt),
+        soldAgent: String(row[ix_('Sold Agent')] || ''),
+        soldSort: parseStamp_(soldAt),
+        ersAt: fmtDateTime(row[ix_('ERS At')]),
+        ersAtRaw: row[ix_('ERS At')] ? String(row[ix_('ERS At')]) : '',
+        ersStatus: String(row[ix_('ERS Status')] || ''),
+        ersBy: String(row[ix_('ERS By')] || ''),
+        ersNotes: String(row[ix_('ERS Notes')] || ''),
+        referrals: Number(row[ix_('Referral Count')]) || 0,
+        mine: String(row[ix_('Sold Agent')] || '') === String(me.name || '')
+      });
+    });
+  });
+
+  out.sort(function(a, b) { return b.soldSort - a.soldSort; });
+
+  const totals = out.reduce(function(t, o) {
+    t.policies++; t.ap += o.ap;
+    if (o.ersStatus === ERS.DONE) t.ersDone++;
+    else if (o.ersStatus === ERS.BOOKED) t.ersBooked++;
+    else t.ersUnbooked++;
+    t.referrals += o.referrals;
+    return t;
+  }, { policies: 0, ap: 0, ersDone: 0, ersBooked: 0, ersUnbooked: 0, referrals: 0 });
+
+  return { sold: out, totals: totals };
+}
+
+// Booking, rescheduling and cancelling are one action — the appointment is a
+// single field, and a reschedule is just a different value in it.
+function actionBookErs(me, body) {
+  const ctx = oneLeadSeen_(me, body);
+  if (ctx.error) return ctx;
+  if (String(ctx.row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) {
+    return { error: 'That lead is not a sale.' };
+  }
+
+  const when = String(body.ersAt || '').trim();
+  if (!when) {                                   // cancelling
+    writeCells_(ctx.sheet, ctx.rowIndex, {
+      'ERS At': '', 'ERS Status': '', 'ERS By': ''
+    });
+    logActivity_(me, 'ersCancel', ctx.row[ix_('Name')], body.state);
+    return { success: true, ersStatus: '' };
+  }
+
+  writeCells_(ctx.sheet, ctx.rowIndex, {
+    'ERS At': when,
+    'ERS Status': ERS.BOOKED,
+    'ERS By': me.name || me.email
+  });
+  logActivity_(me, 'ersBook', ctx.row[ix_('Name')] + ' @ ' + when, body.state);
+  return { success: true, ersStatus: ERS.BOOKED, ersAt: when };
+}
+
+function actionCompleteErs(me, body) {
+  const ctx = oneLeadSeen_(me, body);
+  if (ctx.error) return ctx;
+  if (String(ctx.row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) {
+    return { error: 'That lead is not a sale.' };
+  }
+
+  const outcome = String(body.outcome || ERS.DONE);
+  if (outcome === ERS.NO_SHOW) {
+    writeCells_(ctx.sheet, ctx.rowIndex, {
+      'ERS Status': ERS.NO_SHOW,
+      'ERS Notes': String(body.notes || '')
+    });
+    logActivity_(me, 'ersNoShow', ctx.row[ix_('Name')], body.state);
+    return { success: true, ersStatus: ERS.NO_SHOW, created: 0 };
+  }
+
+  // Referrals are created before the appointment is marked done, so a failure
+  // partway leaves the appointment still open rather than silently losing them.
+  const made = createReferrals_(me, ctx, body.referrals || []);
+  if (made.error) return made;
+
+  const prior = Number(ctx.row[ix_('Referral Count')]) || 0;
+  writeCells_(ctx.sheet, ctx.rowIndex, {
+    'ERS Status': ERS.DONE,
+    'ERS By': me.name || me.email,
+    'ERS Notes': String(body.notes || ''),
+    'Referral Count': prior + made.created
+  });
+  logActivity_(me, 'ersComplete',
+    ctx.row[ix_('Name')] + ' \u2014 ' + made.created + ' referrals', body.state);
+
+  return { success: true, ersStatus: ERS.DONE, created: made.created, skipped: made.skipped };
+}
+
+// A named set of cells on one row, in one write. Callers name columns rather
+// than tracking indices, and the span is read back so untouched columns in
+// between keep their values.
+function writeCells_(sheet, rowIndex, obj) {
+  const keys = Object.keys(obj).filter(function(k) { return COL[k]; });
+  if (!keys.length) return;
+  let lo = Infinity, hi = 0;
+  keys.forEach(function(k) { lo = Math.min(lo, COL[k]); hi = Math.max(hi, COL[k]); });
+  const range = sheet.getRange(rowIndex, lo, 1, hi - lo + 1);
+  const vals = range.getValues();
+  keys.forEach(function(k) { vals[0][COL[k] - lo] = obj[k]; });
+  range.setValues(vals);
+}
+
+// oneLead_ requires ownership, which is right for giving a lead away. Booking
+// an ERS appointment is not that — a manager running the appointment for one of
+// their agents needs it, and visibility already encodes the tree.
+function oneLeadSeen_(me, body) {
+  const state = String(body.state || '').toUpperCase();
+  if (!sheets_()[state]) return { error: 'Unknown state: ' + state };
+  const rowIndex = Number(body.rowIndex);
+  if (!rowIndex || rowIndex < 2) return { error: 'Bad row.' };
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const row = sheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+  if (!canSee_(row, me)) return { error: 'not_permitted' };
+  return { sheet: sheet, row: row, rowIndex: rowIndex, state: state };
+}
+
+// Referrals become real leads in the state they live in, owned by whoever ran
+// the appointment. They arrive already dialable — that is the entire point.
+//
+// A referral with no usable phone is skipped rather than written, because a
+// lead nobody can call is just a row that gets dialled at forever.
+function createReferrals_(me, ctx, list) {
+  if (!list || !list.length) return { created: 0, skipped: [] };
+
+  const sourceId = String(ctx.row[ix_('Lead ID')] || '');
+  const byState = {}, skipped = [];
+
+  list.forEach(function(r) {
+    const name  = String(r.name || '').trim();
+    const phone = String(r.phone || '').replace(/\D/g, '');
+    if (!name)            { skipped.push('(no name)'); return; }
+    if (phone.length < 10) { skipped.push(name + ' (no usable phone)'); return; }
+
+    const st = String(r.state || ctx.state || '').toUpperCase();
+    if (!US_STATES[st])   { skipped.push(name + ' (unknown state ' + st + ')'); return; }
+    if (!ensureStateSheet_(st)) { skipped.push(name + ' (could not open ' + st + ')'); return; }
+
+    (byState[st] = byState[st] || []).push({ name: name, phone: phone, r: r });
+  });
+
+  let created = 0;
+  const now = stamp_();
+
+  Object.keys(byState).forEach(function(st) {
+    const sheet = SpreadsheetApp.openById(sheets_()[st]).getSheetByName('Leads');
+    const seq0 = nextLeadSeq_(sheet, st);
+    const rows = byState[st].map(function(item, n) {
+      const row = new Array(LEAD_COLS.length).fill('');
+      const parts = splitName_(item.name);
+      row[ix_('Lead ID')]      = st + '-' + ('000000' + (seq0 + n)).slice(-6);
+      row[ix_('Status')]       = STATUS.NEW;
+      row[ix_('Visibility')]   = VISIBILITY.EXCLUSIVE;   // earned, not pooled
+      row[ix_('Owner ID')]     = me.id || '';
+      row[ix_('Name')]         = item.name;
+      row[ix_('First Name')]   = parts[0];
+      row[ix_('Last Name')]    = parts[1];
+      row[ix_('Phone')]        = item.phone;
+      row[ix_('State')]        = st;
+      row[ix_('Email')]        = String(item.r.email || '');
+      row[ix_('Date Added')]   = now;
+      row[ix_('Lead Source')]  = 'ERS Referral';
+      row[ix_('Uploaded By')]  = me.name || me.email;
+      row[ix_('Referred By')]  = sourceId;
+      return row;
+    });
+
+    const at = sheet.getLastRow() + 1;
+    sheet.getRange(at, COL['Phone'], rows.length, 1).setNumberFormat('@');
+    sheet.getRange(at, 1, rows.length, LEAD_COLS.length).setValues(rows);
+    bumpStateCount_(st, rows.length);
+    created += rows.length;
+  });
+
+  if (created) invalidateStates_(me);
+  return { created: created, skipped: skipped };
 }
 
 function actionWrong(body) {
@@ -1831,6 +2060,25 @@ function backfillLockOwners() {
     'Unmatched:  ' + fmt(unmatched) + '   (left as-is — no such user)',
     'Ambiguous:  ' + fmt(ambiguous) + '   (left as-is — two users share the name)'
   ].join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+// Widens every state sheet to the current schema and rewrites the header.
+// Adding columns to LEAD_COLS does nothing until this has run — reads past the
+// old width come back empty and writes land outside the sheet.
+function migrateSchemaColumns() {
+  const report = [];
+  Object.keys(sheets_()).forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    if (!sheet) { report.push(state + ': no Leads tab'); return; }
+    const had = sheet.getMaxColumns();
+    if (had < LEAD_COLS.length) sheet.insertColumnsAfter(had, LEAD_COLS.length - had);
+    sheet.getRange(1, 1, 1, LEAD_COLS.length)
+         .setValues([LEAD_COLS]).setFontWeight('bold').setBackground('#e8f0fe');
+    report.push(state + ': ' + had + ' \u2192 ' + LEAD_COLS.length);
+  });
+  const msg = 'Schema now ' + LEAD_COLS.length + ' columns.\n' + report.join('\n');
   Logger.log(msg);
   return msg;
 }

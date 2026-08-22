@@ -77,6 +77,39 @@ body.is-admin .admin-only{display:flex;}
    Let anything that is not a tile span the full width and centre itself. */
 .state-grid > .empty-state{grid-column:1 / -1;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:12px;padding:40px 20px;}
+.sold-range{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
+.sold-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
+.sold-stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;}
+.sold-stat-n{font-size:22px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;}
+.sold-stat-l{font-size:11px;color:var(--text-secondary);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-top:2px;}
+.sold-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
+.sold-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;}
+.sold-name{font-size:17px;font-weight:800;color:var(--text);}
+.sold-meta{font-size:12px;color:var(--text-secondary);margin-top:2px;}
+.sold-ap{font-size:17px;font-weight:800;color:var(--success);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.sold-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+.sold-fact{font-size:11px;font-weight:700;background:var(--input-bg);color:var(--text-secondary);
+  border-radius:999px;padding:4px 10px;}
+.sold-reason{font-size:13px;color:var(--text);margin-top:10px;line-height:1.45;}
+.ers-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+.ers-pill{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;
+  border-radius:999px;padding:4px 10px;}
+.ers-none{background:var(--input-bg);color:var(--text-secondary);}
+.ers-booked{background:rgba(255,159,10,.16);color:#b26a00;}
+.ers-done{background:rgba(48,209,88,.16);color:#1c7c33;}
+.ers-noshow{background:rgba(255,69,58,.16);color:#c02a20;}
+.ers-when{font-size:12px;color:var(--text-secondary);font-weight:600;}
+.ers-actions{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;}
+.ref-row{display:grid;grid-template-columns:1.4fr 1.1fr 70px 32px;gap:8px;margin-bottom:8px;align-items:center;}
+.ref-row input,.ref-row select{width:100%;}
+.ref-del{background:none;border:none;color:var(--text-secondary);font-size:17px;cursor:pointer;padding:4px;}
+.ref-del:hover{color:var(--danger);}
+.ref-head{display:grid;grid-template-columns:1.4fr 1.1fr 70px 32px;gap:8px;margin-bottom:6px;}
+.ref-head span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);}
+@media(max-width:520px){
+  .ref-row,.ref-head{grid-template-columns:1fr 1fr 60px 28px;}
+}
 .env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
   font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
@@ -655,6 +688,7 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
   <div class="tab-nav">
     <button class="tab-btn active" data-tab="dial" onclick="switchTab('dial')">📞 Dial</button>
     <button class="tab-btn" data-tab="callbacks" onclick="switchTab('callbacks')">📅 My Callbacks</button>
+    <button class="tab-btn" data-tab="sold" onclick="switchTab('sold')">💰 My Sales</button>
     <button class="tab-btn" data-tab="leaderboard" onclick="switchTab('leaderboard')">🏆 Leaderboard</button>
   </div>
 
@@ -680,6 +714,17 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 
     <div class="tab-panel" id="tab-callbacks">
       <div id="callbacksContent"><div class="empty-state"><div class="spinner"></div></div></div>
+    </div>
+
+    <div class="tab-panel" id="tab-sold">
+      <div class="sold-range" id="soldRange">
+        <button class="admin-tab" data-range="today" onclick="switchSoldRange('today')">Today</button>
+        <button class="admin-tab" data-range="week" onclick="switchSoldRange('week')">This Week</button>
+        <button class="admin-tab active" data-range="month" onclick="switchSoldRange('month')">This Month</button>
+        <button class="admin-tab" data-range="ytd" onclick="switchSoldRange('ytd')">YTD</button>
+        <button class="admin-tab" data-range="all" onclick="switchSoldRange('all')">All Time</button>
+      </div>
+      <div id="soldContent"><div class="empty-state"><div class="spinner"></div></div></div>
     </div>
 
     <div class="tab-panel" id="tab-leaderboard">
@@ -820,6 +865,59 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     </div>
   </div>
 
+
+<div class="modal-overlay" id="ersModal">
+  <div class="modal-card">
+    <div class="modal-title">📋 ERS Appointment</div>
+    <div class="modal-sub" id="ersModalSub">Lead name</div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Date *</label>
+        <input class="text-input" id="ersDate" type="date">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Time *</label>
+        <input class="text-input" id="ersTime" type="time">
+      </div>
+    </div>
+    <div class="login-error" id="ersError">Pick a date and a time.</div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('ersModal')">Cancel</button>
+      <button class="mini-btn" id="ersCancelBtn" onclick="cancelErs()">Cancel appointment</button>
+      <button class="modal-btn modal-btn-confirm" onclick="confirmErsBooking()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="ersDoneModal">
+  <div class="modal-card">
+    <div class="modal-title">✅ ERS Complete</div>
+    <div class="modal-sub" id="ersDoneSub">Lead name</div>
+
+    <div class="field-group">
+      <label class="field-label">Referrals collected</label>
+      <div class="up-hint" style="margin-bottom:8px;">
+        Each one becomes a lead in your queue, owned by you. Name and phone are
+        both required — a referral with no number cannot be dialled, so it is skipped.
+      </div>
+      <div class="ref-head"><span>Name</span><span>Phone</span><span>State</span><span></span></div>
+      <div id="refRows"></div>
+      <button class="mini-btn" onclick="addRefRow()">+ Add referral</button>
+    </div>
+
+    <div class="field-group">
+      <label class="field-label">Appointment notes (optional)</label>
+      <textarea class="text-input" id="ersDoneNotes" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
+    </div>
+
+    <div class="login-error" id="ersDoneError"></div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('ersDoneModal')">Cancel</button>
+      <button class="mini-btn danger" onclick="markErsNoShow()">No show</button>
+      <button class="modal-btn modal-btn-confirm" onclick="confirmErsDone()">Complete</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="dcidModal">
   <div class="modal-card">
@@ -1594,7 +1692,242 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
   if (tab === 'callbacks') loadMyCallbacks();
+  if (tab === 'sold') loadSold();
   if (tab === 'leaderboard') loadLeaderboard();
+}
+
+// ══════════════════════════════════════════════════
+// SOLD WORKSPACE
+// ══════════════════════════════════════════════════
+state.soldRange = 'month';
+state.sold = [];
+
+function switchSoldRange(range) {
+  state.soldRange = range;
+  document.querySelectorAll('#soldRange .admin-tab')
+    .forEach(b => b.classList.toggle('active', b.dataset.range === range));
+  loadSold();
+}
+
+async function loadSold() {
+  const el = document.getElementById('soldContent');
+  el.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  try {
+    const data = await api('GET', { action: 'getSold', range: state.soldRange });
+    if (data.error) throw new Error(data.error);
+    state.sold = data.sold || [];
+    renderSold(data.totals || {});
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-title">Could not load your sales</div>' +
+                   '<div class="empty-msg">' + escapeHtml(e.message) + '</div></div>';
+  }
+}
+
+function money(n) {
+  return '$' + (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function renderSold(totals) {
+  const el = document.getElementById('soldContent');
+  if (!state.sold.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-title">No sales in this range</div>' +
+      '<div class="empty-msg">Policies you write show up here with their ERS appointment.</div></div>';
+    return;
+  }
+
+  const summary =
+    '<div class="sold-summary">' +
+      stat(totals.policies, 'Policies') +
+      stat(money(totals.ap), 'Annual premium') +
+      stat(totals.ersUnbooked, 'ERS to book') +
+      stat(totals.referrals, 'Referrals') +
+    '</div>';
+
+  el.innerHTML = summary + state.sold.map(soldCard).join('');
+}
+
+function stat(n, label) {
+  return '<div class="sold-stat"><div class="sold-stat-n">' + escapeHtml(String(n)) +
+         '</div><div class="sold-stat-l">' + escapeHtml(label) + '</div></div>';
+}
+
+function soldCard(s, i) {
+  const pill = {
+    booked:  ['ers-booked', 'Booked'],
+    done:    ['ers-done',   'Complete'],
+    no_show: ['ers-noshow', 'No show']
+  }[s.ersStatus] || ['ers-none', 'Not booked'];
+
+  const facts = [];
+  if (s.carrier) facts.push(escapeHtml(s.carrier));
+  if (s.premium) facts.push(escapeHtml(String(s.premium)) + '/mo');
+  if (s.firstDraft) facts.push('1st draft ' + escapeHtml(s.firstDraft));
+  if (s.recurringDraft) facts.push('then ' + escapeHtml(s.recurringDraft));
+  if (s.referrals) facts.push('🤝 ' + s.referrals + ' referral' + (s.referrals === 1 ? '' : 's'));
+
+  const done = s.ersStatus === 'done';
+  const actions = done
+    ? ''
+    : '<div class="ers-actions">' +
+        '<button class="mini-btn" onclick="openErsModal(' + i + ')">' +
+          (s.ersStatus === 'booked' ? 'Reschedule' : '📅 Book ERS') + '</button>' +
+        (s.ersStatus === 'booked'
+          ? '<button class="mini-btn team-add-btn" onclick="openErsDone(' + i + ')">Mark complete</button>'
+          : '') +
+      '</div>';
+
+  return '<div class="sold-card">' +
+    '<div class="sold-head">' +
+      '<div><div class="sold-name">' + escapeHtml(s.name || '(no name)') + '</div>' +
+      '<div class="sold-meta">' + escapeHtml(s.soldAgent || '') +
+        (s.soldDate ? ' · ' + escapeHtml(s.soldDate) : '') +
+        (s.leadId ? ' · ' + escapeHtml(s.leadId) : '') + '</div></div>' +
+      '<div class="sold-ap">' + money(s.ap) + '<div class="sold-stat-l" style="text-align:right;">AP</div></div>' +
+    '</div>' +
+    (facts.length ? '<div class="sold-facts">' +
+      facts.map(f => '<span class="sold-fact">' + f + '</span>').join('') + '</div>' : '') +
+    (s.reason ? '<div class="sold-reason">' + escapeHtml(s.reason) + '</div>' : '') +
+    '<div class="ers-row">' +
+      '<span class="ers-pill ' + pill[0] + '">' + pill[1] + '</span>' +
+      (s.ersAt ? '<span class="ers-when">' + escapeHtml(s.ersAt) + '</span>' : '') +
+      actions +
+    '</div>' +
+  '</div>';
+}
+
+// ── booking ────────────────────────────────────────────────────────────────
+function openErsModal(i) {
+  const s = state.sold[i];
+  if (!s) return;
+  state.ersIdx = i;
+  document.getElementById('ersModalSub').textContent = s.name || 'this sale';
+  document.getElementById('ersError').style.display = 'none';
+
+  // Prefill from the existing appointment so a reschedule starts where it is.
+  const at = s.ersAtRaw || '';
+  const m = at.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  document.getElementById('ersDate').value = m ? m[1] : '';
+  document.getElementById('ersTime').value = m ? m[2] : '';
+  document.getElementById('ersCancelBtn').style.display = s.ersStatus === 'booked' ? '' : 'none';
+  document.getElementById('ersModal').classList.add('show');
+}
+
+async function confirmErsBooking() {
+  const s = state.sold[state.ersIdx];
+  if (!s) return;
+  const d = document.getElementById('ersDate').value;
+  const tm = document.getElementById('ersTime').value;
+  const err = document.getElementById('ersError');
+  if (!d || !tm) {
+    err.textContent = 'Pick a date and a time.';
+    err.style.display = 'block';
+    return;
+  }
+  const out = await api('POST', {
+    action: 'bookErs', state: s.state, rowIndex: s.rowIndex, ersAt: d + 'T' + tm + ':00'
+  });
+  if (out.error) { err.textContent = out.error; err.style.display = 'block'; return; }
+  closeModal('ersModal');
+  loadSold();
+}
+
+async function cancelErs() {
+  const s = state.sold[state.ersIdx];
+  if (!s) return;
+  if (!confirm('Cancel the ERS appointment for ' + (s.name || 'this sale') + '?')) return;
+  const out = await api('POST', { action: 'bookErs', state: s.state, rowIndex: s.rowIndex, ersAt: '' });
+  if (out.error) { alert(out.error); return; }
+  closeModal('ersModal');
+  loadSold();
+}
+
+// ── completing, and the referrals that come out of it ──────────────────────
+function openErsDone(i) {
+  const s = state.sold[i];
+  if (!s) return;
+  state.ersIdx = i;
+  document.getElementById('ersDoneSub').textContent = s.name || 'this sale';
+  document.getElementById('ersDoneNotes').value = '';
+  document.getElementById('ersDoneError').style.display = 'none';
+  document.getElementById('refRows').innerHTML = '';
+  addRefRow(); addRefRow(); addRefRow();
+  document.getElementById('ersDoneModal').classList.add('show');
+}
+
+function addRefRow() {
+  const s = state.sold[state.ersIdx] || {};
+  const wrap = document.getElementById('refRows');
+  const row = document.createElement('div');
+  row.className = 'ref-row';
+  row.innerHTML =
+    '<input class="text-input ref-name" placeholder="Full name" autocomplete="off">' +
+    '<input class="text-input ref-phone" placeholder="(216) 555-0142" inputmode="tel" autocomplete="off">' +
+    '<select class="text-input ref-state">' + stateOptions(s.state) + '</select>' +
+    '<button class="ref-del" title="Remove" onclick="this.parentNode.remove()">&times;</button>';
+  wrap.appendChild(row);
+}
+
+function stateOptions(selected) {
+  return Object.keys(CONFIG.STATE_TIMEZONES).sort().map(function(c) {
+    return '<option value="' + c + '"' + (c === selected ? ' selected' : '') + '>' + c + '</option>';
+  }).join('');
+}
+
+function collectReferrals() {
+  return Array.prototype.map.call(document.querySelectorAll('#refRows .ref-row'), function(r) {
+    return {
+      name:  r.querySelector('.ref-name').value.trim(),
+      phone: r.querySelector('.ref-phone').value.trim(),
+      state: r.querySelector('.ref-state').value
+    };
+  }).filter(function(x) { return x.name || x.phone; });
+}
+
+async function confirmErsDone() {
+  const s = state.sold[state.ersIdx];
+  if (!s) return;
+  const err = document.getElementById('ersDoneError');
+  const refs = collectReferrals();
+
+  // Half a referral is a mistake worth catching here rather than dropping it
+  // silently server-side.
+  const incomplete = refs.filter(function(r) {
+    return !r.name || r.phone.replace(/\D/g, '').length < 10;
+  });
+  if (incomplete.length) {
+    err.textContent = incomplete.length + ' referral' + (incomplete.length === 1 ? '' : 's') +
+      ' need both a name and a 10-digit phone. Fix or remove them.';
+    err.style.display = 'block';
+    return;
+  }
+
+  const out = await api('POST', {
+    action: 'completeErs', state: s.state, rowIndex: s.rowIndex,
+    outcome: 'done', referrals: refs,
+    notes: document.getElementById('ersDoneNotes').value.trim()
+  });
+  if (out.error) { err.textContent = out.error; err.style.display = 'block'; return; }
+  closeModal('ersDoneModal');
+  if (out.created) {
+    alert(out.created + ' referral' + (out.created === 1 ? '' : 's') +
+          ' added to your leads. They are yours exclusively and ready to dial.');
+  }
+  loadSold();
+}
+
+async function markErsNoShow() {
+  const s = state.sold[state.ersIdx];
+  if (!s) return;
+  const out = await api('POST', {
+    action: 'completeErs', state: s.state, rowIndex: s.rowIndex, outcome: 'no_show',
+    notes: document.getElementById('ersDoneNotes').value.trim()
+  });
+  if (out.error) {
+    const err = document.getElementById('ersDoneError');
+    err.textContent = out.error; err.style.display = 'block'; return;
+  }
+  closeModal('ersDoneModal');
+  loadSold();
 }
 
 // ══════════════════════════════════════════════════
