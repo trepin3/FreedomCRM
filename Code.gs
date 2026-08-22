@@ -1055,19 +1055,19 @@ function getLeads(stateCode, agent, me, size) {
         if (lockedBy === String(agent || '')) {
           mine.push({ rowIndex: i + 2, row: row,
                       attempts: Number(row[iAtt]) || 0,
-                      last: row[iStart] ? new Date(row[iStart]).getTime() : 0 });
+                      last: parseStamp_(row[iStart]) });
         }
         return;                                       // held, by them or someone else
       }
 
       // A callback stays with the agent who booked it until the hold expires.
-      const hold = row[iHold] ? new Date(row[iHold]).getTime() : 0;
+      const hold = parseStamp_(row[iHold]);
       if (hold && now < hold && String(row[iCbAgent] || '') !== String(agent || '')) return;
 
       avail.push({
         rowIndex: i + 2, row: row,
         attempts: Number(row[iAtt]) || 0,
-        last: row[iStart] ? new Date(row[iStart]).getTime() : 0
+        last: parseStamp_(row[iStart])
       });
     });
 
@@ -1138,11 +1138,11 @@ function releaseStale_(sheet) {
 
   data.forEach(function(row, i) {
     if (!row[iLockBy]) return;
-    const openAt = row[iOpen] ? new Date(row[iOpen]).getTime() : 0;
+    const openAt = parseStamp_(row[iOpen]);
     if (openAt) {
       if (now - openAt < OPEN_CALL_CEILING_MS) return;   // still on the call
     } else {
-      const act = row[iAct] ? new Date(row[iAct]).getTime() : 0;
+      const act = parseStamp_(row[iAct]);
       if (act && now - act < IDLE_RELEASE_MS) return;
     }
     lockVals[i][0] = '';   // Locked By
@@ -1177,8 +1177,34 @@ function splitName_(full) {
   return [parts[0], parts.slice(1).join(' ')];
 }
 
+// Written with the offset on it. Formatting in TZ and leaving the zone off
+// meant new Date() reparsed the string in whatever timezone the Apps Script
+// project is set to — a Pacific stamp read as Central is two hours in the past,
+// which made every lead look idle against a fifteen minute limit and released
+// whole stacks the moment anyone triggered the sweep.
 function stamp_() {
-  return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
+  const d = new Date();
+  return Utilities.formatDate(d, TZ, "yyyy-MM-dd'T'HH:mm:ss") +
+         Utilities.formatDate(d, TZ, 'XXX');
+}
+
+// Accepts a Date, an offset-bearing stamp, or a bare one written before this
+// change — the bare form is read as TZ rather than left to the parser to guess.
+function parseStamp_(v) {
+  if (!v) return 0;
+  if (v instanceof Date) return v.getTime();
+  const raw = String(v).trim();
+  if (!raw) return 0;
+
+  if (/(?:[+-]\d{2}:?\d{2}|Z)$/.test(raw)) {
+    const t = Date.parse(raw.replace(' ', 'T'));
+    return isNaN(t) ? 0 : t;
+  }
+  const iso = raw.replace(' ', 'T');
+  const naive = Date.parse(iso + 'Z');
+  if (isNaN(naive)) { const t = Date.parse(raw); return isNaN(t) ? 0 : t; }
+  const t2 = Date.parse(iso + Utilities.formatDate(new Date(naive), TZ, 'XXX'));
+  return isNaN(t2) ? naive : t2;
 }
 
 function parseCallbackDateTime(dateVal, timeVal) {
@@ -1383,10 +1409,32 @@ function heartbeat_(user, stateCode) {
   const lr = sheet ? sheet.getLastRow() : 0;
   if (lr < 2) return { held: 0 };
 
-  const vals = sheet.getRange(2, COL['Locked By'], lr - 1, 1).getValues();
-  let held = 0;
-  vals.forEach(function(r) { if (String(r[0] || '') === String(user.name || '')) held++; });
-  return { held: held };
+  // Locked By, Locked At, Last Activity At, Call Open At are columns 6-9.
+  const range = sheet.getRange(2, COL['Locked By'], lr - 1, 4);
+  const vals = range.getValues();
+  const mine = [];
+  vals.forEach(function(r, i) {
+    if (String(r[0] || '') === String(user.name || '')) mine.push(i);
+  });
+  if (!mine.length) return { held: 0 };
+
+  // Only the lead an agent dispositions gets its activity refreshed, so the
+  // rest of a 150-lead stack goes stale after fifteen minutes even while they
+  // are working it — and the sweep takes the leads out from under them.
+  // The dialer polls this every ten seconds, so an open tab is proof of work.
+  // Throttled: one write every four minutes per agent, not one every poll.
+  try {
+    const cache = CacheService.getScriptCache();
+    const key = 'touch_' + code + '_' + String(user.name || '');
+    if (!cache.get(key)) {
+      cache.put(key, '1', 240);
+      const now = stamp_();
+      mine.forEach(function(i) { vals[i][2] = now; });   // Last Activity At
+      range.setValues(vals);
+    }
+  } catch (e) { /* keeping the stack alive is not worth failing the poll over */ }
+
+  return { held: mine.length };
 }
 
 function releaseAgentLocks(ss, agent) {
@@ -2878,6 +2926,31 @@ function poolReport() {
     }
   });
   const msg = out.length ? out.join('\n') : 'No dialable leads anywhere.';
+  Logger.log(msg);
+  return msg;
+}
+
+// Read-only. Confirms the script's timezone agrees with TZ and that a stamp
+// written now reads back as written now — the check that would have caught
+// stacks releasing the moment they were reserved.
+function checkClock() {
+  const written = stamp_();
+  const readBack = parseStamp_(written);
+  const driftMin = Math.round((Date.now() - readBack) / 60000);
+  let scriptTz = '(unknown)';
+  try { scriptTz = Session.getScriptTimeZone(); } catch (e) {}
+  let sheetTz = '(unknown)';
+  try { sheetTz = SpreadsheetApp.openById(sheets_()[Object.keys(sheets_())[0]]).getSpreadsheetTimeZone(); } catch (e) {}
+
+  const msg = 'TZ constant : ' + TZ +
+    '\nScript zone : ' + scriptTz +
+    '\nSheet zone  : ' + sheetTz +
+    '\nStamp now   : ' + written +
+    '\nReads back  : ' + driftMin + ' minutes ago' +
+    '\n\n' + (Math.abs(driftMin) <= 1
+      ? 'Correct. A lead reserved now will not look idle.'
+      : 'WRONG — a lead reserved now already looks ' + driftMin +
+        ' minutes old, so the idle sweep will release stacks immediately.');
   Logger.log(msg);
   return msg;
 }
