@@ -81,7 +81,10 @@ body.is-admin .admin-only{display:flex;}
 .picker-btn{padding:11px 20px;border-radius:10px;border:1px solid var(--border);
   background:var(--accent);color:#fff;font-weight:700;font-size:14px;cursor:pointer;}
 .picker-btn.subtle{background:var(--input-bg);color:var(--text);}
+.picker-btn.portal{background:var(--input-bg);color:var(--accent);border-color:var(--accent);}
 .picker-btn:hover{opacity:.9;}
+/* .admin-only is display:flex when shown, which a button needs centring for. */
+button.admin-only{align-items:center;justify-content:center;}
 .state-count{font-size:11px;color:var(--text-secondary);margin-top:4px;}
 .state-tile{background:var(--card);border-radius:var(--radius);padding:24px 16px;border:2px solid var(--border);box-shadow:var(--shadow);cursor:pointer;text-align:center;transition:all 0.2s;color:var(--text);text-decoration:none;}
 .state-tile:active{transform:scale(0.96);}
@@ -602,7 +605,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <div class="empty-state"><div class="spinner"></div></div>
     </div>
     <div class="picker-actions">
-      <button class="picker-btn" onclick="goToUpload()">📥 Upload my leads</button>
+      <button class="picker-btn" onclick="goToUpload()">📥 Manage Leads</button>
+      <button class="picker-btn portal admin-only" id="pickerPortalBtn"
+              onclick="goToAdmin()">🛡️ Admin Portal</button>
       <button class="picker-btn subtle" onclick="doLogout()">Sign Out</button>
     </div>
   </div>
@@ -1170,7 +1175,10 @@ function enterAfterSignIn() {
     title.innerHTML = state.role === 'admin' ? 'Admin <span>Dashboard</span>' : 'Team <span>Dashboard</span>';
   }
   const jump = document.getElementById('portalJump');
-  if (jump) jump.textContent = state.role === 'admin' ? '🛡️ Admin Portal' : '🛡️ Team Portal';
+  const portalLabel = state.role === 'admin' ? '🛡️ Admin Portal' : '🛡️ Team Portal';
+  if (jump) jump.textContent = portalLabel;
+  const pickerJump = document.getElementById('pickerPortalBtn');
+  if (pickerJump) pickerJump.textContent = portalLabel;
   if (leads) {
     ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
       const el = document.getElementById(id);
@@ -1255,7 +1263,16 @@ function goToUpload() {
 
 function goToAdmin() {
   if (state.role !== 'admin' && state.role !== 'manager') return;
+  ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = '';
+  });
+  const title = document.getElementById('adminTitle');
+  if (title) {
+    title.innerHTML = state.role === 'admin' ? 'Admin <span>Dashboard</span>' : 'Team <span>Dashboard</span>';
+  }
   show('adminView');
+  switchAdminSection('stats');
   loadAdminData();
 }
 
