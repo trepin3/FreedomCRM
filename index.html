@@ -77,6 +77,12 @@ body.is-admin .admin-only{display:flex;}
    Let anything that is not a tile span the full width and centre itself. */
 .state-grid > .empty-state{grid-column:1 / -1;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:12px;padding:40px 20px;}
+.env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
+  font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
+  background:#ff9f0a;box-shadow:0 1px 6px rgba(0,0,0,.2);}
+.env-banner.danger{background:#ff453a;}
+body.has-env-banner{padding-top:26px;}
 .picker-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:24px;}
 .picker-btn{padding:11px 20px;border-radius:10px;border:1px solid var(--border);
   background:var(--accent);color:#fff;font-weight:700;font-size:14px;cursor:pointer;}
@@ -954,8 +960,36 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 // ══════════════════════════════════════════════════
 // CONFIG — paste your Apps Script Web App URL here
 // ══════════════════════════════════════════════════
+// ── Environments ────────────────────────────────────────────────────────────
+// Agents are served from trepin3.github.io and always hit production. Anything
+// else — localhost, a LAN address, a preview host — is development and hits the
+// staging Apps Script, which owns its own spreadsheets, its own users and its
+// own dummy leads. Nothing run locally can reach a real agent's leads.
+//
+// The one exception is an explicit ?env=prod, for reproducing a live bug. It
+// is never sticky and the banner turns red so it cannot be mistaken.
+const ENVIRONMENTS = {
+  prod: {
+    name: 'production',
+    APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxp5bPBH45WwdR33oP-We7hEgYP37US2_wcmm-ZsLeuVSuo4jeJU9yXwyzH2t4f5uaa/exec'
+  },
+  staging: {
+    name: 'staging',
+    // Paste the /exec URL of the second Apps Script project here.
+    APPS_SCRIPT_URL: ''
+  }
+};
+
+const PROD_HOSTS = ['trepin3.github.io'];
+const ENV_NAME = (function() {
+  const forced = new URLSearchParams(location.search).get('env');
+  if (forced === 'prod' || forced === 'staging') return forced;
+  return PROD_HOSTS.indexOf(location.hostname) !== -1 ? 'prod' : 'staging';
+})();
+const ENV = ENVIRONMENTS[ENV_NAME];
+
 const CONFIG = {
-  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxp5bPBH45WwdR33oP-We7hEgYP37US2_wcmm-ZsLeuVSuo4jeJU9yXwyzH2t4f5uaa/exec',
+  APPS_SCRIPT_URL: ENV.APPS_SCRIPT_URL,
   // Same client as Agent-HUD-Workstation — both are served from trepin3.github.io,
   // so the authorised origin already covers this app.
   GOOGLE_CLIENT_ID: '416228276690-41m3pskc2ga2he06jvgusp23j1fvaepk.apps.googleusercontent.com',
@@ -1034,7 +1068,29 @@ const state = {
 // ══════════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════════
+// A local build looking at real agent data, or a staging build with no backend
+// configured, are both mistakes worth interrupting for. Everything else runs
+// with a banner so the environment is never in doubt.
+function renderEnvBanner() {
+  if (ENV_NAME === 'prod' && PROD_HOSTS.indexOf(location.hostname) !== -1) return;
+
+  const el = document.createElement('div');
+  el.className = 'env-banner';
+  if (ENV_NAME === 'prod') {
+    el.className += ' danger';
+    el.textContent = '\u26a0\ufe0f Local build \u2014 LIVE production data. Real agent leads.';
+  } else if (!CONFIG.APPS_SCRIPT_URL) {
+    el.className += ' danger';
+    el.textContent = '\u26a0\ufe0f Staging backend not configured \u2014 set ENVIRONMENTS.staging.APPS_SCRIPT_URL';
+  } else {
+    el.textContent = '\ud83e\uddea Staging \u2014 dummy leads, separate sheets';
+  }
+  document.body.appendChild(el);
+  document.body.classList.add('has-env-banner');
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+  renderEnvBanner();
   // Restore theme
   const saved = localStorage.getItem('fcrm_theme');
   if (saved === 'dark') applyTheme('dark');
