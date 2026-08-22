@@ -758,21 +758,6 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <div class="empty-msg" style="margin-top:12px;">Loading your batches…</div></div></div>
     </div>
 
-    <div id="shareModal" class="modal-overlay">
-      <div class="modal-card">
-        <div class="modal-title">Share this batch</div>
-        <div class="modal-sub">They will see these leads even while the batch is exclusive.
-          Sharing replaces the current list.</div>
-        <input class="text-input" id="shareSearch" placeholder="Search by name or email"
-               oninput="renderShareList(this.value)" autocomplete="off">
-        <div id="shareList" class="share-list"></div>
-        <div class="modal-actions">
-          <button class="mini-btn" onclick="closeModal('shareModal')">Cancel</button>
-          <button class="mini-btn team-add-btn" onclick="saveShare()">Save</button>
-        </div>
-      </div>
-    </div>
-
     <div id="adminDcidPanel" style="display:none;">
       <div class="team-add">
         <div class="team-add-title">DCID awaiting review</div>
@@ -809,6 +794,22 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 <!-- ══════════════════════════════════════════════════
      MODALS
 ══════════════════════════════════════════════════ -->
+<div id="shareModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-title">Share this batch</div>
+      <div class="modal-sub">They will see these leads even while the batch is exclusive.
+        Sharing replaces the current list.</div>
+      <input class="text-input" id="shareSearch" placeholder="Search by name or email"
+             oninput="renderShareList(this.value)" autocomplete="off">
+      <div id="shareList" class="share-list"></div>
+      <div class="modal-actions">
+        <button class="mini-btn" onclick="closeModal('shareModal')">Cancel</button>
+        <button class="mini-btn team-add-btn" onclick="saveShare()">Save</button>
+      </div>
+    </div>
+  </div>
+
+
 <div class="modal-overlay" id="dcidModal">
   <div class="modal-card">
     <div class="modal-title">🚫 Mark as DCID</div>
