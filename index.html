@@ -279,7 +279,10 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .action-wrong{background:var(--text-secondary);}
 .action-callback{background:var(--warning);grid-column:span 2;}
 .action-reschedule{background:var(--warning);}
-.action-next{background:var(--accent);grid-column:span 2;}
+/* The lead view's way out. Named separately from .action-next, which is the
+   dialer's single-cell button — sharing the name silently restyled that one
+   and pushed every disposition below it down a row. */
+.action-leave{background:var(--accent);grid-column:span 2;}
 
 /* Nav row (back + tabs stay in header) */
 .nav-row{display:flex;gap:8px;margin-bottom:12px;}
@@ -2894,7 +2897,7 @@ function renderLeadView() {
         <button class="action-btn action-dcid" onclick="leadViewDo('dcid')">🚫 DCID</button>
         <button class="action-btn action-wrong" onclick="leadViewDo('wrong')">📵 Wrong #</button>
         <button class="action-btn action-reschedule" onclick="leadViewDo('reschedule')">📅 Reschedule</button>
-        <button class="action-btn action-next" onclick="leaveLeadView()">➡️ Next</button>
+        <button class="action-btn action-leave" onclick="leaveLeadView()">➡️ Next</button>
       </div>
       <button class="script-tool-btn" style="margin-top:10px;" onclick="openScriptTool()">📋 Open Script Tool</button>
     `;
