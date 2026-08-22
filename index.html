@@ -3284,6 +3284,80 @@ function parseUpload() {
 
 
 
+
+// ── WHAT A CELL CAN HOLD ─────────────────────────────────────────
+// Mirrors the same check on the server. Only Phone and the callback columns
+// are text-formatted in the sheet, so a value starting with = lands as a live
+// formula rather than a name — and a field long enough pushes the row out of
+// shape. Caught here so the agent sees it before uploading rather than finding
+// a broken row afterwards they cannot fix.
+const FIELD_LIMITS = {
+  'Name': 120, 'First Name': 60, 'Last Name': 60, 'Phone': 20, 'Email': 254,
+  'Address': 200, 'City': 80, 'Zip': 12, 'Lead Type': 40, 'Beneficiary': 100,
+  'Hobby': 100, 'Age': 3, 'DOB': 30, 'Lead Source': 60, 'State': 2
+};
+
+function looksLikeFormula(v) {
+  const t = String(v || '').trim();
+  if (!t) return false;
+  if (t.charAt(0) === '=' || t.charAt(0) === '@') return true;
+  // + and - are ordinary in phone numbers, so only flag them when what follows
+  // is actually formula-shaped.
+  if ((t.charAt(0) === '+' || t.charAt(0) === '-') && /[=(]/.test(t)) return true;
+  return false;
+}
+
+function unsupportedReason(o) {
+  const keys = Object.keys(o || {});
+  for (let i = 0; i < keys.length; i++) {
+    const f = keys[i], v = String(o[f] === null || o[f] === undefined ? '' : o[f]);
+    if (looksLikeFormula(v)) return f + ' starts with a spreadsheet symbol (' + v.trim().charAt(0) + ')';
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(v)) return f + ' contains characters a cell cannot store';
+    const cap = FIELD_LIMITS[f];
+    if (cap && v.trim().length > cap) return f + ' is too long — ' + v.trim().length + ' characters, limit ' + cap;
+  }
+  return '';
+}
+
+function canOverrideUnsupported() {
+  return state.role === 'admin' || state.role === 'manager';
+}
+
+function renderUnsupportedReview(objs) {
+  const bad = [];
+  objs.forEach(function(o, i) {
+    const why = unsupportedReason(o);
+    if (why) bad.push({ idx: i, lead: o, why: why });
+  });
+  if (!bad.length) return '';
+
+  const rows = bad.slice(0, 25).map(function(b) {
+    return '<div class="dup-row existing">' +
+      '<div class="dup-pick">' + escapeHtml(b.lead['Name'] || '(no name)') +
+      ' · ' + escapeHtml(formatPhone(b.lead['Phone'] || '')) + '</div>' +
+      '<div class="batch-meta">' + escapeHtml(b.why) + '</div>' +
+    '</div>';
+  }).join('') + (bad.length > 25
+      ? '<div class="batch-meta">…and ' + (bad.length - 25) + ' more</div>' : '');
+
+  const message = canOverrideUnsupported()
+    ? '<div class="up-hint">These will upload, but the values above may not store the way ' +
+      'they look here. Fix them in the file, or upload and correct them in the sheet.</div>'
+    : '<div class="up-block"><b>This lead type is unsupported.</b> ' +
+      String(bad.length) + ' row' + (bad.length === 1 ? '' : 's') + ' will not upload. ' +
+      'Call your upline and ask them to upload this file for you.</div>';
+
+  return '<div class="dup-review">' +
+    '<div class="team-add-title">Rows the sheet cannot store — ' + bad.length + '</div>' +
+    message + rows + '</div>';
+}
+
+// Agents cannot push these through; managers and admin can.
+function applyUnsupportedResolution(objs) {
+  if (canOverrideUnsupported()) return objs;
+  return objs.filter(function(o) { return !unsupportedReason(o); });
+}
+
 // ── ALREADY IN THE CRM ───────────────────────────────────────────
 // Buying the same list twice, or overlapping lists from one vendor, is
 // ordinary. Checked against what this user can already see, so a lead is not
@@ -3789,7 +3863,8 @@ function renderMapping() {
   // Reflect the review decisions, or the count promises rows that duplicate
   // resolution is about to drop.
   ensureDupState(complete);
-  const usable = applyExistingResolution(applyDupResolution(complete)).filter(rowStateOk).length;
+  const usable = applyUnsupportedResolution(
+                   applyExistingResolution(applyDupResolution(complete))).filter(rowStateOk).length;
   const wrongState = complete.length - usable;   // no sheet exists for these
   const short = uploadState.rows.length - complete.length;
 
@@ -3799,7 +3874,8 @@ function renderMapping() {
     '<div class="up-count">' + usable + ' of ' + uploadState.rows.length + ' rows ready' +
     (short ? '<span class="up-warn"> · ' + short + ' skipped for a missing name or phone</span>' : '') +
     (wrongState ? '<span class="up-warn"> · ' + wrongState + ' have no matching state sheet</span>' : '') +
-    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable) + renderExistingReview(complete) + renderDupReview(complete);
+    '</div>' + switchedNotice() + cityNotice() + stateNotice(usable) + renderUnsupportedReview(complete) +
+    renderExistingReview(complete) + renderDupReview(complete);
 
   document.getElementById('upBtn').disabled = usable === 0;
 }
@@ -3960,8 +4036,14 @@ async function submitUpload() {
   const parsed = uploadState.rows.map(mapRow).filter(rowReady);
   if (!parsed.length) { msg.textContent = 'No rows have both a name and a phone number.'; return; }
   ensureDupState(parsed);
-  const objs = applyExistingResolution(applyDupResolution(parsed));
-  if (!objs.length) { msg.textContent = 'Every row was excluded in the review.'; return; }
+  const objs = applyUnsupportedResolution(applyExistingResolution(applyDupResolution(parsed)));
+  if (!objs.length) {
+    msg.textContent = canOverrideUnsupported()
+      ? 'Every row was excluded in the review.'
+      : 'This lead type is unsupported — none of these rows can be stored. ' +
+        'Call your upline and ask them to upload this file for you.';
+    return;
+  }
 
   const split = groupByDestination(objs);
   const dests = Object.keys(split.groups);
@@ -3970,7 +4052,7 @@ async function submitUpload() {
   btn.disabled = true;
   const visibility = document.getElementById('upVisibility').value;
   const done = [];
-  let addedTotal = 0, dupes = 0, incomplete = 0, refused = 0, sharedLine = 0, failed = '';
+  let addedTotal = 0, dupes = 0, incomplete = 0, refused = 0, sharedLine = 0, blocked = 0, failed = '';
 
   // One request per state, so each batch lands in its own sheet with its
   // own batch id and can be pulled back independently.
@@ -3989,6 +4071,7 @@ async function submitUpload() {
     incomplete += out.skippedIncomplete || 0;
     refused    += out.skippedWrongState || 0;
     sharedLine += out.households || 0;
+    if (out.unsupportedBlocked) blocked += out.unsupported || 0;
     done.push(out.added + ' to ' + CONFIG.STATE_NAMES[st]);
   }
   btn.disabled = false;
@@ -3999,6 +4082,7 @@ async function submitUpload() {
   if (sharedLine) bits.push(sharedLine + ' share a phone with another lead and were kept.');
   if (incomplete) bits.push(incomplete + ' missing a name or phone.');
   if (refused) bits.push(refused + ' rejected by the server as wrong-state.');
+  if (blocked) bits.push(blocked + ' unsupported — ask your upline to upload those.');
   const orphanTotal = Object.keys(split.orphans).reduce(function(n, k) { return n + split.orphans[k]; }, 0);
   if (orphanTotal) bits.push(orphanTotal + ' had no matching state sheet.');
   msg.textContent = bits.join(' ');

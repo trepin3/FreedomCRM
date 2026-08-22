@@ -1830,6 +1830,54 @@ function decideSource_(me, name, decision, rename) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// WHAT A CELL CAN ACTUALLY HOLD
+// ══════════════════════════════════════════════════════════════════
+// Only Phone and the callback columns are formatted as text; everything else
+// is written as-is. So a value beginning with = becomes a live formula in the
+// sheet rather than a name, and a field long enough will push the row out of
+// shape. Both look like the CRM losing data, and neither is recoverable by the
+// agent who uploaded it.
+const FIELD_LIMITS = {
+  'Name': 120, 'First Name': 60, 'Last Name': 60, 'Phone': 20, 'Email': 254,
+  'Address': 200, 'City': 80, 'Zip': 12, 'Lead Type': 40, 'Beneficiary': 100,
+  'Hobby': 100, 'Age': 3, 'DOB': 30, 'Lead Source': 60, 'State': 2
+};
+
+// = and @ start a formula or a mention. + and - do too when what follows is not
+// simply a number, which is why a phone like +1-216... has to stay allowed.
+function looksLikeFormula_(v) {
+  const t = String(v || '').trim();
+  if (!t) return false;
+  if (t.charAt(0) === '=' || t.charAt(0) === '@') return true;
+  if ((t.charAt(0) === '+' || t.charAt(0) === '-') && /[=(]/.test(t)) return true;
+  return false;
+}
+
+// Returns a reason string, or '' when the row is fine.
+function unsupportedReason_(item) {
+  const keys = Object.keys(item || {});
+  for (let i = 0; i < keys.length; i++) {
+    const f = keys[i];
+    const raw = item[f];
+    if (raw === null || raw === undefined) continue;
+    const v = String(raw);
+
+    if (looksLikeFormula_(v)) {
+      return f + ' starts with a spreadsheet symbol';
+    }
+    // Control characters survive a CSV and then break the row silently.
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(v)) {
+      return f + ' contains characters a cell cannot store';
+    }
+    const cap = FIELD_LIMITS[f];
+    if (cap && v.trim().length > cap) {
+      return f + ' is too long for the sheet (' + v.trim().length + ' of ' + cap + ')';
+    }
+  }
+  return '';
+}
+
+// ══════════════════════════════════════════════════════════════════
 // LEAD UPLOAD
 // ══════════════════════════════════════════════════════════════════
 // Takes rows already mapped to column names by the client. Name and phone
@@ -1880,7 +1928,11 @@ function uploadLeads_(me, body) {
     const batchId = 'B' + Utilities.formatDate(new Date(), TZ, 'yyyyMMdd-HHmmss') + '-' + me.id;
     const idBase = nextLeadSeq_(sheet, state);
     const now = stamp_();
-    let seq = 0, skipped = 0, noPhone = 0, wrongState = 0, households = 0;
+    let seq = 0, skipped = 0, noPhone = 0, wrongState = 0, households = 0, unsupported = 0;
+    // Managers and admin can push a row through and fix it in the sheet.
+    // An agent cannot, so for them it is refused rather than half-written.
+    const mayOverride = me.role === 'admin' || me.role === 'manager';
+    let firstBadReason = '';
     const out = [];
     const seenInBatch = {};
     const seenPhone = {};
@@ -1894,6 +1946,13 @@ function uploadLeads_(me, body) {
       // the wrong state sheet gets dialled against the wrong TCPA window.
       const rowState = String(item['State'] || '').trim().toUpperCase();
       if (rowState && rowState !== state) { wrongState++; return; }
+
+      const bad = unsupportedReason_(item);
+      if (bad) {
+        unsupported++;
+        if (!firstBadReason) firstBadReason = bad;
+        if (!mayOverride) return;          // agents: refused, not silently mangled
+      }
       const key = phone + '|' + name.toLowerCase();
       if (mine[key] || seenInBatch[key]) { skipped++; return; }
       // Same line, different person — kept, and counted so the number is
@@ -1944,7 +2003,10 @@ function uploadLeads_(me, body) {
     return {
       success: true, added: out.length, batchId: batchId,
       skippedDuplicate: skipped, skippedIncomplete: noPhone, skippedWrongState: wrongState,
-      households: households
+      households: households,
+      unsupported: unsupported,
+      unsupportedBlocked: !mayOverride,
+      unsupportedReason: firstBadReason
     };
   } finally {
     lock.releaseLock();
