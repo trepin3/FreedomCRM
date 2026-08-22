@@ -1854,6 +1854,22 @@ function looksLikeFormula_(v) {
 }
 
 // Returns a reason string, or '' when the row is fine.
+// Same normalisation as the client, because a direct call should behave the
+// same way as the upload screen.
+function normalizeState_(v) {
+  const raw = String(v || '').trim();
+  if (!raw) return '';
+  const upper = raw.toUpperCase();
+  if (upper.length === 2 && US_STATES[upper]) return upper;
+
+  const cleaned = upper.replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  const byName = {};
+  Object.keys(US_STATES).forEach(function(c) { byName[US_STATES[c].toUpperCase()] = c; });
+  byName['WASHINGTON DC'] = 'DC';
+  byName['D C'] = 'DC';
+  return byName[upper] || byName[cleaned] || upper;
+}
+
 function unsupportedReason_(item) {
   const keys = Object.keys(item || {});
   for (let i = 0; i < keys.length; i++) {
@@ -1945,8 +1961,9 @@ function uploadLeads_(me, body) {
 
       // The client filters these out, but it is the client — and a lead in
       // the wrong state sheet gets dialled against the wrong TCPA window.
-      const rowState = String(item['State'] || '').trim().toUpperCase();
+      const rowState = normalizeState_(item['State']);
       if (rowState && rowState !== state) { wrongState++; return; }
+      if (rowState) item['State'] = rowState;   // store the code, never the name
 
       const bad = unsupportedReason_(item);
       if (bad) {
