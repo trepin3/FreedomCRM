@@ -4921,7 +4921,7 @@ function renderAdmin(stats, locksData) {
       html += '<tr><td><strong>' + escapeHtml(l.agent) + '</strong></td>' +
         '<td>' + l.count + '</td>' +
         '<td>' + states + '</td>' +
-        '<td><button class="admin-force-btn" onclick="forceReleaseAgent(\'' + escapeHtml(l.agent) + '\')">⚡ Release</button></td></tr>';
+        '<td><button class="admin-force-btn" onclick="forceReleaseAgent(\'' + escapeHtml(l.agent) + '\',\'' + escapeHtml(l.agentId || '') + '\')">⚡ Release</button></td></tr>';
     });
     html += '</tbody></table></div>';
   }
@@ -4952,12 +4952,12 @@ function statBox(label, num) {
   return '<div class="admin-stat"><div class="admin-stat-num">' + num + '</div><div class="admin-stat-label">' + label + '</div></div>';
 }
 
-async function forceReleaseAgent(agent) {
+async function forceReleaseAgent(agent, agentId) {
   if (!confirm('Force release all locks for ' + agent + '?\n\n' +
                'Their leads go back to the pool and they will be returned to the state picker.')) return;
   // 'target', not 'agent': the server overwrites body.agent with the caller's
   // own name, so sending it under that key released the admin's own leads.
-  const out = await api('POST', { action: 'forceRelease', target: agent });
+  const out = await api('POST', { action: 'forceRelease', target: agent, targetId: agentId || '' });
   if (out && out.error) { alert(out.error); return; }
   loadAdminData();
 }

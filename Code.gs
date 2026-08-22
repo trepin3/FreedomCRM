@@ -265,7 +265,7 @@ function listStates_(me) {
           // agent working it — reserve a stack, refresh, and your own leads
           // become unreachable.
           const lockedBy = String(row[ix_('Locked By')] || '');
-          if (lockedBy && lockedBy !== String(me && me.name || '')) return;
+          if (lockedBy && !lockOwnerIsMe_(lockedBy, me)) return;
           available++;
         });
       }
@@ -1070,6 +1070,7 @@ function doPost(e) {
     const user = verifySession_(body.s);
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
+    body.agentId = user.id;          // locks key on this; the name is display
     // Any POST here can change what is dialable, so the caller's cached
     // picker counts are dropped rather than left to expire.
     invalidateStates_(userByEmail_(user.email));
@@ -1161,7 +1162,7 @@ function getLeads(stateCode, agent, me, size) {
 
       const lockedBy = String(row[iLockBy] || '');
       if (lockedBy) {
-        if (lockedBy === String(agent || '')) {
+        if (lockOwnerIsMe_(lockedBy, me)) {
           mine.push({ rowIndex: i + 2, row: row,
                       attempts: Number(row[iAtt]) || 0,
                       last: parseStamp_(row[iStart]) });
@@ -1199,11 +1200,12 @@ function getLeads(stateCode, agent, me, size) {
     if (!batch.length) return { leads: [], state: stateCode };
 
     const nowStr = stamp_();
+    const lockId = String((me && me.id) || agent || '');
     const lockRange = sheet.getRange(2, LOCK_COL, lastRow - 1, LOCK_W);
     const lockVals = lockRange.getValues();
     fresh.forEach(function(item) {
       const r = item.rowIndex - 2;
-      lockVals[r][0] = agent || '';   // Locked By
+      lockVals[r][0] = lockId;        // Locked By — the id, not the name
       lockVals[r][1] = nowStr;        // Locked At
       lockVals[r][2] = nowStr;        // Last Activity At
     });
@@ -1264,6 +1266,27 @@ function releaseStale_(sheet) {
   // One write, however many were stale. Releasing a 150-lead stack row by row
   // would be 450 calls.
   if (freed) lockRange.setValues(lockVals);
+}
+
+// Locks used to hold a display name. Two people sharing one could release and
+// disposition each other's stacks, and renaming anyone in Users orphaned their
+// reservations — their own leads started refusing their dispositions with
+// lead_released. Locks hold the user id now.
+//
+// Rows locked before the change still carry a name, so both are accepted.
+// backfillLockOwners() converts them; this stays until it has run everywhere,
+// and is harmless after — ids and names never collide, ids are U-prefixed.
+function lockOwnerIsMe_(lockedBy, me) {
+  const v = String(lockedBy || '').trim();
+  if (!v || !me) return false;
+  if (me.id && v === String(me.id)) return true;
+  return !!me.name && v === String(me.name).trim();
+}
+
+// Same test where only the request body is in hand. doPost puts both the id
+// and the name on it from the verified session, never from the client.
+function lockOwnerIsBody_(lockedBy, body) {
+  return lockOwnerIsMe_(lockedBy, { id: body && body.agentId, name: body && body.agent });
 }
 
 function clearLock_(sheet, rowIndex) {
@@ -1365,7 +1388,7 @@ function setStatus_(body, status, extra) {
   // dispositioned from a stale tab — overwriting whatever the agent who picked
   // those leads up next had recorded.
   const held = String(sheet.getRange(row, COL['Locked By']).getValue() || '');
-  if (held && held !== String(body.agent || '')) {
+  if (held && !lockOwnerIsBody_(held, body)) {
     return { error: 'lead_released' };
   }
 
@@ -1479,7 +1502,7 @@ function actionReturnToPool(body) {
 // ══════════════════════════════════════════════════════════════════
 function actionReleaseAll(body) {
   activeStates_().forEach(function(state) {
-    releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), body.agent);
+    releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), body.agent, body.agentId);
   });
   return { success: true };
 }
@@ -1493,6 +1516,17 @@ function actionForceRelease(me, body) {
   const target = String(body.target || '').trim();
   if (!target) return { error: 'No agent named.' };
 
+  // The list sends the id alongside the name. An older cached client sends only
+  // the name, so fall back to looking it up — without an id this frees nothing,
+  // because locks are keyed on the id now.
+  let targetId = String(body.targetId || '').trim();
+  if (!targetId) {
+    const u = usersAll_().filter(function(x) {
+      return String(x.name || '').trim().toLowerCase() === target.toLowerCase();
+    })[0];
+    if (u) targetId = u.id;
+  }
+
   // A manager may only do this to their own branch.
   if (me.role !== 'admin' && !inScope_(scopeNamesFor_(me), target)) {
     return { error: 'That agent is not in your team.' };
@@ -1502,7 +1536,7 @@ function actionForceRelease(me, body) {
   let freed = 0;
   states.forEach(function(state) {
     if (!sheets_()[state]) return;
-    freed += releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), target);
+    freed += releaseAgentLocks(SpreadsheetApp.openById(sheets_()[state]), target, targetId);
   });
   logActivity_(me, 'forceRelease', target + ' (' + freed + ')', body.state || '');
   return { success: true, released: freed, agent: target };
@@ -1523,7 +1557,7 @@ function heartbeat_(user, stateCode) {
   const vals = range.getValues();
   const mine = [];
   vals.forEach(function(r, i) {
-    if (String(r[0] || '') === String(user.name || '')) mine.push(i);
+    if (lockOwnerIsMe_(r[0], user)) mine.push(i);
   });
   if (!mine.length) return { held: 0 };
 
@@ -1534,7 +1568,7 @@ function heartbeat_(user, stateCode) {
   // Throttled: one write every four minutes per agent, not one every poll.
   try {
     const cache = CacheService.getScriptCache();
-    const key = 'touch_' + code + '_' + String(user.name || '');
+    const key = 'touch_' + code + '_' + String(user.id || user.name || '');
     if (!cache.get(key)) {
       cache.put(key, '1', 240);
       const now = stamp_();
@@ -1546,7 +1580,10 @@ function heartbeat_(user, stateCode) {
   return { held: mine.length };
 }
 
-function releaseAgentLocks(ss, agent) {
+// `who` is an id or a display name — sign-out passes the session's own, an
+// admin force-release passes whatever the team list showed. Both must match
+// rows locked before and after the id change.
+function releaseAgentLocks(ss, who, whoId) {
   const sheet = ss.getSheetByName('Leads');
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
@@ -1554,8 +1591,9 @@ function releaseAgentLocks(ss, agent) {
   const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
   const lockVals = lockRange.getValues();
   let freed = 0;
+  const target = { id: whoId || '', name: who || '' };
   lockVals.forEach(function(r) {
-    if (String(r[0] || '') !== String(agent || '')) return;
+    if (!lockOwnerIsMe_(r[0], target)) return;
     r[0] = ''; r[1] = ''; r[3] = '';
     freed++;
   });
@@ -1628,9 +1666,12 @@ function leaderboard(range) {
 function scopeNamesFor_(me) {
   if (!me) return null;
   if (me.role === 'admin') return null;                 // null = no filter
+  // Both keys: disposition columns still record names, but Locked By is an id
+  // now, and inProgress is counted from it.
   const set = {};
   downlineOf_(me, true).forEach(function(u) {
     if (u.name) set[String(u.name).trim().toLowerCase()] = true;
+    if (u.id)   set[String(u.id).trim().toLowerCase()]   = true;
   });
   return set;
 }
@@ -1738,11 +1779,79 @@ function dateInRange(val, cutoff) {
   return dt.getTime() >= cutoff.getTime();
 }
 
+// Converts rows locked under a display name to the owner's id. Safe to run
+// repeatedly, and safe to run while agents are dialling — a converted row is
+// still recognised as theirs, because lockOwnerIsMe_ accepts either form.
+//
+// A name matching no user, or matching two, is left alone and reported. Those
+// are the rows that would have been silently mis-attributed all along; releasing
+// them is a judgement call, so this does not make it.
+function backfillLockOwners() {
+  const byName = {};
+  usersAll_().forEach(function(u) {
+    const k = String(u.name || '').trim().toLowerCase();
+    if (!k) return;
+    byName[k] = byName[k] ? 'AMBIGUOUS' : u.id;
+  });
+
+  const converted = {}, unmatched = {}, ambiguous = {};
+  let rows = 0;
+
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const range = sheet.getRange(2, COL['Locked By'], lr - 1, 1);
+    const vals = range.getValues();
+    let touched = 0;
+
+    vals.forEach(function(r) {
+      const v = String(r[0] || '').trim();
+      if (!v) return;
+      if (/^U\d+$/i.test(v)) return;                  // already an id
+      rows++;
+      const hit = byName[v.toLowerCase()];
+      if (!hit)                { unmatched[v] = (unmatched[v] || 0) + 1; return; }
+      if (hit === 'AMBIGUOUS') { ambiguous[v] = (ambiguous[v] || 0) + 1; return; }
+      r[0] = hit;
+      converted[v] = (converted[v] || 0) + 1;
+      touched++;
+    });
+
+    if (touched) range.setValues(vals);               // one write per state
+  });
+
+  const fmt = function(o) {
+    const k = Object.keys(o);
+    return k.length ? k.map(function(n) { return n + ' \u00d7' + o[n]; }).join(', ') : 'none';
+  };
+  const msg = [
+    'Name-keyed locks found: ' + rows,
+    'Converted:  ' + fmt(converted),
+    'Unmatched:  ' + fmt(unmatched) + '   (left as-is — no such user)',
+    'Ambiguous:  ' + fmt(ambiguous) + '   (left as-is — two users share the name)'
+  ].join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
 // ══════════════════════════════════════════════════════════════════
 // ADMIN LOCKS — live view of who has what locked
 // ══════════════════════════════════════════════════════════════════
 function adminLocks(scope) {
   const locks = [];
+  // Locked By is an id now, so the admin list would read "U007" without this.
+  // Names are resolved once per call, not once per row.
+  const nameCache = {};
+  const ownerName = function(v) {
+    const key = String(v || '');
+    if (!key) return '';
+    if (!(key in nameCache)) {
+      const u = /^U\d+$/i.test(key) ? userById_(key) : null;
+      nameCache[key] = (u && u.name) || key;    // legacy rows already hold a name
+    }
+    return nameCache[key];
+  };
   activeStates_().forEach(state => {
     const ss = SpreadsheetApp.openById(sheets_()[state]);
     const sheet = ss.getSheetByName('Leads');
@@ -1758,7 +1867,8 @@ function adminLocks(scope) {
           state: state,
           rowIndex: i + 2,
           name: row[nameIdx],
-          agent: row[lockedByIdx],
+          agent: ownerName(row[lockedByIdx]),
+          agentId: String(row[lockedByIdx] || ''),
           lockedAt: fmtDateTime(row[lockedAtIdx])
         });
       }
@@ -1767,7 +1877,8 @@ function adminLocks(scope) {
   // Group by agent
   const byAgent = {};
   locks.forEach(l => {
-    byAgent[l.agent] = byAgent[l.agent] || { agent: l.agent, count: 0, states: {}, leads: [] };
+    byAgent[l.agent] = byAgent[l.agent] ||
+      { agent: l.agent, agentId: l.agentId, count: 0, states: {}, leads: [] };
     byAgent[l.agent].count++;
     byAgent[l.agent].states[l.state] = (byAgent[l.agent].states[l.state] || 0) + 1;
     byAgent[l.agent].leads.push(l);
@@ -2612,7 +2723,7 @@ function donateLead_(me, body) {
   // Someone else mid-call on it keeps it; the donor's own lock is fine, they
   // are the one handing it over.
   const lockedBy = String(ctx.row[ix_('Locked By')] || '');
-  if (lockedBy && lockedBy !== String(me.name || '')) {
+  if (lockedBy && !lockOwnerIsMe_(lockedBy, me)) {
     return { error: 'Someone is dialing that lead right now.' };
   }
 
