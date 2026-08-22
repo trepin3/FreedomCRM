@@ -1359,12 +1359,30 @@ async function endDialSession() {
   await doLogout();
 }
 
+// Dialing navigates to a tel: URL, and the browser fires beforeunload for that
+// even though the page is never actually replaced — the OS just takes the
+// handoff. So pressing Call sent the release-everything beacon below and the
+// agent's whole stack went back to the pool seconds into their first call.
+//
+// Any tel: navigation marks the moment here, and the unload release ignores
+// anything that follows within two minutes.
+let lastDialNav = 0;
+function markDialing() { lastDialNav = Date.now(); }
+
+document.addEventListener('click', function(e) {
+  const a = e.target && e.target.closest && e.target.closest('a[href^="tel:"]');
+  if (a) markDialing();
+}, true);
+
 // Closing the tab is the common case, and fetch does not survive unload.
 // sendBeacon does, and a text/plain body avoids the CORS preflight Apps
 // Script cannot answer. Best effort — the 15-minute idle release remains
 // the real guarantee.
 window.addEventListener('beforeunload', function() {
   if (!state.agentName || !state.authToken) return;
+  // Mid-call, or just handed off to the phone: this is not someone leaving.
+  if (state.cardState === 'incall') return;
+  if (Date.now() - lastDialNav < 120000) return;
   try {
     const body = JSON.stringify({
       action: 'releaseAll', agent: state.agentName, s: state.authToken
@@ -1844,6 +1862,7 @@ function dialAgain() {
   if (!lead) return;
   const phoneClean = String(lead.phone || '').replace(/\D/g, '');
   // Trigger native phone dialer
+  markDialing();
   window.location.href = 'tel:+' + phoneClean;
   // Restart the in-call state; startCall bumps the attempt counter
   startCall();
