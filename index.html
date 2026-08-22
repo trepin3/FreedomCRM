@@ -117,7 +117,12 @@ body.is-admin .admin-only{display:flex;}
 .hud-counter{font-size:11px;font-weight:700;color:var(--text-secondary);white-space:nowrap;padding:4px 10px;background:var(--input-bg);border-radius:20px;flex-shrink:0;}
 
 /* Stats bar */
-.stats-bar{display:flex;gap:4px;padding:6px 14px 8px;border-bottom:1px solid var(--border);background:var(--card);font-size:11px;font-weight:700;overflow-x:auto;scrollbar-width:none;}
+/* Wrapping rather than scrolling. overflow-x:auto forces overflow-y to clip
+   as well, which cut every tooltip off at the bar's edge — and five small
+   chips can wrap onto a second line on a narrow screen without harm. */
+.stats-bar{display:flex;flex-wrap:wrap;gap:4px;padding:6px 14px 8px;
+  border-bottom:1px solid var(--border);background:var(--card);
+  font-size:11px;font-weight:700;}
 .stats-bar::-webkit-scrollbar{display:none;}
 .stat-chip[data-tip]{position:relative;}
 .stat-chip[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);
