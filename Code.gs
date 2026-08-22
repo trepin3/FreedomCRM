@@ -255,7 +255,16 @@ const LEAD_COLD = [
   // Provenance for a donated batch. Uploaded By stays the original agent, so
   // without these the receiving manager cannot tell a donation from anything
   // else that landed in their pool.
-  'Donated By', 'Donated At'
+  'Donated By', 'Donated At',
+  // Appended, never inserted. Existing sheets already hold Donated By and
+  // Donated At at fixed positions, and putting anything before them would
+  // shift every value in those columns by one without a word.
+  //
+  // Holds whatever a vendor sent that has no column of its own, as JSON. Lead
+  // files differ by source and always will; a column per field would mean a
+  // schema change for every new vendor, and until that change happened the
+  // data would simply be dropped. This keeps the tail instead.
+  'Extra Data'
 ];
 
 const LEAD_COLS = LEAD_HOT.concat(LEAD_WARM).concat(LEAD_COLD);
@@ -1839,6 +1848,7 @@ function decideSource_(me, name, decision, rename) {
 // agent who uploaded it.
 const FIELD_LIMITS = {
   'Name': 120, 'First Name': 60, 'Last Name': 60, 'Phone': 20, 'Email': 254,
+  'Extra Data': 2000,
   'Address': 200, 'City': 80, 'Zip': 12, 'Lead Type': 40, 'Beneficiary': 100,
   'Hobby': 100, 'Age': 3, 'DOB': 30, 'Lead Source': 60, 'State': 2
 };
@@ -1874,6 +1884,8 @@ function unsupportedReason_(item) {
   const keys = Object.keys(item || {});
   for (let i = 0; i < keys.length; i++) {
     const f = keys[i];
+    // Always JSON, so it opens with a brace and cannot be read as a formula.
+    if (f === 'Extra Data') continue;
     const raw = item[f];
     if (raw === null || raw === undefined) continue;
     const v = String(raw);
