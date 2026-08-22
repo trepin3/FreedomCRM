@@ -1929,9 +1929,10 @@ function uploadLeads_(me, body) {
     const idBase = nextLeadSeq_(sheet, state);
     const now = stamp_();
     let seq = 0, skipped = 0, noPhone = 0, wrongState = 0, households = 0, unsupported = 0;
-    // Managers and admin can push a row through and fix it in the sheet.
-    // An agent cannot, so for them it is refused rather than half-written.
-    const mayOverride = me.role === 'admin' || me.role === 'manager';
+    // Refused for everyone, including admin. Nobody downstream can repair a
+    // row once it is in the sheet — letting a manager push it through only
+    // moves the broken data somewhere it is harder to find. These rows go up
+    // the chain until the schema is changed to hold them.
     let firstBadReason = '';
     const out = [];
     const seenInBatch = {};
@@ -1951,7 +1952,7 @@ function uploadLeads_(me, body) {
       if (bad) {
         unsupported++;
         if (!firstBadReason) firstBadReason = bad;
-        if (!mayOverride) return;          // agents: refused, not silently mangled
+        return;
       }
       const key = phone + '|' + name.toLowerCase();
       if (mine[key] || seenInBatch[key]) { skipped++; return; }
@@ -2005,7 +2006,6 @@ function uploadLeads_(me, body) {
       skippedDuplicate: skipped, skippedIncomplete: noPhone, skippedWrongState: wrongState,
       households: households,
       unsupported: unsupported,
-      unsupportedBlocked: !mayOverride,
       unsupportedReason: firstBadReason
     };
   } finally {

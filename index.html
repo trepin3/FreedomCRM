@@ -3319,8 +3319,23 @@ function unsupportedReason(o) {
   return '';
 }
 
-function canOverrideUnsupported() {
-  return state.role === 'admin' || state.role === 'manager';
+// Nobody overrides this. A row the sheet cannot hold is not something anyone
+// downstream can repair — pushing it through only moves the damage somewhere
+// harder to find. Each role is told the next step in the chain instead.
+function unsupportedAdvice(n) {
+  const rows = n + ' row' + (n === 1 ? '' : 's');
+  if (state.role === 'admin') {
+    return '<b>This lead type is unsupported.</b> ' + rows + ' will not upload. ' +
+           'The CRM needs a schema change before it can store data in this shape — ' +
+           'send this file to your developer.';
+  }
+  if (state.role === 'manager') {
+    return '<b>This lead type is unsupported.</b> ' + rows + ' will not upload. ' +
+           'Send this file up to your admin — the CRM has to be updated before these ' +
+           'leads can be stored.';
+  }
+  return '<b>This lead type is unsupported.</b> ' + rows + ' will not upload. ' +
+         'Call your upline and pass them this file.';
 }
 
 function renderUnsupportedReview(objs) {
@@ -3340,21 +3355,15 @@ function renderUnsupportedReview(objs) {
   }).join('') + (bad.length > 25
       ? '<div class="batch-meta">…and ' + (bad.length - 25) + ' more</div>' : '');
 
-  const message = canOverrideUnsupported()
-    ? '<div class="up-hint">These will upload, but the values above may not store the way ' +
-      'they look here. Fix them in the file, or upload and correct them in the sheet.</div>'
-    : '<div class="up-block"><b>This lead type is unsupported.</b> ' +
-      String(bad.length) + ' row' + (bad.length === 1 ? '' : 's') + ' will not upload. ' +
-      'Call your upline and ask them to upload this file for you.</div>';
+  const message = '<div class="up-block">' + unsupportedAdvice(bad.length) +
+    ' Everything else in this file uploads normally.</div>';
 
   return '<div class="dup-review">' +
     '<div class="team-add-title">Rows the sheet cannot store — ' + bad.length + '</div>' +
     message + rows + '</div>';
 }
 
-// Agents cannot push these through; managers and admin can.
 function applyUnsupportedResolution(objs) {
-  if (canOverrideUnsupported()) return objs;
   return objs.filter(function(o) { return !unsupportedReason(o); });
 }
 
@@ -4038,10 +4047,12 @@ async function submitUpload() {
   ensureDupState(parsed);
   const objs = applyUnsupportedResolution(applyExistingResolution(applyDupResolution(parsed)));
   if (!objs.length) {
-    msg.textContent = canOverrideUnsupported()
-      ? 'Every row was excluded in the review.'
-      : 'This lead type is unsupported — none of these rows can be stored. ' +
-        'Call your upline and ask them to upload this file for you.';
+    const anyUnsupported = parsed.some(function(o) { return unsupportedReason(o); });
+    msg.textContent = anyUnsupported
+      ? 'This lead type is unsupported — none of these rows can be stored. ' +
+        (state.role === 'agent' ? 'Pass this file to your upline.'
+                                : 'This file needs the CRM updated before it can be uploaded.')
+      : 'Every row was excluded in the review.';
     return;
   }
 
@@ -4071,7 +4082,7 @@ async function submitUpload() {
     incomplete += out.skippedIncomplete || 0;
     refused    += out.skippedWrongState || 0;
     sharedLine += out.households || 0;
-    if (out.unsupportedBlocked) blocked += out.unsupported || 0;
+    blocked += out.unsupported || 0;
     done.push(out.added + ' to ' + CONFIG.STATE_NAMES[st]);
   }
   btn.disabled = false;
@@ -4082,7 +4093,8 @@ async function submitUpload() {
   if (sharedLine) bits.push(sharedLine + ' share a phone with another lead and were kept.');
   if (incomplete) bits.push(incomplete + ' missing a name or phone.');
   if (refused) bits.push(refused + ' rejected by the server as wrong-state.');
-  if (blocked) bits.push(blocked + ' unsupported — ask your upline to upload those.');
+  if (blocked) bits.push(blocked + ' unsupported and not uploaded — pass those on so the ' +
+                         'CRM can be updated to hold them.');
   const orphanTotal = Object.keys(split.orphans).reduce(function(n, k) { return n + split.orphans[k]; }, 0);
   if (orphanTotal) bits.push(orphanTotal + ' had no matching state sheet.');
   msg.textContent = bits.join(' ');
