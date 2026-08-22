@@ -1606,6 +1606,7 @@ function renderLead() {
         ${lead.address ? '<div class="detail-row wide"><span class="detail-key">Address</span><span class="detail-val">' + escapeHtml(lead.address) + '</span></div>' : ''}
         ${lead.city ? '<div class="detail-row"><span class="detail-key">City</span><span class="detail-val">' + escapeHtml(lead.city) + ', ' + escapeHtml(lead.state) + '</span></div>' : ''}
         ${lead.email ? '<div class="detail-row wide"><span class="detail-key">Email</span><span class="detail-val">' + escapeHtml(lead.email) + '</span></div>' : ''}
+        ${extraDetailRows(lead)}
       </div>
       <div id="callActionArea">
         ${tcpa.blocked
@@ -2240,6 +2241,25 @@ function downloadCallbackIcs(cb, quiet) {
   a.click();
   document.body.removeChild(a);
   setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
+// Whatever the vendor sent that has no column of its own. On a veteran lead
+// that is the branch they served in and the cover they asked for — worth more
+// on a call than half the fields that do have columns.
+function extraDetailRows(lead) {
+  let extra;
+  try { extra = JSON.parse(lead.extra_data || '{}'); } catch (e) { return ''; }
+  const keys = Object.keys(extra || {});
+  if (!keys.length) return '';
+
+  // Things the agent cannot use on a call, kept in the sheet but not shown.
+  const hide = { 'ip address': 1, 'otp code': 1, 'platform': 1, 'ad': 1,
+                 'trusted form certificate': 1, 'status': 1 };
+  return keys.filter(function(k) { return !hide[k.toLowerCase()]; })
+    .map(function(k) {
+      return '<div class="detail-row"><span class="detail-key">' + escapeHtml(k) +
+             '</span><span class="detail-val">' + escapeHtml(String(extra[k])) + '</span></div>';
+    }).join('');
 }
 
 // ══════════════════════════════════════════════════
@@ -3176,11 +3196,14 @@ function guessColumn(headers, field) {
     'Address': ['address','street','address1','address 1','street address','addr'],
     'City': ['city','town','municipality'],
     'Zip': ['zip','zipcode','zip code','postal','postal code','postcode'],
-    'Lead Type': ['product','plan','leadtype','lead type','type'],
+    // GOAT calls it "Interested In", Bang Bang calls it "Product". Same field.
+    'Lead Type': ['product','plan','interested in','interestedin','coverage type',
+                  'leadtype','lead type','type'],
     'Beneficiary': ['beneficiary','bene'],
     'Hobby': ['hobby','hobbies','interest'],
     'Age': ['age'],
-    'DOB': ['dob','date of birth','birthdate','birth date','birthday']
+    'DOB': ['dob','date of birth','birthdate','birth date','birthday'],
+    'Beneficiary': ['beneficiary','bene','spouse','beneficiary name']
   }[field] || [];
   for (let w = 0; w < want.length; w++) {
     for (let i = 0; i < headers.length; i++) {
@@ -3293,6 +3316,7 @@ function parseUpload() {
 // shape. Caught here so the agent sees it before uploading rather than finding
 // a broken row afterwards they cannot fix.
 const FIELD_LIMITS = {
+  'Extra Data': 2000,
   'Name': 120, 'First Name': 60, 'Last Name': 60, 'Phone': 20, 'Email': 254,
   'Address': 200, 'City': 80, 'Zip': 12, 'Lead Type': 40, 'Beneficiary': 100,
   'Hobby': 100, 'Age': 3, 'DOB': 30, 'Lead Source': 60, 'State': 2
@@ -3312,6 +3336,7 @@ function unsupportedReason(o) {
   const keys = Object.keys(o || {});
   for (let i = 0; i < keys.length; i++) {
     const f = keys[i], v = String(o[f] === null || o[f] === undefined ? '' : o[f]);
+    if (f === 'Extra Data') continue;    // JSON, so it opens with a brace
     if (looksLikeFormula(v)) return f + ' starts with a spreadsheet symbol (' + v.trim().charAt(0) + ')';
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(v)) return f + ' contains characters a cell cannot store';
     const cap = FIELD_LIMITS[f];
@@ -3632,6 +3657,33 @@ function mapRow(r) {
   }
   const st = rowState(r);
   if (st) obj['State'] = st;
+
+  // Whatever the vendor sent that nothing above claimed. Lead files differ by
+  // source and always will, so the columns nobody mapped are kept rather than
+  // thrown away — the branch a veteran served in is worth more on a call than
+  // most of what we do have a column for.
+  const claimed = {};
+  UPLOAD_FIELDS.forEach(function(f) {
+    if (uploadState.map[f] >= 0) claimed[uploadState.map[f]] = true;
+  });
+  const sc = stateColumn(), zc = zipColumn();
+  if (sc >= 0) claimed[sc] = true;
+  if (zc >= 0) claimed[zc] = true;
+
+  const extra = {};
+  let budget = 1800;
+  uploadState.headers.forEach(function(h, i) {
+    if (claimed[i]) return;
+    const name = String(h || '').trim();
+    const val = String(r[i] === undefined || r[i] === null ? '' : r[i]).trim();
+    if (!name || !val || val.length > 200) return;
+    const cost = name.length + val.length + 6;
+    if (cost > budget) return;
+    budget -= cost;
+    extra[name] = val;
+  });
+  if (Object.keys(extra).length) obj['Extra Data'] = JSON.stringify(extra);
+
   return obj;
 }
 
