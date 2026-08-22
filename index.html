@@ -3765,7 +3765,7 @@ function rowState(r) {
     if (fromZip) return fromZip;
   }
   const sc = stateColumn();
-  return sc >= 0 ? String(r[sc] || '').trim().toUpperCase() : '';
+  return sc >= 0 ? normalizeState(r[sc]) : '';
 }
 
 // How many rows have a state column contradicting their own ZIP.
@@ -3779,6 +3779,35 @@ function zipDisagreements() {
     if (fromZip && stated && fromZip !== stated) n++;
   });
   return n;
+}
+
+// Vendors write the state however they like. GOAT spells it out — "Arizona" —
+// and that file carries no ZIP at all, so the state column is the only signal
+// there is. Left alone it fails twice over: too long for the cell, and no sheet
+// is named "ARIZONA" so every row is orphaned.
+let STATE_BY_NAME = null;
+function normalizeState(v) {
+  const raw = String(v || '').trim();
+  if (!raw) return '';
+
+  const upper = raw.toUpperCase();
+  if (upper.length === 2 && CONFIG.STATE_NAMES[upper]) return upper;
+
+  if (!STATE_BY_NAME) {
+    STATE_BY_NAME = {};
+    Object.keys(CONFIG.STATE_NAMES).forEach(function(code) {
+      STATE_BY_NAME[CONFIG.STATE_NAMES[code].toUpperCase()] = code;
+    });
+    // Written more ways than there are states.
+    STATE_BY_NAME['WASHINGTON DC'] = 'DC';
+    STATE_BY_NAME['WASHINGTON D.C.'] = 'DC';
+    STATE_BY_NAME['D.C.'] = 'DC';
+    STATE_BY_NAME['DC'] = 'DC';
+  }
+
+  // Tolerate punctuation and doubled spacing before giving up.
+  const cleaned = upper.replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  return STATE_BY_NAME[upper] || STATE_BY_NAME[cleaned] || upper;
 }
 
 // Which pasted column holds the state, if any.
