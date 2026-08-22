@@ -172,6 +172,48 @@ function createAllStateSheets() {
   return msg;
 }
 
+// Run this first in any project you are unsure about. Getting ENV_LABEL wrong
+// is silent — staging without it reads the live lead books — so this says out
+// loud which world the editor you are sitting in belongs to.
+function whereAmI() {
+  const props = PropertiesService.getScriptProperties();
+  const label = envLabel_();
+  const reg   = stateRegistry_();
+  const auth  = props.getProperty('AUTH_SHEET_ID');
+
+  const lines = [
+    label ? '=== ' + label + ' ===' : '=== PRODUCTION ===',
+    label
+      ? 'ENV_LABEL is set. New spreadsheets are named "' + envPrefix_() + '…".'
+      : 'ENV_LABEL is NOT set. This project owns the real agents\' leads.',
+    '',
+    'States registered: ' + (Object.keys(reg).length
+      ? Object.keys(reg).sort().join(', ') : 'none yet'),
+    'Auth spreadsheet:  ' + (auth || 'none yet — run setupAuth()')
+  ];
+
+  // The failure worth catching: a labelled project holding production's ids.
+  const inherited = Object.keys(reg).filter(function(c) {
+    return SHEET_SEED_PROD[c] && reg[c] === SHEET_SEED_PROD[c];
+  });
+  if (label && inherited.length) {
+    lines.push('',
+      '*** STOP — this project points at PRODUCTION sheets for ' +
+      inherited.join(', ') + '.',
+      '*** ENV_LABEL was set after those states were registered.',
+      '*** Delete this project and its spreadsheets and start again.');
+  }
+  if (auth) {
+    try {
+      lines.push('Auth sheet name:   ' + SpreadsheetApp.openById(auth).getName());
+    } catch (e) { lines.push('Auth sheet:        unreadable (' + e.message + ')'); }
+  }
+
+  const msg = lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
 // Testing needs two states, not fifty-one: one to work in and a second to prove
 // the picker, the mixed-file split and the wrong-state correction still behave.
 const TEST_STATES = ['OH', 'AZ'];

@@ -45,15 +45,22 @@ turns red and says so. Use it read-only.
    |---|---|
    | `ENV_LABEL` | `STAGING` |
 
-4. Run `setupAuth()`. Grant permissions when asked.
+   To add it: in the Apps Script editor, click the **gear icon** (Project
+   Settings) in the far-left sidebar, scroll to **Script Properties**, click
+   **Add script property**, enter the name and value, then **Save script
+   properties**. It is easy to type the value and forget to save.
+
+4. Run `whereAmI()` and read the log. It should say `=== STAGING ===`.
+   If it says `PRODUCTION`, the property did not save — fix it before step 5.
+5. Run `setupAuth()`. Grant permissions when asked.
    Creates `[STAGING] FreedomCRM — Auth & Activity`, seeds you as admin,
    mints a secret of its own.
-5. Run `createTestStateSheets()` — Ohio and Arizona only.
-6. Run `seedDummyLeads()`.
-7. **Deploy → New deployment → Web app**
+6. Run `createTestStateSheets()` — Ohio and Arizona only.
+7. Run `seedDummyLeads()`.
+8. **Deploy → New deployment → Web app**
    - Execute as: **Me**
    - Who has access: **Anyone**
-8. Copy the `/exec` URL.
+9. Copy the `/exec` URL.
 
 > Keeping the code identical between the two projects is what makes staging
 > worth having. When you change `Code.gs`, paste it into staging first, prove it
@@ -154,6 +161,7 @@ Run these from the staging project only. In production they are destructive.
 
 | Function | What it does | Guarded |
 |---|---|---|
+| `whereAmI()` | Says which environment this project is | n/a |
 | `createTestStateSheets()` | Creates OH and AZ only | yes |
 | `seedDummyLeads()` | Fills them with fake leads | yes |
 | `createAllStateSheets()` | All 51 — refuses in staging | yes |
