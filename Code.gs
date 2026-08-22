@@ -15,18 +15,41 @@
 // time doGet is entered separates our top-level cost from container startup.
 const BOOT_T0 = Date.now();
 
-const SHEET_SEED = {
+// Production's first three spreadsheets, from before the registry existed.
+const SHEET_SEED_PROD = {
   AZ: '16XtlVoT_4XxtPzfH9THF0f9eWnpN4-g6LSJ7Jkeqdic',
   VA: '1Rofg1YZwb1l7RN2pZ9_LbBoP28_zOLeakYGJqSqaFoc',
   OH: '1Z8qf3oprwWpek3LdDCEJnEjOs2OE1eJdJc2mqsVoB4M'
 };
+
+// Set ENV_LABEL to STAGING in the staging project's Script Properties. It is
+// the only difference between the two projects — this file stays identical.
+function envLabel_() {
+  return String(PropertiesService.getScriptProperties()
+    .getProperty('ENV_LABEL') || '').trim();
+}
+
+// Spreadsheet names carry the label so Drive and the tab bar say which world
+// you are in. Production leaves ENV_LABEL unset and its names never change.
+function envPrefix_() {
+  const l = envLabel_();
+  return l ? '[' + l + '] ' : '';
+}
+
+// Critically, a labelled project inherits none of production's spreadsheets.
+// Without this, staging would skip creating AZ/VA/OH — ensureStateSheet_ sees
+// them already registered — and read and write the live lead books instead.
+// Staging keeps its whole registry in Script Properties.
+function seedRegistry_() {
+  return envLabel_() ? {} : SHEET_SEED_PROD;
+}
 
 function stateRegistry_() {
   let extra = {};
   try {
     extra = JSON.parse(PropertiesService.getScriptProperties().getProperty('STATE_SHEETS') || '{}');
   } catch (e) {}
-  return Object.assign({}, SHEET_SEED, extra);
+  return Object.assign({}, seedRegistry_(), extra);
 }
 
 // Read on first use, not at script load. Every execution parses this file,
@@ -65,11 +88,13 @@ function ensureStateSheet_(code) {
     const fresh = stateRegistry_();
     if (fresh[code]) { sheets_()[code] = fresh[code]; return fresh[code]; }
 
-    const ss = SpreadsheetApp.create('FreedomCRM Leads — ' + US_STATES[code] + ' (' + code + ')');
+    const ss = SpreadsheetApp.create(
+      envPrefix_() + 'FreedomCRM Leads — ' + US_STATES[code] + ' (' + code + ')');
     setupTabs(ss, code);
 
     const reg = {};
-    Object.keys(fresh).forEach(function(k) { if (!SHEET_SEED[k]) reg[k] = fresh[k]; });
+    const seeded = seedRegistry_();
+    Object.keys(fresh).forEach(function(k) { if (!seeded[k]) reg[k] = fresh[k]; });
     reg[code] = ss.getId();
     PropertiesService.getScriptProperties().setProperty('STATE_SHEETS', JSON.stringify(reg));
     sheets_()[code] = ss.getId();
@@ -126,6 +151,12 @@ function recountStates() {
 // states with no rows — without that this would put a minute of spreadsheet
 // opens into every stats call.
 function createAllStateSheets() {
+  if (envLabel_()) {
+    const msg = envLabel_() + ' does not need 51 spreadsheets cluttering Drive.' +
+                '\nRun createTestStateSheets() instead — Ohio and Arizona only.';
+    Logger.log(msg);
+    return msg;
+  }
   const made = [];
   Object.keys(US_STATES).forEach(function(code) {
     if (sheets_()[code]) return;
@@ -137,6 +168,31 @@ function createAllStateSheets() {
   const msg = made.length
     ? 'Created ' + made.length + ' state sheets: ' + made.join(', ')
     : 'Every state already had a sheet.';
+  Logger.log(msg);
+  return msg;
+}
+
+// Testing needs two states, not fifty-one: one to work in and a second to prove
+// the picker, the mixed-file split and the wrong-state correction still behave.
+const TEST_STATES = ['OH', 'AZ'];
+
+function createTestStateSheets() {
+  if (!envLabel_()) {
+    const msg = 'Refusing: ENV_LABEL is not set, so this is production.' +
+                '\nSet ENV_LABEL to STAGING in Script Properties first.';
+    Logger.log(msg);
+    return msg;
+  }
+  const made = [];
+  TEST_STATES.forEach(function(code) {
+    if (sheets_()[code]) return;
+    if (ensureStateSheet_(code)) made.push(code);
+    Utilities.sleep(200);
+  });
+  recountStates();
+  const msg = made.length
+    ? 'Created: ' + made.join(', ') + ' (named "' + envPrefix_() + 'FreedomCRM Leads — …")'
+    : 'Ohio and Arizona already exist.';
   Logger.log(msg);
   return msg;
 }
@@ -328,7 +384,15 @@ const DUMMY_LEADS = [
 // every state created, looping all of them would scatter dummy leads across
 // 51 sheets. Safe to re-run: it appends.
 function seedDummyLeads() {
-  Object.keys(SHEET_SEED).forEach(function(state) {
+  // Production carries real agents' leads now. Fake rows in the live pool
+  // would be dialled by someone within the hour.
+  if (!envLabel_()) {
+    const msg = 'Refusing: ENV_LABEL is not set, so this is production.';
+    Logger.log(msg);
+    return msg;
+  }
+  // Whatever states this project actually has — not production's three.
+  Object.keys(sheets_()).forEach(function(state) {
     const ss = SpreadsheetApp.openById(sheets_()[state]);
     const sheet = ss.getSheetByName('Leads') || setupTabs(ss, state);
     const rows = DUMMY_LEADS.map(function(d, n) {
@@ -347,7 +411,10 @@ function seedDummyLeads() {
     sheet.getRange(at, COL['Phone'], rows.length, 1).setNumberFormat('@');
     sheet.getRange(at, 1, rows.length, LEAD_COLS.length).setValues(rows);
   });
-  Logger.log('Seeded ' + DUMMY_LEADS.length + ' leads per state.');
+  const msg = 'Seeded ' + DUMMY_LEADS.length + ' leads into: ' +
+              Object.keys(sheets_()).join(', ');
+  Logger.log(msg);
+  return msg;
 }
 
 function initSetup() {
@@ -410,7 +477,7 @@ function setupAuth() {
   if (id) {
     ss = SpreadsheetApp.openById(id);
   } else {
-    ss = SpreadsheetApp.create('FreedomCRM \u2014 Auth & Activity');
+    ss = SpreadsheetApp.create(envPrefix_() + 'FreedomCRM \u2014 Auth & Activity');
     id = ss.getId();
     props.setProperty('AUTH_SHEET_ID', id);
     const first = ss.getSheets()[0];
@@ -1785,7 +1852,7 @@ function deleteEmptyStateSheets() {
   const keep = [], trashed = [], skipped = [];
 
   Object.keys(reg).forEach(function(code) {
-    if (SHEET_SEED[code]) { keep.push(code); return; }
+    if (seedRegistry_()[code]) { keep.push(code); return; }
     let rows = -1;
     try {
       const sh = SpreadsheetApp.openById(reg[code]).getSheetByName('Leads');
@@ -1802,7 +1869,7 @@ function deleteEmptyStateSheets() {
   // Rewrite the registry with only what survived.
   const next = {};
   Object.keys(reg).forEach(function(code) {
-    if (SHEET_SEED[code]) return;                       // seeds are not stored
+    if (seedRegistry_()[code]) return;                  // seeds are not stored
     if (trashed.indexOf(code) === -1) next[code] = reg[code];
   });
   PropertiesService.getScriptProperties().setProperty('STATE_SHEETS', JSON.stringify(next));

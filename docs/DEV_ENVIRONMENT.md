@@ -38,18 +38,47 @@ turns red and says so. Use it read-only.
 
 1. **script.google.com** → **New project**, name it `FreedomCRM — STAGING`.
 2. Paste the entire contents of `Code.gs` into it. Same file, unmodified.
-3. Run `setupAuth()`. Grant permissions when asked.
-   Creates the staging auth spreadsheet, seeds you as admin, mints a secret.
-4. Run `createAllStateSheets()`.
-5. Run `seedDummyLeads()`.
-6. **Deploy → New deployment → Web app**
+3. **Project Settings → Script Properties → Add**, and this must come before
+   anything else you run:
+
+   | Property | Value |
+   |---|---|
+   | `ENV_LABEL` | `STAGING` |
+
+4. Run `setupAuth()`. Grant permissions when asked.
+   Creates `[STAGING] FreedomCRM — Auth & Activity`, seeds you as admin,
+   mints a secret of its own.
+5. Run `createTestStateSheets()` — Ohio and Arizona only.
+6. Run `seedDummyLeads()`.
+7. **Deploy → New deployment → Web app**
    - Execute as: **Me**
    - Who has access: **Anyone**
-7. Copy the `/exec` URL.
+8. Copy the `/exec` URL.
 
 > Keeping the code identical between the two projects is what makes staging
 > worth having. When you change `Code.gs`, paste it into staging first, prove it
 > there, then paste it into production.
+
+### What `ENV_LABEL` does
+
+It is the *only* difference between the two projects, and it does three things:
+
+**Names every spreadsheet.** Staging creates `[STAGING] FreedomCRM Leads — Ohio
+(OH)`, so a glance at the Drive list or the browser tab tells you which world
+you're in. Production leaves `ENV_LABEL` unset and its names never change.
+
+**Breaks the inheritance.** `Code.gs` hardcodes the spreadsheet IDs of the first
+three states, AZ/VA/OH, from before the registry existed. A labelled project
+inherits none of them and keeps its whole registry in Script Properties.
+Without this, staging would see OH and AZ as already existing, skip creating
+them, and read and write the **live** lead books.
+
+**Guards the destructive editor functions.** `seedDummyLeads()` refuses to run
+without it, so fake rows can't reach the live pool.
+
+> If you forget step 3 and run `setupAuth()` first, don't try to unpick it —
+> delete the Apps Script project and the spreadsheets it made, and start again.
+> It costs two minutes and leaves nothing ambiguous.
 
 ### 2. Point the front end at it
 
@@ -123,14 +152,21 @@ before the staging entry is ever touched.
 
 Run these from the staging project only. In production they are destructive.
 
-| Function | What it does |
-|---|---|
-| `seedDummyLeads()` | Fills the state sheets with fake leads |
-| `removeDummyLeads()` | Takes them back out |
-| `clearAllLeads()` | Empties every state sheet |
-| `poolReport()` | Counts what's reserved, dialled, available |
-| `inspectLeadRow(state)` | Dumps one row against the schema |
-| `checkClock()` | Script timezone vs real time |
+| Function | What it does | Guarded |
+|---|---|---|
+| `createTestStateSheets()` | Creates OH and AZ only | yes |
+| `seedDummyLeads()` | Fills them with fake leads | yes |
+| `createAllStateSheets()` | All 51 — refuses in staging | yes |
+| `removeDummyLeads()` | Takes the fake rows back out | no |
+| `clearAllLeads()` | **Empties every state sheet** | no |
+| `poolReport()` | Counts reserved, dialled, available | no |
+| `inspectLeadRow(state)` | Dumps one row against the schema | no |
+| `checkClock()` | Script timezone vs real time | no |
+
+**`clearAllLeads()` is unguarded and production is now live.** Run it in the
+production editor and every agent's leads are gone. It predates the launch, when
+wiping the sheet was routine. Worth guarding before someone reaches for it out of
+habit — say the word and I'll do it.
 
 ---
 
