@@ -1119,6 +1119,7 @@ function setLoginBusy(on) {
 
 async function onGoogleCredential(res) {
   if (loginInFlight) return;            // a second click queues, it does not hurry
+  sessionExpiredHandled = false;        // a fresh attempt gets a fresh warning
   const idToken = res && res.credential;
   const claims = decodeJwt(idToken);
   if (!claims || !claims.email) return showLoginError('Could not read that Google account.');
@@ -4821,6 +4822,9 @@ async function api(method, params) {
       // would be swallowed and the card would advance as though it worked.
       // Caught here once, for every path, rather than at eight call sites.
       if (body && body.error === 'lead_released') handleLeadReleased();
+      // A dead session answers every request this way. Caught once here rather
+      // than left to surface as a different failure on each screen.
+      if (body && body.error === 'auth_required') handleSessionExpired();
       return body;
     } catch (e) {
       lastErr = e;
@@ -4828,6 +4832,45 @@ async function api(method, params) {
     }
   }
   throw lastErr;
+}
+
+// Sessions last twelve hours, so this is usually a tab left open overnight.
+// Without it, every request quietly fails and the agent concludes the app is
+// broken rather than that they need to sign in again.
+let sessionExpiredHandled = false;
+function handleSessionExpired() {
+  if (sessionExpiredHandled) return;
+  sessionExpiredHandled = true;
+
+  // Stop the polls first, or each one fires another failing request on its way
+  // out and the notice fights to stay on screen.
+  stopTimers();
+
+  // Torn down locally, not through doLogout — that posts a release the server
+  // will refuse anyway. The leads free themselves on the idle timer.
+  state.authToken = '';
+  state.agentEmail = '';
+  state.role = null;
+  state.leads = [];
+  state.currentIdx = 0;
+  state.history = [];
+  state.seenIds.clear();
+  state.availableStates = [];
+  state.myCallbacks = [];
+  ['fcrm_session', 'fcrm_email', 'fcrm_role'].forEach(function(k) { localStorage.removeItem(k); });
+  document.body.classList.remove('is-admin');
+
+  const grid = document.getElementById('stateGrid');
+  if (grid) grid.innerHTML = '';
+
+  show('loginView');
+  initGoogleSignIn();
+  showLoginError('Your session has expired. Sign in again to pick up where you left off — ' +
+                 'anything you already saved is safe.');
+
+  // Cleared once they are back on the login screen, so a genuine failure later
+  // can raise it again.
+  setTimeout(function() { sessionExpiredHandled = false; }, 4000);
 }
 
 let releaseNoticeShown = false;
