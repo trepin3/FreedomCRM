@@ -2671,6 +2671,23 @@ function downloadCallbackIcs(cb, quiet) {
   setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 }
 
+// True for the fields a vendor keeps for its own bookkeeping. Deliberately
+// conservative: anything it does not recognise is shown, because a field this
+// misses is clutter, while a field it wrongly hides is lost to the agent.
+function isMachineKey(k) {
+  const s = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!s) return true;
+  return s === 'id' || s === 'uid' || s === 'guid' || s === 'uuid'
+    // leadid, userid, paddedleadid, recordid, subid — but not medicaid or valid
+    || /^(lead|user|padded|paddedlead|record|contact|sub|campaign|vendor|session|account|customer|order|transaction)id$/.test(s)
+    || /^(lat|lon|lng|latitude|longitude|geo|zipcode4)$/.test(s)
+    || /^(rec|create|created|modified|updated|import|imported|entry|opt|optin)?(date|time|datetime|timestamp)$/.test(s)
+    || /^(contact)?status$/.test(s)
+    || /^leadtype$/.test(s)                 // Lead Type already has its own row
+    || /^(ipaddress|ip|otpcode|otp|platform|ad|adid|url|referrer|token|hash|signature)$/.test(s)
+    || /trustedform|certificate|jornaya/.test(s);
+}
+
 // Whatever the vendor sent that has no column of its own. On a veteran lead
 // that is the branch they served in and the cover they asked for — worth more
 // on a call than half the fields that do have columns.
@@ -2680,10 +2697,15 @@ function extraDetailRows(lead) {
   const keys = Object.keys(extra || {});
   if (!keys.length) return '';
 
-  // Things the agent cannot use on a call, kept in the sheet but not shown.
-  const hide = { 'ip address': 1, 'otp code': 1, 'platform': 1, 'ad': 1,
-                 'trusted form certificate': 1, 'status': 1 };
-  return keys.filter(function(k) { return !hide[k.toLowerCase()]; })
+  // A list of names to hide needs a new entry for every vendor, and until
+  // someone adds it their junk shows on the card mid-call — record ids, GPS
+  // coordinates, import timestamps. So match the shape instead: identifiers,
+  // coordinates, timestamps and internal state are never useful on a call, and
+  // every vendor invents its own name for each of them.
+  //
+  // Everything stays in the sheet either way. This is only what the agent sees
+  // while the phone is ringing.
+  return keys.filter(function(k) { return !isMachineKey(k); })
     .map(function(k) {
       return '<div class="detail-row"><span class="detail-key">' + escapeHtml(k) +
              '</span><span class="detail-val">' + escapeHtml(String(extra[k])) + '</span></div>';

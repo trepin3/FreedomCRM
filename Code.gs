@@ -642,7 +642,16 @@ function verifySession_(token) {
   const agent = findAgent_(payload.e);
   if (!agent || agent.status !== 'active') return null;
 
-  return { email: agent.email, name: agent.name || payload.n, role: agent.role };
+  // The id has to be here. Reservations key on it now, and without it the
+  // heartbeat reported nothing held, dispositions were refused as lead_released
+  // and sign-out released nothing — all while the rows were correctly locked.
+  const rec = userByEmail_(agent.email);
+  return {
+    email: agent.email,
+    name: agent.name || payload.n,
+    role: agent.role,
+    id: (rec && rec.id) || ''
+  };
 }
 
 
@@ -1039,7 +1048,7 @@ function doGet(e) {
       }
       case 'listSources': result = listSources_(userByEmail_(user.email)); break;
       case 'listStates':  result = listStates_(userByEmail_(user.email)); break;
-      case 'heartbeat':   result = heartbeat_(user, e.parameter.state); break;
+      case 'heartbeat':   result = heartbeat_(userByEmail_(user.email) || user, e.parameter.state); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
       case 'dcidQueue':   result = dcidQueue_(userByEmail_(user.email)); break;
       case 'roster':      result = rosterFor_(userByEmail_(user.email)); break;
