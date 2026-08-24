@@ -572,6 +572,32 @@ function sessionSecret_() {
   return v;
 }
 
+/**
+ * Identifies a caller from a Google ACCESS token, for server-to-server requests
+ * from another Apps Script project (Appointment Autopilot).
+ *
+ * Not the same path as sign-in: that verifies an ID token minted for this app's
+ * client. An access token has no audience to check, so the real gate is the last
+ * line — the email has to belong to an active user here. A valid Google token
+ * from a stranger identifies them correctly and then gets nothing.
+ *
+ * The token travels in the body because Apps Script never exposes request
+ * headers to doPost.
+ */
+function verifyAccessToken_(token) {
+  if (!token) return null;
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) return null;
+  let info;
+  try { info = JSON.parse(res.getContentText()); } catch (e) { return null; }
+  if (!info.email || String(info.email_verified) !== 'true') return null;
+  const u = userByEmail_(info.email);
+  return (u && u.status !== 'paused') ? u : null;
+}
+
 // Google signs the ID token; we verify it and, critically, that it was minted
 // for THIS app. Without the aud check any valid Google token would be accepted.
 function verifyGoogleToken_(idToken) {
@@ -1114,6 +1140,20 @@ function doPost(e) {
       case 'shareLead':      result = shareLead_(userByEmail_(user.email), body); break;
       case 'next': result = actionNext(body); break;
       case 'dcid': result = actionDCID(body); break;
+      // Read-only surface for Appointment Autopilot. Authenticated by the
+      // caller's own Google token and scoped by the same visibility rules the
+      // UI uses, so an agent can only pull batches they can already see.
+      case 'apiBatches': {
+        const who = verifyAccessToken_(body.token);
+        result = who ? { batches: myBatches_(who) } : { error: 'auth_required' };
+        break;
+      }
+      case 'apiBatchLeads': {
+        const who = verifyAccessToken_(body.token);
+        result = who ? apiBatchLeads_(who, String(body.batchId || ''))
+                     : { error: 'auth_required' };
+        break;
+      }
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -2090,6 +2130,41 @@ function migrateSchemaColumns() {
   const msg = 'Schema now ' + LEAD_COLS.length + ' columns.\n' + report.join('\n');
   Logger.log(msg);
   return msg;
+}
+
+/**
+ * The contactable leads of one batch, for Autopilot to work.
+ *
+ * Only rows the caller can see, only ones still dialable, and never a lead
+ * someone is holding — pulling a lead into an email sequence while an agent has
+ * it reserved means the prospect hears from both at once.
+ */
+function apiBatchLeads_(me, batchId) {
+  if (!batchId) return { error: 'no batch' };
+  const out = [];
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+    data.forEach(function(row) {
+      if (String(row[ix_('Batch ID')] || '') !== batchId) return;
+      if (String(row[ix_('Batch Status')] || '').toLowerCase() === 'removed') return;
+      if (DIALABLE.indexOf(String(row[ix_('Status')] || '').toLowerCase()) === -1) return;
+      if (row[ix_('Locked By')]) return;
+      if (!canSee_(row, me)) return;
+      out.push({
+        leadId: String(row[ix_('Lead ID')] || ''),
+        firstName: String(row[ix_('First Name')] || ''),
+        lastName: String(row[ix_('Last Name')] || ''),
+        email: String(row[ix_('Email')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        state: String(row[ix_('State')] || ''),
+        source: String(row[ix_('Lead Source')] || '')
+      });
+    });
+  });
+  return { batchId: batchId, leads: out, count: out.length };
 }
 
 // ══════════════════════════════════════════════════════════════════
