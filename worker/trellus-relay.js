@@ -83,7 +83,7 @@ export default {
     // is an open door into every endpoint the CRM has.
     const body = {
       action: 'trellusEvent',
-      secret: env.SHARED_SECRET,
+      secret: String(env.SHARED_SECRET || '').trim(),
       session_id: payload.session_id || payload.sessionId || '',
       lead_id:    payload.lead_id    || payload.leadId    || '',
       rep_email:  payload.rep_email  || payload.repEmail  || '',
