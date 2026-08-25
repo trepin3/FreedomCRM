@@ -110,6 +110,13 @@ body.is-admin .admin-only{display:flex;}
 @media(max-width:520px){
   .ref-row,.ref-head{grid-template-columns:1fr 1fr 60px 28px;}
 }
+/* Outside the calling window the number is shown but not dialable. Leaving it
+   as a live tel: link meant the one control that was never gated could place a
+   call at 12:23am. */
+.lead-phone.blocked{background:var(--input-bg);color:var(--text-secondary);
+  cursor:not-allowed;text-decoration:none;}
+.cb-mini-btn.blocked,.search-action-btn.blocked{opacity:.45;cursor:not-allowed;
+  pointer-events:none;}
 .env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
   font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
@@ -2020,7 +2027,9 @@ function renderLead() {
       </div>
       <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startCall()">📞 ${phoneDisplay}</a>
+        ${tcpa.blocked
+          ? `<span class="lead-phone blocked" title="${tcpa.reason}">📞 ${phoneDisplay}</span>`
+          : `<a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startCall()">📞 ${phoneDisplay}</a>`}
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -3131,8 +3140,10 @@ function renderMyCallbacks() {
         <span class="cb-item-status ${status}">${label}</span>
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
-          <a class="cb-mini-btn" href="tel:${telHref(phoneClean)}"
-             onclick="markDialing();logCallFrom('${cb.state}',${cb.rowIndex})">📞 Call</a>
+          ${checkTCPA(cb.state).blocked
+            ? `<span class="cb-mini-btn blocked" title="${checkTCPA(cb.state).reason}">📞 Call</span>`
+            : `<a class="cb-mini-btn" href="tel:${telHref(phoneClean)}"
+                  onclick="markDialing();logCallFrom('${cb.state}',${cb.rowIndex})">📞 Call</a>`}
           <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
@@ -3410,7 +3421,9 @@ function renderLeadView() {
         <button class="lead-cb-btn" style="margin-left:10px;" onclick="openEditLead('leadView')">✏️ Edit</button>
       </div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startLeadViewCall()">📞 ${phoneDisplay}</a>
+        ${tcpa.blocked
+          ? `<span class="lead-phone blocked" title="${tcpa.reason}">📞 ${phoneDisplay}</span>`
+          : `<a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startLeadViewCall()">📞 ${phoneDisplay}</a>`}
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -3585,8 +3598,10 @@ function doSearch() {
             <div class="search-result-phone">${formatPhone(r.phone)}</div>
             <div class="search-result-meta">${escapeHtml(r.city || '')} ${escapeHtml(r.state || '')} ${r.callbackDate ? '• Scheduled: ' + r.callbackDate + ' ' + r.callbackTime : ''}</div>
             <div class="search-actions-grid">
-              <a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}"
-                 onclick="markDialing();logCallFrom('${r.state}',${r.rowIndex})">📞 Call</a>
+              ${checkTCPA(r.state).blocked
+                ? `<span class="search-action-btn sa-call blocked" title="${checkTCPA(r.state).reason}">📞 Call</span>`
+                : `<a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}"
+                     onclick="markDialing();logCallFrom('${r.state}',${r.rowIndex})">📞 Call</a>`}
               <button class="search-action-btn sa-sold" onclick="searchSold('${r.state}',${r.rowIndex},'${r.sourceTab}')">✅ Sold</button>
               <button class="search-action-btn sa-dcid" onclick="searchDCID('${r.state}',${r.rowIndex},'${r.sourceTab}')">🚫 DCID</button>
               <button class="search-action-btn sa-wrong" onclick="searchWrong('${r.state}',${r.rowIndex},'${r.sourceTab}')">📵 Wrong #</button>
