@@ -2198,6 +2198,79 @@ function apiBatchLeads_(me, batchId) {
   return { batchId: batchId, leads: out, count: out.length };
 }
 
+/**
+ * Undoes wrong-number dispositions caused by the international dialling bug.
+ *
+ * Until 2026-08-24 every tel: link prefixed a bare "+" to a ten-digit number,
+ * so the phone read the area code as a country code — (216) dialled Tunisia,
+ * (440) the United Kingdom, (220) Gambia. Agents heard the wrong person, or
+ * nobody, and marked the lead as a wrong number. The numbers were fine.
+ *
+ * Call with no arguments to see what would change. Nothing is written until
+ * confirm is true.
+ *
+ *   restoreWrongNumbers()                          // list them
+ *   restoreWrongNumbers('2026-08-24')              // list that day only
+ *   restoreWrongNumbers('2026-08-24', '', true)    // actually restore
+ */
+function restoreWrongNumbers(onDate, agentName, confirm) {
+  const day   = String(onDate || '').trim();
+  const who   = String(agentName || '').trim().toLowerCase();
+  const found = [];
+
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    data.forEach(function(row, i) {
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.WRONG) return;
+      const at = String(row[ix_('Wrong Number Date')] || '');
+      const by = String(row[ix_('Wrong Number Agent')] || '');
+      if (day && at.indexOf(day) !== 0) return;
+      if (who && by.toLowerCase() !== who) return;
+
+      found.push({
+        state: state, rowIndex: i + 2,
+        name: String(row[ix_('Name')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        by: by, at: at
+      });
+    });
+  });
+
+  if (confirm) {
+    found.forEach(function(f) {
+      const sheet = SpreadsheetApp.openById(sheets_()[f.state]).getSheetByName('Leads');
+      // Back to the pool, and the wrong-number stamps cleared so the stats stop
+      // counting them. Attempts is left alone — the dial did happen.
+      writeCells_(sheet, f.rowIndex, {
+        'Status': STATUS.NEW,
+        'Status Reason': 'Restored — misdialled internationally by the CRM',
+        'Status At': stamp_(),
+        'Wrong Number Date': '',
+        'Wrong Number Agent': '',
+        'Locked By': '', 'Locked At': '', 'Call Open At': ''
+      });
+    });
+    invalidateStates_(null);
+    recountStates();
+  }
+
+  const lines = found.map(function(f) {
+    return '  ' + f.state + ' row ' + f.rowIndex + '  ' +
+           (f.name || '(no name)') + '  ' + f.phone + '  by ' + f.by + '  ' + f.at;
+  });
+  const msg = (confirm ? 'RESTORED ' : 'WOULD RESTORE ') + found.length +
+              ' wrong-number leads' +
+              (day ? ' from ' + day : '') + (who ? ' by ' + agentName : '') + '\n' +
+              lines.join('\n') +
+              (confirm ? '' : '\n\nNothing written. Re-run with confirm = true to apply.');
+  Logger.log(msg);
+  return msg;
+}
+
 // ══════════════════════════════════════════════════════════════════
 // ADMIN LOCKS — live view of who has what locked
 // ══════════════════════════════════════════════════════════════════
