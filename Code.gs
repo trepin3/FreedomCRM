@@ -1058,6 +1058,7 @@ function doGet(e) {
     let result;
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
+      case 'leadById':    result = leadById_(userByEmail_(user.email), e.parameter.leadId); break;
       case 'getSold':     result = getSold(userByEmail_(user.email), e.parameter.range); break;
       case 'getLeads':    result = getLeads(e.parameter.state, user.name, userByEmail_(user.email), e.parameter.size);
                           logActivity_(user, 'getLeads', '', e.parameter.state); break;
@@ -1112,6 +1113,10 @@ function doPost(e) {
     // Chicken and egg: this is how you get a session in the first place.
     if (action === 'login') return jsonOut(actionLogin_(body));
 
+    // The Worker authenticates with a shared secret, not a user session, so this
+    // is handled before session verification rather than inside the switch.
+    if (action === 'trellusEvent') return jsonOut(actionTrellusEvent(body));
+
     const user = verifySession_(body.s);
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
@@ -1154,6 +1159,7 @@ function doPost(e) {
                      : { error: 'auth_required' };
         break;
       }
+      case 'leadById':    result = leadById_(userByEmail_(user.email), body.leadId || e.parameter.leadId); break;
       case 'callStarted': result = actionCallStarted(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
@@ -2330,6 +2336,198 @@ function restoreWrongNumbers(onDate, agentName, confirm) {
               (confirm ? '' : '\n\nNothing written. Re-run with confirm = true to apply.');
   Logger.log(msg);
   return msg;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// TRELLUS RECEIVER
+//
+// Trellus takes over the call button, places the call, and posts the result
+// back. They post from a browser extension with an Authorization header, which
+// forces a CORS preflight that Apps Script cannot answer — there is no doOptions.
+// So a Cloudflare Worker sits in front, answers the preflight, checks the bearer
+// token and forwards here. This endpoint therefore trusts its caller and must
+// never be given out directly; the Worker URL is what Trellus receives.
+//
+// Retries are expected. Every event carries a session id, and the same session
+// is applied once and then acknowledged, so a duplicate delivery is a no-op
+// rather than a second disposition on the same lead.
+// ══════════════════════════════════════════════════════════════════
+
+const TRELLUS_SHARED_SECRET_PROP = 'TRELLUS_SECRET';
+const PROCESSED_TAB = 'ProcessedEvents';
+
+// Trellus's outcome vocabulary → ours. Anything unrecognised is recorded as a
+// call and left for a human, rather than guessed into a disposition that takes
+// the lead out of the pool.
+const TRELLUS_OUTCOMES = {
+  'sale': STATUS.SOLD, 'sold': STATUS.SOLD,
+  'not_interested': STATUS.DCID, 'dnc': STATUS.DCID, 'do_not_call': STATUS.DCID,
+  'wrong_number': STATUS.WRONG, 'bad_number': STATUS.WRONG,
+  'callback': STATUS.CALLBACK, 'scheduled': STATUS.CALLBACK,
+  'no_answer': '', 'voicemail': '', 'busy': '', 'failed': '', 'abandoned': ''
+};
+
+function processedTab_() {
+  const ss = authSS_();
+  let sh = ss.getSheetByName(PROCESSED_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(PROCESSED_TAB);
+    sh.appendRow(['Key', 'At', 'Lead ID', 'Outcome', 'Rep', 'Result']);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function alreadyProcessed_(key) {
+  const sh = processedTab_();
+  const lr = sh.getLastRow();
+  if (lr < 2) return false;
+  const keys = sh.getRange(2, 1, lr - 1, 1).getValues();
+  for (let i = 0; i < keys.length; i++) {
+    if (String(keys[i][0]) === key) return true;
+  }
+  return false;
+}
+
+function actionTrellusEvent(body) {
+  const secret = PropertiesService.getScriptProperties()
+    .getProperty(TRELLUS_SHARED_SECRET_PROP);
+  if (!secret || String(body.secret || '') !== secret) return { error: 'not_permitted' };
+
+  const sessionId = String(body.session_id || '').trim();
+  if (!sessionId) return { error: 'no session_id' };
+  const key = 'call.completed:' + sessionId;
+
+  // Acknowledged, not re-applied. A retry must not disposition twice.
+  if (alreadyProcessed_(key)) return { success: true, duplicate: true };
+
+  const leadId = String(body.lead_id || '').trim().toUpperCase();
+  if (!leadId) return { error: 'no lead_id' };
+
+  const found = leadRowById_(leadId);
+  if (!found) return { error: 'not_found' };
+
+  // rep_email may be someone we do not have. The call still happened and still
+  // belongs on the lead — it is the credit that goes nowhere, not the record.
+  const rep = String(body.rep_email || '').trim().toLowerCase();
+  const who = rep ? userByEmail_(rep) : null;
+  const repName = who ? who.name : '';
+
+  const outcome = String(body.outcome || '').trim().toLowerCase();
+  const status = TRELLUS_OUTCOMES.hasOwnProperty(outcome) ? TRELLUS_OUTCOMES[outcome] : null;
+
+  const now = stamp_();
+  const write = {
+    'Last Call Agent': repName || rep || 'Trellus',
+    'Last Call Start': body.started_at || now,
+    'Last Call End': body.ended_at || '',
+    'Last Call Duration': body.duration || '',
+    'Call Open At': ''
+  };
+  const cur = Number(found.sheet.getRange(found.rowIndex, COL['Attempts']).getValue()) || 0;
+  write['Attempts'] = cur + 1;
+
+  let applied = 'call recorded';
+  if (status) {
+    write['Status'] = status;
+    write['Status At'] = now;
+    write['Status By'] = repName || rep || 'Trellus';
+    write['Status Reason'] = 'Trellus: ' + outcome;
+    applied = status;
+    if (status === STATUS.WRONG) {
+      write['Wrong Number Date'] = now;
+      write['Wrong Number Agent'] = repName || rep || 'Trellus';
+    }
+  } else if (status === null) {
+    // Unrecognised vocabulary. Record the call, flag it, disposition nothing.
+    write['Status Reason'] = 'Trellus sent an unknown outcome: ' + outcome;
+    applied = 'unknown outcome — left for a human';
+  }
+  writeCells_(found.sheet, found.rowIndex, write);
+
+  processedTab_().appendRow([key, now, leadId, outcome,
+                             rep + (who ? '' : ' (unattributed)'), applied]);
+  logActivity_({ email: rep, name: repName || 'Trellus', role: 'system' },
+               'trellusCall', leadId + ' — ' + applied, found.state);
+
+  return { success: true, applied: applied, attributed: !!who };
+}
+
+// Sheet-level lookup with no visibility check — the caller is the Worker, not a
+// user, and it has already been authenticated by the shared secret.
+function leadRowById_(leadId) {
+  const guess = leadId.split('-')[0];
+  const order = sheets_()[guess] ? [guess].concat(activeStates_().filter(function(s) {
+    return s !== guess; })) : activeStates_();
+  for (let n = 0; n < order.length; n++) {
+    const state = order[n];
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) continue;
+    const ids = sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || '').trim().toUpperCase() === leadId) {
+        return { sheet: sheet, rowIndex: i + 2, state: state };
+      }
+    }
+  }
+  return null;
+}
+
+/** Run once from the editor to mint the secret the Worker will carry. */
+function setupTrellus() {
+  const props = PropertiesService.getScriptProperties();
+  let sec = props.getProperty(TRELLUS_SHARED_SECRET_PROP);
+  if (!sec) {
+    sec = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty(TRELLUS_SHARED_SECRET_PROP, sec);
+  }
+  processedTab_();
+  const msg = 'Trellus receiver ready.\n\nShared secret (put this in the Cloudflare\n' +
+              'Worker, never in the repo and never to Trellus):\n\n  ' + sec +
+              '\n\nTrellus gets the Worker URL and their own bearer token, which the\n' +
+              'Worker checks before forwarding.';
+  Logger.log(msg);
+  return msg;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ADDRESSABLE LEADS
+//
+// A lead has to be reachable by its id alone for anything outside this app to
+// point at it — a dialer taking over the call button, a link in an email, a
+// webhook writing a result back. Lead IDs are stable for life precisely because
+// rows never move, which is what makes this safe.
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * Finds a lead anywhere by its Lead ID. The id carries its state as a prefix
+ * (OH-000513), so the right book is opened directly instead of reading fifty.
+ */
+function leadById_(me, leadId) {
+  if (!me) return { error: 'auth_required' };
+  const id = String(leadId || '').trim().toUpperCase();
+  if (!id) return { error: 'no lead id' };
+
+  const guess = id.split('-')[0];
+  const order = sheets_()[guess] ? [guess].concat(activeStates_().filter(function(s) {
+    return s !== guess; })) : activeStates_();
+
+  for (let n = 0; n < order.length; n++) {
+    const state = order[n];
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) continue;
+    const ids = sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || '').trim().toUpperCase() !== id) continue;
+      const row = sheet.getRange(i + 2, 1, 1, LEAD_COLS.length).getValues()[0];
+      if (!canSee_(row, me)) return { error: 'not_permitted' };
+      // Same shape every other reader returns, so the UI needs no special case.
+      return { lead: Object.assign({ rowIndex: i + 2, state: state }, rowToObj(row)) };
+    }
+  }
+  return { error: 'not_found' };
 }
 
 // ══════════════════════════════════════════════════════════════════
