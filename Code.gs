@@ -3616,11 +3616,10 @@ function rowToObj(row) {
 
 
 // Format Sheets Date value → 'yyyy-MM-dd' string (empty if null/blank)
-function fmtDate(v) {
-  if (!v && v !== 0) return '';
-  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
-  return String(v);
-}
+// (An earlier fmtDate lived here. It was shadowed by the one below — JavaScript
+// keeps the last declaration — so it had never run, and it formatted dates
+// differently. Removed rather than left for someone to edit and wonder why
+// nothing changed.)
 // All Sheets stores dates as UTC midnight. When reading date-only or time-only cells,
 // we format in UTC to preserve the raw value. Only true datetimes get converted to TZ.
 
