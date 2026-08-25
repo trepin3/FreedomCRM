@@ -2474,6 +2474,65 @@ function leadRowById_(leadId) {
   return null;
 }
 
+/**
+ * Undoes what the Trellus relay tests wrote.
+ *
+ * Testing against a real lead is the only way to know the chain works, but it
+ * leaves that lead looking dialled — Attempts up, a call agent, a status reason
+ * — and leaves the test session keys claimed so the same ids cannot be reused.
+ *
+ * Lists what it would do; writes nothing until confirm is true.
+ *
+ *   cleanupTrellusTests('OH-000513')                 // show
+ *   cleanupTrellusTests('OH-000513', 'qa-', true)    // do it
+ */
+function cleanupTrellusTests(leadId, keyPrefix, confirm) {
+  const id = String(leadId || '').trim().toUpperCase();
+  const prefix = String(keyPrefix === undefined ? 'qa-' : keyPrefix);
+  const out = [];
+
+  if (id) {
+    const found = leadRowById_(id);
+    if (!found) {
+      out.push('No lead ' + id);
+    } else {
+      const row = found.sheet.getRange(found.rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+      out.push('Lead ' + id + ' (' + found.state + ' row ' + found.rowIndex + ')');
+      out.push('  Attempts        ' + row[ix_('Attempts')] + '  -> blank');
+      out.push('  Last Call Agent ' + row[ix_('Last Call Agent')] + '  -> blank');
+      out.push('  Status          ' + row[ix_('Status')] + '  (left alone)');
+      if (confirm) {
+        writeCells_(found.sheet, found.rowIndex, {
+          'Attempts': '', 'Last Call Agent': '', 'Last Call Start': '',
+          'Last Call End': '', 'Last Call Duration': '', 'Status Reason': ''
+        });
+      }
+    }
+  }
+
+  // Delete bottom-up: removing a row shifts everything below it up, and a
+  // top-down loop would skip the row that moved into the deleted index.
+  const sh = processedTab_();
+  const lr = sh.getLastRow();
+  let removed = 0;
+  if (lr > 1) {
+    const keys = sh.getRange(2, 1, lr - 1, 1).getValues();
+    for (let i = keys.length - 1; i >= 0; i--) {
+      const k = String(keys[i][0] || '');
+      if (k.indexOf('call.completed:' + prefix) !== 0) continue;
+      out.push('  event ' + k + '  -> delete');
+      removed++;
+      if (confirm) sh.deleteRow(i + 2);
+    }
+  }
+
+  const msg = (confirm ? 'CLEANED UP' : 'WOULD CLEAN UP') + '\n' + out.join('\n') +
+              '\n' + removed + ' test events' +
+              (confirm ? '' : '\n\nNothing written. Re-run with confirm = true.');
+  Logger.log(msg);
+  return msg;
+}
+
 /** Run once from the editor to mint the secret the Worker will carry. */
 function setupTrellus() {
   const props = PropertiesService.getScriptProperties();
