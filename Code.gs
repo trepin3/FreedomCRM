@@ -2533,6 +2533,15 @@ function cleanupTrellusTests(leadId, keyPrefix, confirm) {
   return msg;
 }
 
+/**
+ * The editor's Run button passes no arguments, so cleanupTrellusTests() alone
+ * sees an empty lead id and only tidies the event rows. Edit the lead id here
+ * and run this instead.
+ */
+function cleanupTrellusTestsRun() {
+  return cleanupTrellusTests('OH-000513', 'qa-', true);
+}
+
 /** Run once from the editor to mint the secret the Worker will carry. */
 function setupTrellus() {
   const props = PropertiesService.getScriptProperties();
