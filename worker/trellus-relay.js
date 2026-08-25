@@ -61,8 +61,15 @@ export default {
     // browser error that tells them nothing.
     const auth = request.headers.get('Authorization') || '';
     const token = auth.replace(/^Bearer\s+/i, '').trim();
-    if (!env.TRELLUS_TOKEN || token !== env.TRELLUS_TOKEN) {
-      return json({ error: 'unauthorized' }, 401, origin);
+    // Trim the stored value too. Copying `openssl rand -hex 32` out of a
+    // terminal usually brings a trailing newline with it, and an exact compare
+    // then rejects the correct token with no way to see why.
+    const expected = String(env.TRELLUS_TOKEN || '').trim();
+    if (!expected) {
+      return json({ error: 'worker misconfigured: TRELLUS_TOKEN is not set' }, 500, origin);
+    }
+    if (token !== expected) {
+      return json({ error: 'unauthorized', hint: 'token did not match' }, 401, origin);
     }
 
     let payload;
@@ -93,7 +100,7 @@ export default {
     try {
       // text/plain on purpose: application/json would trigger a preflight on
       // the hop to Apps Script, which is the problem we came here to avoid.
-      res = await fetch(env.SCRIPT_URL, {
+      res = await fetch(String(env.SCRIPT_URL || '').trim(), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(body),
