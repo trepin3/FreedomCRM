@@ -3288,6 +3288,21 @@ function changeUserEmail_(actor, userId, newEmail) {
 // DCID is deliberately excluded: that lead crashed out, and re-uploading is
 // how it gets another attempt. Flagging it would block the one case where a
 // second copy is wanted.
+/**
+ * One canonical form for comparing numbers.
+ *
+ * The sheet holds both shapes — 525 rows as ten digits and 297 as 1 + ten at
+ * the last count — so comparing raw digits made the same person two different
+ * people. The duplicate check missed them and agents uploaded rows that were
+ * already there.
+ */
+function phoneKey_(v) {
+  const d = String(v || '').replace(/\D/g, '');
+  if (d.length === 11 && d.charAt(0) === '1') return d.slice(1);
+  if (d.length > 11) return (d.charAt(0) === '1' ? d.substr(1, 10) : d.substr(0, 10));
+  return d;
+}
+
 function existingLeads_(me, body) {
   if (!me) return { error: 'No user record.' };
   const state = String(body.state || '').toUpperCase();
@@ -3295,7 +3310,7 @@ function existingLeads_(me, body) {
 
   const wanted = {};
   (body.phones || []).forEach(function(p) {
-    const d = String(p || '').replace(/\D/g, '');
+    const d = phoneKey_(p);
     if (d) wanted[d] = true;
   });
   if (!Object.keys(wanted).length) return { matches: {} };
@@ -3308,7 +3323,7 @@ function existingLeads_(me, body) {
   const matches = {};
 
   data.forEach(function(row) {
-    const phone = String(row[ix_('Phone')] || '').replace(/\D/g, '');
+    const phone = phoneKey_(row[ix_('Phone')]);
     if (!phone || !wanted[phone]) return;
     if (!canSee_(row, me)) return;                 // not theirs to know about
 

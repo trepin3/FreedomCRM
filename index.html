@@ -4001,8 +4001,15 @@ function applyExistingResolution(objs) {
 // vendor files, often picks the worse record — so the uploader decides.
 const DUP_FIELDS = ['Name', 'Address', 'City', 'Zip', 'Age', 'Email'];
 
+// One canonical form, so the same person stored two ways is one person. The
+// sheet holds both shapes — most rows as ten digits, the rest as 1 + ten — and
+// comparing raw digits meant a duplicate slipped through and the "already in
+// your CRM" warning never fired.
 function dupPhone(o) {
-  return String(o['Phone'] || '').replace(/\D/g, '');
+  const d = String(o['Phone'] || '').replace(/\D/g, '');
+  if (d.length === 11 && d.charAt(0) === '1') return d.slice(1);
+  if (d.length > 11) return (d.charAt(0) === '1' ? d.substr(1, 10) : d.substr(0, 10));
+  return d;
 }
 
 // Groups of rows sharing a number, in the order they appear in the file.
