@@ -114,7 +114,18 @@ An outcome we have not agreed records the call and flags it rather than guessing
 a disposition — guessing takes a live lead out of the pool. An unmatched
 `rep_email` still records the call against the lead and marks it unattributed.
 
-**Remaining: the Cloudflare Worker.** The receiver trusts its caller, so the
+**Complete and tested end to end, 2026-08-25.** Worker live at
+`trellus-relay.kepler-benefic-ins.workers.dev`. Verified: bad token 401,
+preflight 204 with the Authorization header echoed, a real event applied, the
+same event resent returned `duplicate:true` and did **not** increment Attempts,
+an unagreed outcome flagged rather than guessed, a missing lead 404. Test
+residue removed with `cleanupTrellusTestsRun()`.
+
+Still owed to Ajinkya: the Worker URL, the bearer token, the origin, the
+`?lead_id=` pattern, and a question — which outcome strings does Trellus
+actually send? The ten mapped in `TRELLUS_OUTCOMES` were guesses.
+
+**Superseded: the Cloudflare Worker.** The receiver trusts its caller, so the
 Apps Script URL must never go to Trellus — the Worker URL does. The Worker
 answers the preflight, checks their bearer token, and forwards with the shared
 secret.
