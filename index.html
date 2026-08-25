@@ -2020,7 +2020,7 @@ function renderLead() {
       </div>
       <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
+        <a class="lead-phone" href="tel:${telHref(phoneClean)}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -2038,7 +2038,7 @@ function renderLead() {
       <div id="callActionArea">
         ${tcpa.blocked
           ? `<button class="call-primary-btn disabled" disabled>📞 ${tcpa.reason}</button>`
-          : `<a class="call-primary-btn" href="tel:+${phoneClean}" onclick="startCall()">📞 Call</a>`
+          : `<a class="call-primary-btn" href="tel:${telHref(phoneClean)}" onclick="startCall()">📞 Call</a>`
         }
         <button class="script-tool-btn" onclick="openScriptTool()">📋 Open Script Tool</button>
       </div>
@@ -2161,6 +2161,29 @@ function getLeadLocalTime(stateCode) {
   } catch (e) { return '—'; }
 }
 
+// Every US number here is stored as ten digits, and prefixing a bare "+" made
+// the phone read the area code as a country code: (440) became +44 the UK,
+// (216) became +216 Tunisia, (220) became +220 Gambia. Calls left the country
+// and the lead was never reached.
+//
+// E.164 or nothing: ten digits get +1, eleven starting with 1 get +, and
+// anything else is passed through as dialled rather than guessed at.
+function telHref(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length === 10) return '+1' + d;
+  if (d.length === 11 && d.charAt(0) === '1') return '+' + d;
+  // Longer than eleven is a US number with an extension stuck on the end —
+  // this CRM holds US leads only, one sheet per state, so there is no
+  // international case to preserve. Treating the extra digits as a country
+  // code is what sent calls to Gambia in the first place.
+  if (d.length > 11) {
+    const head = d.charAt(0) === '1' ? d.substr(1, 10) : d.substr(0, 10);
+    if (head.length === 10) return '+1' + head;
+  }
+  return d;                                    // short — extension or 911
+}
+
 function checkTCPA(stateCode) {
   const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
   try {
@@ -2191,6 +2214,14 @@ function updateLocalTime() {
 // ══════════════════════════════════════════════════
 function startCall() {
   state.cardState = 'incall';
+  // Tell the server the call is live. Dialling backgrounds the browser and iOS
+  // suspends its timers, so the heartbeat stops — without this the idle sweep
+  // reclaims the whole stack fifteen minutes into a long call.
+  const onCall = state.leads[state.currentIdx];
+  if (onCall) {
+    api('POST', { action: 'callStarted', state: onCall.state, rowIndex: onCall.rowIndex })
+      .catch(function() {});
+  }
   state.callStart = new Date().toISOString();
   // Bump session dial-attempt counter for the current lead
   const lead = state.leads[state.currentIdx];
@@ -2269,7 +2300,7 @@ function dialAgain() {
   const phoneClean = String(lead.phone || '').replace(/\D/g, '');
   // Trigger native phone dialer
   markDialing();
-  window.location.href = 'tel:+' + phoneClean;
+  window.location.href = 'tel:' + telHref(phoneClean);
   // Restart the in-call state; startCall bumps the attempt counter
   startCall();
 }
@@ -3078,7 +3109,7 @@ function renderMyCallbacks() {
         <span class="cb-item-status ${status}">${label}</span>
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
-          <a class="cb-mini-btn" href="tel:+${phoneClean}">📞 Call</a>
+          <a class="cb-mini-btn" href="tel:${telHref(phoneClean)}">📞 Call</a>
           <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
@@ -3326,7 +3357,7 @@ function renderLeadView() {
   if (cs === 'default') {
     actionHTML = (tcpa.blocked
         ? `<button class="call-primary-btn disabled" disabled>📞 ${tcpa.reason}</button>`
-        : `<a class="call-primary-btn" href="tel:+${phoneClean}" onclick="startLeadViewCall()">📞 Call</a>`)
+        : `<a class="call-primary-btn" href="tel:${telHref(phoneClean)}" onclick="startLeadViewCall()">📞 Call</a>`)
       + `<button class="script-tool-btn" onclick="openScriptTool()">📋 Open Script Tool</button>`;
   } else if (cs === 'incall') {
     actionHTML = `
@@ -3356,7 +3387,7 @@ function renderLeadView() {
         <button class="lead-cb-btn" style="margin-left:10px;" onclick="openEditLead('leadView')">✏️ Edit</button>
       </div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:+${phoneClean}">📞 ${phoneDisplay}</a>
+        <a class="lead-phone" href="tel:${telHref(phoneClean)}">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -3531,7 +3562,7 @@ function doSearch() {
             <div class="search-result-phone">${formatPhone(r.phone)}</div>
             <div class="search-result-meta">${escapeHtml(r.city || '')} ${escapeHtml(r.state || '')} ${r.callbackDate ? '• Scheduled: ' + r.callbackDate + ' ' + r.callbackTime : ''}</div>
             <div class="search-actions-grid">
-              <a class="search-action-btn sa-call" href="tel:+${phoneClean}">📞 Call</a>
+              <a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}">📞 Call</a>
               <button class="search-action-btn sa-sold" onclick="searchSold('${r.state}',${r.rowIndex},'${r.sourceTab}')">✅ Sold</button>
               <button class="search-action-btn sa-dcid" onclick="searchDCID('${r.state}',${r.rowIndex},'${r.sourceTab}')">🚫 DCID</button>
               <button class="search-action-btn sa-wrong" onclick="searchWrong('${r.state}',${r.rowIndex},'${r.sourceTab}')">📵 Wrong #</button>
