@@ -1525,6 +1525,17 @@ function actionCallStarted(me, body) {
   v[0][2] = now;      // Last Activity At
   v[0][3] = now;      // Call Open At
   range.setValues(v);
+
+  // Calls started from the callbacks tab or from search never pass through the
+  // dialer, so nothing else would ever record them — an agent who worked only
+  // their callbacks showed zero calls. Attempts is deliberately untouched: the
+  // disposition owns that count, and incrementing here would double a normal dial.
+  if (body.record) {
+    writeCells_(sheet, row, {
+      'Last Call Agent': body.agent || '',
+      'Last Call Start': body.callStart || now
+    });
+  }
   return { success: true };
 }
 

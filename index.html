@@ -2020,7 +2020,7 @@ function renderLead() {
       </div>
       <div class="lead-name">${escapeHtml(lead.name || 'Unknown')}</div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:${telHref(phoneClean)}">📞 ${phoneDisplay}</a>
+        <a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startCall()">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state]}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -2189,6 +2189,17 @@ function telHref(phone) {
 // midnight their time — three hours past the legal window — and a thrown error
 // returned blocked:false as well. Refusing to dial costs one call; dialling
 // outside the window costs $500 to $1,500 of statutory damages.
+// Dialling from the callbacks tab, from search, or by tapping the number itself
+// never went through the dialer, so none of it was counted. An agent who spent
+// the day on their callbacks showed zero calls and three appointments, which
+// reads as bookings from nowhere.
+function logCallFrom(stateCode, rowIndex) {
+  if (!stateCode || !rowIndex) return;
+  api('POST', { action: 'callStarted', state: stateCode, rowIndex: rowIndex,
+                record: true, callStart: new Date().toISOString() })
+    .catch(function() {});
+}
+
 function checkTCPA(stateCode) {
   const tz = CONFIG.STATE_TIMEZONES[String(stateCode || '').trim().toUpperCase()];
   if (!tz) {
@@ -3120,7 +3131,8 @@ function renderMyCallbacks() {
         <span class="cb-item-status ${status}">${label}</span>
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
-          <a class="cb-mini-btn" href="tel:${telHref(phoneClean)}">📞 Call</a>
+          <a class="cb-mini-btn" href="tel:${telHref(phoneClean)}"
+             onclick="markDialing();logCallFrom('${cb.state}',${cb.rowIndex})">📞 Call</a>
           <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
           <button class="cb-mini-btn" onclick="rescheduleCallback('${cb.state}',${cb.rowIndex})">Reschedule</button>
           <button class="cb-mini-btn" onclick="returnCallbackToPool('${cb.state}',${cb.rowIndex})">Remove</button>
@@ -3398,7 +3410,7 @@ function renderLeadView() {
         <button class="lead-cb-btn" style="margin-left:10px;" onclick="openEditLead('leadView')">✏️ Edit</button>
       </div>
       <div class="lead-phone-wrap">
-        <a class="lead-phone" href="tel:${telHref(phoneClean)}">📞 ${phoneDisplay}</a>
+        <a class="lead-phone" href="tel:${telHref(phoneClean)}" onclick="startLeadViewCall()">📞 ${phoneDisplay}</a>
         <div class="lead-localtime">🕐 ${CONFIG.STATE_NAMES[lead.state] || lead.state}: ${localTime}</div>
         ${lead.lead_source ? '<div class="lead-meta">📋 Lead Source: ' + escapeHtml(lead.lead_source) + '</div>' : ''}
       </div>
@@ -3573,7 +3585,8 @@ function doSearch() {
             <div class="search-result-phone">${formatPhone(r.phone)}</div>
             <div class="search-result-meta">${escapeHtml(r.city || '')} ${escapeHtml(r.state || '')} ${r.callbackDate ? '• Scheduled: ' + r.callbackDate + ' ' + r.callbackTime : ''}</div>
             <div class="search-actions-grid">
-              <a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}">📞 Call</a>
+              <a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}"
+                 onclick="markDialing();logCallFrom('${r.state}',${r.rowIndex})">📞 Call</a>
               <button class="search-action-btn sa-sold" onclick="searchSold('${r.state}',${r.rowIndex},'${r.sourceTab}')">✅ Sold</button>
               <button class="search-action-btn sa-dcid" onclick="searchDCID('${r.state}',${r.rowIndex},'${r.sourceTab}')">🚫 DCID</button>
               <button class="search-action-btn sa-wrong" onclick="searchWrong('${r.state}',${r.rowIndex},'${r.sourceTab}')">📵 Wrong #</button>
