@@ -2210,12 +2210,62 @@ function apiBatchLeads_(me, batchId) {
 }
 
 /**
+ * How many stored numbers the old dialler would have sent abroad.
+ *
+ * The bug only affected numbers stored as ten digits: "4402415268" became
+ * +44 0241 5268, the United Kingdom. A number stored with its leading 1 —
+ * "12163335916" — produced +1 216 333 5916 and dialled correctly, which is why
+ * the ten wrong-number leads from 24 August turned out to be genuine.
+ *
+ * This counts both shapes so the real exposure is known rather than guessed.
+ */
+function misdialExposure() {
+  const tally = { ten: 0, eleven: 0, other: 0, sample: [] };
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const nums = sheet.getRange(2, COL['Phone'], lr - 1, 1).getValues();
+    nums.forEach(function(r, i) {
+      const d = String(r[0] || '').replace(/\D/g, '');
+      if (!d) return;
+      if (d.length === 10) {
+        tally.ten++;
+        if (tally.sample.length < 8) {
+          tally.sample.push(state + ' row ' + (i + 2) + '  ' + d +
+                            '  would have dialled +' + d.slice(0, 3) + '\u2026');
+        }
+      } else if (d.length === 11 && d.charAt(0) === '1') tally.eleven++;
+      else tally.other++;
+    });
+  });
+  const total = tally.ten + tally.eleven + tally.other;
+  const msg = [
+    'Stored phone shapes across every state sheet:',
+    '  ten digits   ' + tally.ten + '   <- these misdialled internationally',
+    '  1 + ten      ' + tally.eleven + '   dialled correctly all along',
+    '  anything else ' + tally.other,
+    '  total        ' + total,
+    '',
+    tally.ten ? 'Examples of what went abroad:' : 'Nothing was affected.',
+    tally.sample.join('\n')
+  ].join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+/**
  * Undoes wrong-number dispositions caused by the international dialling bug.
  *
  * Until 2026-08-24 every tel: link prefixed a bare "+" to a ten-digit number,
  * so the phone read the area code as a country code — (216) dialled Tunisia,
  * (440) the United Kingdom, (220) Gambia. Agents heard the wrong person, or
  * nobody, and marked the lead as a wrong number. The numbers were fine.
+ *
+ * CHECK THE NUMBERS BEFORE RESTORING. Only leads stored as ten digits were
+ * misdialled; one stored as 1 + ten digits dialled correctly, so a wrong number
+ * on one of those is genuine and restoring it puts a dead number back in the
+ * pool. Run misdialExposure() first to see which shape your data is in.
  *
  * Call with no arguments to see what would change. Nothing is written until
  * confirm is true.
