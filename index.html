@@ -1193,6 +1193,30 @@ function renderEnvBanner() {
   document.body.classList.add('has-env-banner');
 }
 
+// A lead is addressable by id: ?lead_id=OH-000513 opens straight to it. This is
+// what lets anything outside the app point at a specific lead — a dialer taking
+// over the call button, a link in an email, a webhook writing a result back.
+// Lead IDs are stable for life because rows never move, which is what makes an
+// external reference safe to hold onto.
+async function openLeadFromUrl() {
+  const id = new URLSearchParams(location.search).get('lead_id');
+  if (!id) return false;
+  try {
+    const r = await api('GET', { action: 'leadById', leadId: id });
+    if (r.error || !r.lead) {
+      alert(r.error === 'not_found' ? 'No lead with id ' + id
+          : r.error === 'not_permitted' ? 'That lead is not visible to you.'
+          : 'Could not open ' + id + ': ' + (r.error || 'unknown'));
+      return false;
+    }
+    openLeadView(r.lead);
+    return true;
+  } catch (e) {
+    alert('Could not open ' + id + ': ' + e.message);
+    return false;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   renderEnvBanner();
   // Restore theme
@@ -1339,6 +1363,18 @@ function enterAfterSignIn() {
   if (jump) jump.textContent = portalLabel;
   const pickerJump = document.getElementById('pickerPortalBtn');
   if (pickerJump) pickerJump.textContent = portalLabel;
+  // A ?lead_id= in the URL wins over the normal landing screen — someone
+  // following a link to a specific lead means to see that lead, not a dashboard.
+  // It runs here rather than on DOMContentLoaded because it needs a session.
+  if (new URLSearchParams(location.search).get('lead_id')) {
+    openLeadFromUrl().then(function(opened) {
+      if (opened) return;
+      if (leads) { show('adminView'); switchAdminSection('stats'); loadAdminData(); }
+      else { show('pickerView'); loadStates(); }
+    });
+    return;
+  }
+
   if (leads) {
     ['secStats', 'secTeam', 'secDcid'].forEach(function(id) {
       const el = document.getElementById(id);
