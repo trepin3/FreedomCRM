@@ -2184,15 +2184,26 @@ function telHref(phone) {
   return d;                                    // short — extension or 911
 }
 
+// Fails CLOSED. Every unknown here used to allow the call: a state not in the
+// table fell back to Pacific, which for an eastern lead permits dialling until
+// midnight their time — three hours past the legal window — and a thrown error
+// returned blocked:false as well. Refusing to dial costs one call; dialling
+// outside the window costs $500 to $1,500 of statutory damages.
 function checkTCPA(stateCode) {
-  const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
+  const tz = CONFIG.STATE_TIMEZONES[String(stateCode || '').trim().toUpperCase()];
+  if (!tz) {
+    return { blocked: true, reason: 'No state on this lead — cannot check the calling window' };
+  }
   try {
     const hourStr = new Date().toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false });
     const hour = parseInt(hourStr, 10);
+    if (!isFinite(hour)) return { blocked: true, reason: 'Could not read the local time' };
     if (hour < CONFIG.TCPA_START_HOUR) return { blocked: true, reason: 'Too early to call' };
     if (hour >= CONFIG.TCPA_END_HOUR) return { blocked: true, reason: 'Too late to call' };
     return { blocked: false };
-  } catch (e) { return { blocked: false }; }
+  } catch (e) {
+    return { blocked: true, reason: 'Could not check the calling window' };
+  }
 }
 
 function updateLocalTime() {
@@ -4340,7 +4351,12 @@ function normalizeState(v) {
 
   // Tolerate punctuation and doubled spacing before giving up.
   const cleaned = upper.replace(/\./g, '').replace(/\s+/g, ' ').trim();
-  return STATE_BY_NAME[upper] || STATE_BY_NAME[cleaned] || upper;
+  // Empty, not the raw input. Falling back to `upper` let anything through as
+  // if it were a state — "Freedonia" became "FREEDONIA", which matches no state
+  // sheet and, now that the calling-window check fails closed, produces a lead
+  // that can never be dialled. Returning empty hands it to the unsupported-row
+  // path, which tells the uploader instead of writing a row nobody can use.
+  return STATE_BY_NAME[upper] || STATE_BY_NAME[cleaned] || '';
 }
 
 // Which pasted column holds the state, if any.
