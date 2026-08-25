@@ -1154,6 +1154,7 @@ function doPost(e) {
                      : { error: 'auth_required' };
         break;
       }
+      case 'callStarted': result = actionCallStarted(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -1458,7 +1459,8 @@ function setStatus_(body, status, extra) {
     'Status': status,
     'Status At': now,
     'Status By': body.agent || '',
-    'Status Reason': body.reason || ''
+    'Status Reason': body.reason || '',
+    'Call Open At': ''          // the call is over; back to the idle clock
   }, extra || {});
 
   // Log the call that produced this disposition, if there was one.
@@ -1495,6 +1497,35 @@ function actionDCID(body) {
     'DCID Agent': body.agent || '',
     'DCID Review': 'pending'
   });
+}
+
+/**
+ * Marks a lead as being on a live call.
+ *
+ * releaseStale_ has always honoured Call Open At — a lead with one set is held
+ * for up to two hours instead of fifteen minutes — but nothing ever wrote it,
+ * so the branch was dead. On a phone that mattered: dialling backgrounds the
+ * browser, iOS suspends its timers, the heartbeat stops, and a call longer than
+ * fifteen minutes had the agent's whole stack swept out from under them. They
+ * came back to "your leads were released", which reads as being logged out.
+ */
+function actionCallStarted(me, body) {
+  const state = String(body.state || '').toUpperCase();
+  if (!sheets_()[state]) return { error: 'bad state' };
+  const row = Number(body.rowIndex);
+  if (!row || row < 2) return { error: 'bad row' };
+
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const held = String(sheet.getRange(row, COL['Locked By']).getValue() || '');
+  if (held && !lockOwnerIsBody_(held, body)) return { error: 'lead_released' };
+
+  const now = stamp_();
+  const range = sheet.getRange(row, COL['Locked By'], 1, 4);   // cols 6-9
+  const v = range.getValues();
+  v[0][2] = now;      // Last Activity At
+  v[0][3] = now;      // Call Open At
+  range.setValues(v);
+  return { success: true };
 }
 
 function actionSold(body) {
