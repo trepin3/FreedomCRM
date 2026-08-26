@@ -1058,6 +1058,8 @@ function doGet(e) {
     let result;
     switch (action) {
       // The agent is whoever the token says, never e.parameter.agent.
+      case 'statLeads':   result = statLeads(userByEmail_(user.email), e.parameter.range,
+                                               e.parameter.metric, e.parameter.agent); break;
       case 'leadById':    result = leadById_(userByEmail_(user.email), e.parameter.leadId); break;
       case 'getSold':     result = getSold(userByEmail_(user.email), e.parameter.range); break;
       case 'getLeads':    result = getLeads(e.parameter.state, user.name, userByEmail_(user.email), e.parameter.size);
@@ -2002,6 +2004,87 @@ function scopeNamesFor_(me) {
   return set;
 }
 
+/**
+ * One definition of what each headline number counts, shared by the totals and
+ * by the drill-down that lists the leads behind them.
+ *
+ * Kept together deliberately. Computed separately they drift, and a drill-down
+ * that shows eleven leads under a number reading twelve is worse than no
+ * drill-down — it makes every other figure on the page suspect.
+ *
+ *   [ status, date column, agent column, per-state key, totals key ]
+ */
+const DISPOSITION_METRICS = [
+  [STATUS.SOLD,     'Sold Date',         'Sold Agent',         'sold',      'sales'],
+  [STATUS.DCID,     'DCID Date',         'DCID Agent',         'dcid',      'dcid'],
+  [STATUS.WRONG,    'Wrong Number Date', 'Wrong Number Agent', 'wrong',     'wrong'],
+  [STATUS.CALLBACK, 'Scheduled Date',    'Scheduled By',       'callbacks', 'callbacks']
+];
+
+/**
+ * The leads behind one number on the dashboard.
+ *
+ * `metric` is a totals key — sales, dcid, wrong, callbacks — or 'calls', which
+ * is not a disposition: a call is recorded on the lead whatever it was
+ * dispositioned as, so it reads different columns.
+ */
+function statLeads(me, range, metric, agentName) {
+  if (!me) return { error: 'auth_required' };
+  const scope = scopeNamesFor_(me);
+  const cutoff = getRangeCutoff(range || 'today');
+  const who = String(agentName || '').trim().toLowerCase();
+  const want = String(metric || '').trim().toLowerCase();
+  const def = DISPOSITION_METRICS.filter(function(d) { return d[4] === want; })[0];
+  if (!def && want !== 'calls') return { error: 'unknown metric: ' + metric };
+
+  const out = [];
+  activeStates_().forEach(function(state) {
+    const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    data.forEach(function(row, i) {
+      let at, by;
+      if (want === 'calls') {
+        at = row[ix_('Last Call Start')];
+        by = row[ix_('Last Call Agent')];
+      } else {
+        if (String(row[ix_('Status')] || '').toLowerCase() !== def[0]) return;
+        at = row[ix_(def[1])];
+        by = row[ix_(def[2])];
+      }
+      if (!at || !dateInRange(at, cutoff)) return;
+      if (!inScope_(scope, by)) return;
+      if (who && String(by || '').trim().toLowerCase() !== who) return;
+
+      out.push({
+        state: state, rowIndex: i + 2,
+        leadId: String(row[ix_('Lead ID')] || ''),
+        name: String(row[ix_('Name')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        city: String(row[ix_('City')] || ''),
+        by: String(by || ''),
+        at: fmtDateTime(at),
+        sort: parseStamp_(at),
+        status: String(row[ix_('Status')] || ''),
+        ap: Number(row[ix_('AP Amount')]) || 0,
+        premium: row[ix_('Monthly Premium')],
+        carrier: String(row[ix_('Carrier')] || ''),
+        reason: String(row[ix_('Status Reason')] || '')
+      });
+    });
+  });
+
+  out.sort(function(a, b) { return b.sort - a.sort; });
+  return {
+    metric: want, range: range || 'today', agent: agentName || '',
+    count: out.length,
+    ap: out.reduce(function(t, o) { return t + o.ap; }, 0),
+    leads: out
+  };
+}
+
 function inScope_(scope, agentName) {
   if (!scope) return true;                              // admin, or unscoped
   return !!scope[String(agentName || '').trim().toLowerCase()];
@@ -2048,13 +2131,7 @@ function adminStats(range, scope) {
         }
 
         // Dispositions in range, each dated and attributed by its own columns.
-        const disp = [
-          [STATUS.SOLD,     'Sold Date',         'Sold Agent',         'sold',      'sales'],
-          [STATUS.DCID,     'DCID Date',         'DCID Agent',         'dcid',      'dcid'],
-          [STATUS.WRONG,    'Wrong Number Date', 'Wrong Number Agent', 'wrong',     'wrong'],
-          [STATUS.CALLBACK, 'Scheduled Date',    'Scheduled By',       'callbacks', 'callbacks']
-        ];
-        disp.forEach(function(d) {
+        DISPOSITION_METRICS.forEach(function(d) {
           if (status !== d[0]) return;
           const at = row[ix_(d[1])], by = row[ix_(d[2])];
           if (!at || !dateInRange(at, cutoff) || !inScope_(scope, by)) return;
