@@ -1155,6 +1155,13 @@ function doPost(e) {
         result = who ? { batches: myBatches_(who) } : { error: 'auth_required' };
         break;
       }
+      // Autopilot booked an appointment. Mirror it here so the lead leaves the
+      // dialable pool, shows in that agent's callbacks, and is held for them.
+      case 'apiBookCallback': {
+        const who = verifyAccessToken_(body.token);
+        result = who ? apiBookCallback_(who, body) : { error: 'auth_required' };
+        break;
+      }
       case 'apiBatchLeads': {
         const who = verifyAccessToken_(body.token);
         result = who ? apiBatchLeads_(who, String(body.batchId || ''))
@@ -2495,6 +2502,70 @@ function restoreWrongNumbers(onDate, agentName, confirm) {
               (confirm ? '' : '\n\nNothing written. Re-run with confirm = true to apply.');
   Logger.log(msg);
   return msg;
+}
+
+/**
+ * Records an appointment booked outside the CRM — today that means Appointment
+ * Autopilot, after a prospect picked a time by email.
+ *
+ * Deliberately a callback rather than anything new. A callback already does
+ * every part of what is wanted: Status takes the lead out of the dialable pool,
+ * Scheduled By puts it in that agent's My Callbacks, and Callback Hold Until
+ * gives them first claim for 72 hours past the appointment, which getLeads
+ * already honours. Inventing a second kind of hold would mean two mechanisms
+ * that have to agree forever.
+ *
+ * Not the dial lock. That is a dial-session reservation and releaseStale_ frees
+ * it after fifteen idle minutes — it would be gone long before the appointment.
+ */
+function apiBookCallback_(me, body) {
+  const leadId = String(body.leadId || '').trim().toUpperCase();
+  if (!leadId) return { error: 'no leadId' };
+  const at = String(body.startsAt || '').trim();
+  const m = at.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return { error: 'startsAt must be yyyy-MM-ddTHH:mm' };
+
+  const found = leadRowById_(leadId);
+  if (!found) return { error: 'not_found' };
+  const row = found.sheet.getRange(found.rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+  if (!canSee_(row, me)) return { error: 'not_permitted' };
+
+  const status = String(row[ix_('Status')] || '').toLowerCase();
+  if (status === STATUS.SOLD || status === STATUS.ARCHIVED || status === STATUS.REMOVED) {
+    return { error: 'lead is ' + status };
+  }
+
+  const dateVal = m[2] + '/' + m[3] + '/' + m[1];
+  const timeVal = m[4] + ':' + m[5];
+  const now = stamp_();
+
+  // The agent who booked it owns it from here. A lead someone has an
+  // appointment with should not stay in anyone else's pool.
+  const write = {
+    'Status': STATUS.CALLBACK,
+    'Status At': now,
+    'Status By': me.name || me.email,
+    'Status Reason': 'Appointment booked by email',
+    'Callback Date': dateVal,
+    'Callback Time': timeVal,
+    'Scheduled By': me.name || '',
+    'Scheduled Date': now,
+    'Callback Hold Until': holdUntil_(dateVal, timeVal),
+    'Owner ID': me.id || row[ix_('Owner ID')],
+    'Visibility': VISIBILITY.EXCLUSIVE,
+    // Any dial reservation is stale the moment this lead has an appointment.
+    'Locked By': '', 'Locked At': '', 'Call Open At': ''
+  };
+  writeCells_(found.sheet, found.rowIndex, write);
+
+  // Text, or Sheets reads the date in its own timezone and shifts it a day.
+  found.sheet.getRange(found.rowIndex, COL['Callback Date']).setNumberFormat('@').setValue(dateVal);
+  found.sheet.getRange(found.rowIndex, COL['Callback Time']).setNumberFormat('@').setValue(timeVal);
+
+  invalidateStates_(me);
+  logActivity_(me, 'autopilotBooking', leadId + ' — ' + dateVal + ' ' + timeVal, found.state);
+  return { success: true, leadId: leadId, state: found.state,
+           date: dateVal, time: timeVal, owner: me.name };
 }
 
 // ══════════════════════════════════════════════════════════════════
