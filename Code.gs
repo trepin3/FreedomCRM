@@ -3831,7 +3831,45 @@ function removeDummyLeads() {
 // tab is created with the current header, so Lead IDs start from 000001 again.
 //
 // Delete the Leads_cleared_* tabs by hand once you are certain.
-function clearAllLeads() {
+/**
+ * Takes every lead out of rotation, in every state.
+ *
+ * Written before launch, when wiping the sheet was routine. It is not routine
+ * now — agents are dialling, and one run from the editor dropdown empties their
+ * stacks mid-call. Every other destructive function here refuses to run without
+ * ENV_LABEL; this one never did.
+ *
+ * Staging runs freely. Production needs the phrase, and the editor's Run button
+ * passes no arguments, so picking this from the dropdown by accident cannot
+ * wipe anything — it reports what it would have done and stops.
+ *
+ *   clearAllLeads()                        // staging: wipes. production: refuses.
+ *   clearAllLeads('WIPE PRODUCTION LEADS') // production: wipes.
+ *
+ * Rows are never deleted either way — the tab is renamed Leads_cleared_<stamp>
+ * and a fresh one takes its place, so a mistake is recoverable.
+ */
+function clearAllLeads(confirmPhrase) {
+  const PHRASE = 'WIPE PRODUCTION LEADS';
+  if (!envLabel_() && String(confirmPhrase || '') !== PHRASE) {
+    let total = 0;
+    const per = [];
+    Object.keys(sheets_()).forEach(function(code) {
+      try {
+        const sh = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+        const n = sh ? Math.max(0, sh.getLastRow() - 1) : 0;
+        if (n) { per.push(code + ': ' + n); total += n; }
+      } catch (e) {}
+    });
+    const msg = 'REFUSED — this is production.\n\n' +
+                'Would have cleared ' + total + ' leads:\n  ' + per.join('\n  ') +
+                '\n\nAgents are dialling against these. If you really mean it, call:\n' +
+                "  clearAllLeads('" + PHRASE + "')\n\n" +
+                'The old rows are kept as Leads_cleared_<timestamp> either way.';
+    Logger.log(msg);
+    return msg;
+  }
+
   const stamp = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd_HHmm');
   const report = [];
   let wiped = 0;
