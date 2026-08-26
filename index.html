@@ -117,6 +117,26 @@ body.is-admin .admin-only{display:flex;}
   cursor:not-allowed;text-decoration:none;}
 .cb-mini-btn.blocked,.search-action-btn.blocked{opacity:.45;cursor:not-allowed;
   pointer-events:none;}
+.admin-stat.drill{cursor:pointer;transition:background .15s,transform .15s;}
+.admin-stat.drill:hover{background:var(--card);transform:translateY(-1px);}
+.admin-stat.drill:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
+.admin-stat.drill .admin-stat-num::after{content:' ›';opacity:.35;font-size:16px;}
+.admin-stat.zero{cursor:default;opacity:.55;}
+.admin-stat.zero .admin-stat-num::after{content:'';}
+.drill-row{display:grid;grid-template-columns:1.6fr 1.2fr 1fr 1fr;gap:10px;padding:10px 4px;
+  border-top:1px solid var(--border);font-size:13px;align-items:center;}
+.drill-row:hover{background:var(--input-bg);}
+.drill-head{display:grid;grid-template-columns:1.6fr 1.2fr 1fr 1fr;gap:10px;padding:0 4px 6px;
+  font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);}
+.drill-name{font-weight:700;color:var(--text);}
+.drill-sub{font-size:11px;color:var(--text-secondary);margin-top:1px;}
+.drill-open{background:none;border:0;color:var(--primary);font:600 12px inherit;cursor:pointer;padding:0;text-align:left;}
+.drill-scroll{max-height:52vh;overflow:auto;}
+@media(max-width:560px){
+  .drill-row,.drill-head{grid-template-columns:1.4fr 1fr;}
+  .drill-row>*:nth-child(3),.drill-head>*:nth-child(3),
+  .drill-row>*:nth-child(4),.drill-head>*:nth-child(4){display:none;}
+}
 .env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
   font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
@@ -922,6 +942,18 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('ersDoneModal')">Cancel</button>
       <button class="mini-btn danger" onclick="markErsNoShow()">No show</button>
       <button class="modal-btn modal-btn-confirm" onclick="confirmErsDone()">Complete</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="drillModal">
+  <div class="modal-card" style="max-width:720px;">
+    <div class="modal-title" id="drillTitle">Leads</div>
+    <div class="modal-sub" id="drillSub"></div>
+    <div id="drillBody"><div class="empty-state"><div class="spinner"></div></div></div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('drillModal')">Close</button>
+      <button class="mini-btn" onclick="exportDrill()">Download CSV</button>
     </div>
   </div>
 </div>
@@ -5357,11 +5389,11 @@ function renderAdmin(stats, locksData) {
   // Aggregate totals
   html += '<div class="admin-section"><div class="admin-section-title">Team Totals — ' + stats.range + '</div>' +
     '<div class="admin-grid stats">' +
-    statBox('Calls', totals.calls || 0) +
-    statBox('Sales', totals.sales || 0) +
-    statBox('DCID', totals.dcid || 0) +
-    statBox('Callbacks', totals.callbacks || 0) +
-    statBox('Wrong #', totals.wrong || 0) +
+    statBox('Calls', totals.calls || 0, 'calls') +
+    statBox('Sales', totals.sales || 0, 'sales') +
+    statBox('DCID', totals.dcid || 0, 'dcid') +
+    statBox('Callbacks', totals.callbacks || 0, 'callbacks') +
+    statBox('Wrong #', totals.wrong || 0, 'wrong') +
     '</div></div>';
 
   // Per state
@@ -5407,11 +5439,11 @@ function renderAdmin(stats, locksData) {
     html += '<table class="admin-table"><thead><tr><th>Agent</th><th>Calls</th><th>Sales</th><th>DCID</th><th>Wrong #</th><th>Callbacks</th><th>Last Active</th></tr></thead><tbody>';
     agents.forEach(a => {
       html += '<tr><td><strong>' + escapeHtml(a.agent) + '</strong></td>' +
-        '<td>' + a.calls + '</td>' +
-        '<td>' + a.sales + '</td>' +
-        '<td>' + a.dcid + '</td>' +
-        '<td>' + a.wrong + '</td>' +
-        '<td>' + a.callbacks + '</td>' +
+        cell(a.calls, 'calls', a.agent) +
+        cell(a.sales, 'sales', a.agent) +
+        cell(a.dcid, 'dcid', a.agent) +
+        cell(a.wrong, 'wrong', a.agent) +
+        cell(a.callbacks, 'callbacks', a.agent) +
         '<td style="font-size:11px;color:var(--text-secondary);">' + (a.lastActive || '—') + '</td></tr>';
     });
     html += '</tbody></table>';
@@ -5421,8 +5453,136 @@ function renderAdmin(stats, locksData) {
   c.innerHTML = html;
 }
 
-function statBox(label, num) {
-  return '<div class="admin-stat"><div class="admin-stat-num">' + num + '</div><div class="admin-stat-label">' + label + '</div></div>';
+// One agent's number in the per-agent table. Same rule as the headline boxes:
+// a zero is not a link, because clicking through to an empty list reads as a
+// bug rather than as an answer.
+function cell(num, metric, agent) {
+  const n = Number(num) || 0;
+  if (!n) return '<td style="color:var(--text-secondary);">0</td>';
+  return '<td><button class="drill-open" style="font-size:13px;font-weight:700;"' +
+    ' title="Show these ' + n + '"' +
+    " onclick=\"openDrill('" + metric + "'," + JSON.stringify(String(agent)) +
+    ",'" + metric + "')\">" + n + '</button></td>';
+}
+
+// A number with nothing behind it is not a link — clicking through to an empty
+// list reads as a bug rather than as an answer.
+function statBox(label, num, metric, agent) {
+  if (!metric || !num) {
+    return '<div class="admin-stat' + (metric ? ' zero' : '') + '">' +
+           '<div class="admin-stat-num">' + num + '</div>' +
+           '<div class="admin-stat-label">' + escapeHtml(label) + '</div></div>';
+  }
+  return '<div class="admin-stat drill" tabindex="0" role="button"' +
+    ' title="Show the ' + num + ' leads behind this"' +
+    ' onclick="openDrill(\'' + metric + '\',\'' + escapeHtml(agent || '') + '\',\'' + escapeHtml(label) + '\')"' +
+    ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();this.click();}">' +
+    '<div class="admin-stat-num">' + num + '</div>' +
+    '<div class="admin-stat-label">' + escapeHtml(label) + '</div></div>';
+}
+
+let drillRows = [];
+
+async function openDrill(metric, agent, label) {
+  document.getElementById('drillTitle').textContent =
+    label + (agent ? ' — ' + agent : '') ;
+  document.getElementById('drillSub').textContent = 'Loading…';
+  document.getElementById('drillBody').innerHTML =
+    '<div class="empty-state"><div class="spinner"></div></div>';
+  document.getElementById('drillModal').classList.add('show');
+  drillRows = [];
+
+  try {
+    const r = await api('GET', { action: 'statLeads', metric: metric,
+                                 range: state.adminRange || 'today', agent: agent || '' });
+    if (r.error) throw new Error(r.error);
+    drillRows = r.leads || [];
+    renderDrill(r, label, agent);
+  } catch (e) {
+    document.getElementById('drillSub').textContent = '';
+    document.getElementById('drillBody').innerHTML =
+      '<div class="empty-state"><div class="empty-title">Could not load</div>' +
+      '<div class="empty-msg">' + escapeHtml(e.message) + '</div></div>';
+  }
+}
+
+function renderDrill(r, label, agent) {
+  const rangeName = { today:'today', week:'this week', month:'this month',
+                      ytd:'year to date', all:'all time' }[r.range] || r.range;
+  document.getElementById('drillSub').textContent =
+    r.count + ' ' + (r.count === 1 ? 'lead' : 'leads') + ' · ' + rangeName +
+    (r.ap ? ' · $' + r.ap.toLocaleString('en-US') + ' AP' : '');
+
+  if (!r.leads.length) {
+    document.getElementById('drillBody').innerHTML =
+      '<div class="empty-state"><div class="empty-msg">Nothing in this range.</div></div>';
+    return;
+  }
+
+  document.getElementById('drillBody').innerHTML =
+    '<div class="drill-head"><span>Lead</span><span>When</span><span>Who</span><span>Detail</span></div>' +
+    '<div class="drill-scroll">' + r.leads.map(function(l) {
+      const detail = l.ap ? '$' + l.ap.toLocaleString('en-US')
+                   : l.carrier ? escapeHtml(l.carrier)
+                   : l.reason ? escapeHtml(l.reason) : '—';
+      return '<div class="drill-row">' +
+        '<div><button class="drill-open" onclick="openDrillLead(\'' + l.state + '\',' + l.rowIndex + ')">' +
+          escapeHtml(l.name || '(no name)') + '</button>' +
+          '<div class="drill-sub">' + escapeHtml(l.city || l.state) + '</div></div>' +
+        '<div>' + escapeHtml(l.at || '—') + '</div>' +
+        '<div>' + escapeHtml(l.by || '—') + '</div>' +
+        '<div>' + detail + '</div></div>';
+    }).join('') + '</div>';
+}
+
+// Opening a lead replaces the list, so the modal closes rather than stacking.
+async function openDrillLead(stateCode, rowIndex) {
+  const l = drillRows.filter(function(x) {
+    return x.state === stateCode && x.rowIndex === rowIndex; })[0];
+  if (!l) return;
+  closeModal('drillModal');
+  const r = await api('GET', { action: 'leadById', leadId: l.leadId });
+  if (r.error || !r.lead) { alert(r.error || 'Could not open that lead.'); return; }
+  openLeadView(r.lead);
+}
+
+/**
+ * A CSV that Excel and Sheets will open without executing anything.
+ *
+ * A cell starting =, +, - or @ is a formula to a spreadsheet, and lead data is
+ * attacker-controlled — a name field reading =HYPERLINK(...) runs when someone
+ * opens the export. Prefixing a tab neutralises it and stays invisible.
+ */
+function csvCell(v) {
+  let t = (v === null || v === undefined) ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = '\t' + t;
+  return '"' + t.replace(/"/g, '""') + '"';
+}
+
+function downloadCsv(head, rows, basename) {
+  const body = [head.map(csvCell).join(',')]
+    .concat(rows.map(function(r) { return r.map(csvCell).join(','); }))
+    .join('\r\n');
+  // The BOM makes Excel read it as UTF-8 rather than mangling accented names.
+  const blob = new Blob(['\ufeff' + body], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = basename + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
+function exportDrill() {
+  if (!drillRows.length) return;
+  const head = ['Lead ID','Name','Phone','City','State','When','Who','Status','AP','Carrier','Reason'];
+  const rows = drillRows.map(function(l) {
+    return [l.leadId, l.name, l.phone, l.city, l.state, l.at, l.by, l.status,
+            l.ap || '', l.carrier, l.reason];
+  });
+  downloadCsv(head, rows, 'freedomcrm-drilldown');
 }
 
 async function forceReleaseAgent(agent, agentId) {
