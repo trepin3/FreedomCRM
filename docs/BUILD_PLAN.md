@@ -121,9 +121,20 @@ same event resent returned `duplicate:true` and did **not** increment Attempts,
 an unagreed outcome flagged rather than guessed, a missing lead 404. Test
 residue removed with `cleanupTrellusTestsRun()`.
 
-Still owed to Ajinkya: the Worker URL, the bearer token, the origin, the
-`?lead_id=` pattern, and a question — which outcome strings does Trellus
-actually send? The ten mapped in `TRELLUS_OUTCOMES` were guesses.
+**Vocabulary agreed 2026-08-25.** Trellus native values are `NO_ANSWER`,
+`NO_ANSWER_VM_MATCH`, `LEFT_VOICEMAIL`, `MENU`, `SCREENER`, `WRONG_NUMBER`,
+`GATEKEEPER`, `NOT_INTERESTED`, `OTHER_ANSWERED`; their adapter translates to
+ours. `MENU`, `SCREENER`, `GATEKEEPER` and `OTHER_ANSWERED` record the call and
+leave the lead dialable — Trellus reached something that was not the prospect.
+A rep's manual disposition overrides the automatic one and is sent instead.
+
+All native values are also mapped directly, so an untranslated one is handled
+rather than flagged. "Crash Out" is our own gloss for DCID, not a separate
+outcome; `crash_out` maps to DCID.
+
+`lead_id` round-trips: read from `?lead_id=`, held with the call session,
+returned on the completed-call POST. `session_id` is unique per call and stable
+across delivery attempts, which is what our idempotency depends on.
 
 **Superseded: the Cloudflare Worker.** The receiver trusts its caller, so the
 Apps Script URL must never go to Trellus — the Worker URL does. The Worker

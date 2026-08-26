@@ -2360,11 +2360,25 @@ const PROCESSED_TAB = 'ProcessedEvents';
 // call and left for a human, rather than guessed into a disposition that takes
 // the lead out of the pool.
 const TRELLUS_OUTCOMES = {
+  // A disposition — the lead leaves the dialable pool.
   'sale': STATUS.SOLD, 'sold': STATUS.SOLD,
   'not_interested': STATUS.DCID, 'dnc': STATUS.DCID, 'do_not_call': STATUS.DCID,
+  'crash_out': STATUS.DCID,        // our own word for DCID; Trellus asked
   'wrong_number': STATUS.WRONG, 'bad_number': STATUS.WRONG,
   'callback': STATUS.CALLBACK, 'scheduled': STATUS.CALLBACK,
-  'no_answer': '', 'voicemail': '', 'busy': '', 'failed': '', 'abandoned': ''
+
+  // Call recorded, lead stays dialable.
+  'no_answer': '', 'voicemail': '', 'busy': '', 'failed': '', 'abandoned': '',
+
+  // Trellus reached something that was not the prospect. Confirmed with them
+  // 2026-08-25: record the call, leave the lead dialable, unless the rep picked
+  // a manual disposition — in which case they send that instead and it wins.
+  'menu': '', 'screener': '', 'gatekeeper': '', 'other_answered': '',
+
+  // Their native values, in case their adapter ever passes one through
+  // untranslated. Cheap insurance: without these a raw NO_ANSWER_VM_MATCH would
+  // be flagged for a human on every no-answer call.
+  'no_answer_vm_match': '', 'left_voicemail': ''
 };
 
 function processedTab_() {
