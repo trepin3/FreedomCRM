@@ -2216,6 +2216,88 @@ function apiBatchLeads_(me, batchId) {
 }
 
 /**
+ * Rewrites every stored phone number to ten digits.
+ *
+ * The sheet holds both shapes because vendors export both. Everything that
+ * reads a number already copes — telHref, dupPhone and phoneKey_ each reduce to
+ * a canonical form — but that is three separate places all remembering to be
+ * careful, and the next person to write code touching a phone number will not
+ * know they have to. This removes the class of problem rather than the
+ * instances of it.
+ *
+ * Ten digits rather than eleven because that is what most of the data already
+ * is and what vendors send. The readers keep their tolerance either way: a new
+ * upload can still arrive in the other shape tomorrow.
+ *
+ *   normalizePhoneData()       // report, change nothing
+ *   normalizePhoneData(true)   // apply
+ */
+function normalizePhoneData(confirm) {
+  const report = [];
+  let changed = 0, already = 0, odd = 0;
+  const oddities = [];
+
+  Object.keys(sheets_()).forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+
+    const range = sheet.getRange(2, COL['Phone'], lr - 1, 1);
+    const vals = range.getValues();
+    let touched = 0;
+
+    vals.forEach(function(r, i) {
+      const raw = String(r[0] || '').trim();
+      if (!raw) return;
+      const d = raw.replace(/\D/g, '');
+      let out;
+
+      if (d.length === 10) out = d;
+      else if (d.length === 11 && d.charAt(0) === '1') out = d.slice(1);
+      else if (d.length > 11) out = (d.charAt(0) === '1' ? d.substr(1, 10) : d.substr(0, 10));
+      else {
+        // Too short to be a US number. Left exactly as found and reported —
+        // guessing at a broken number is worse than leaving it visible.
+        odd++;
+        if (oddities.length < 10) oddities.push(code + ' row ' + (i + 2) + ': ' + raw);
+        return;
+      }
+
+      if (out === raw) { already++; return; }
+      r[0] = out;
+      touched++;
+      changed++;
+    });
+
+    if (touched) {
+      report.push(code + ': ' + touched);
+      if (confirm) {
+        // Text format first. Writing a bare number into a numeric cell drops the
+        // leading digit on anything Sheets decides looks like a number.
+        range.setNumberFormat('@');
+        range.setValues(vals);
+      }
+    }
+  });
+
+  const msg = [
+    (confirm ? 'NORMALISED' : 'WOULD NORMALISE') + ' ' + changed + ' numbers to ten digits',
+    '  already correct: ' + already,
+    '  changed:         ' + changed + (report.length ? '  (' + report.join(', ') + ')' : ''),
+    '  left alone:      ' + odd + ' too short to be a US number',
+    oddities.length ? '\n' + oddities.join('\n') : '',
+    confirm ? '' : '\nNothing written. Re-run as normalizePhoneData(true).'
+  ].join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+/** The editor's Run button passes no arguments, so this applies it. */
+function normalizePhoneDataRun() {
+  return normalizePhoneData(true);
+}
+
+/**
  * How many stored numbers the old dialler would have sent abroad.
  *
  * The bug only affected numbers stored as ten digits: "4402415268" became
