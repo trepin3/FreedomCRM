@@ -2261,6 +2261,34 @@ function telHref(phone) {
   return d;                                    // short — extension or 911
 }
 
+/**
+ * The hour, 0-23, in a given timezone — read as a labelled field rather than
+ * parsed out of a formatted string.
+ *
+ * toLocaleString returned "18" on most machines and the old code did
+ * parseInt on it. On a browser whose locale data renders the date first it
+ * returns something like "2026-09-11 18", and parseInt takes the 2026 — which
+ * is past every cutoff, so every lead read as "Too late to call" on that one
+ * machine while everyone else was fine.
+ *
+ * formatToParts hands back the hour as its own field, so there is nothing to
+ * parse and nothing for a locale to reorder.
+ */
+function leadHour(tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour: 'numeric', hour12: false
+    }).formatToParts(new Date());
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].type !== 'hour') continue;
+      const n = Number(parts[i].value);
+      if (!isFinite(n)) return null;
+      return n === 24 ? 0 : n;      // some engines render midnight as 24
+    }
+  } catch (e) {}
+  return null;
+}
+
 // Fails CLOSED. Every unknown here used to allow the call: a state not in the
 // table fell back to Pacific, which for an eastern lead permits dialling until
 // midnight their time — three hours past the legal window — and a thrown error
@@ -2283,9 +2311,8 @@ function checkTCPA(stateCode) {
     return { blocked: true, reason: 'No state on this lead — cannot check the calling window' };
   }
   try {
-    const hourStr = new Date().toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false });
-    const hour = parseInt(hourStr, 10);
-    if (!isFinite(hour)) return { blocked: true, reason: 'Could not read the local time' };
+    const hour = leadHour(tz);
+    if (hour === null) return { blocked: true, reason: 'Could not read the local time' };
     if (hour < CONFIG.TCPA_START_HOUR) return { blocked: true, reason: 'Too early to call' };
     if (hour >= CONFIG.TCPA_END_HOUR) return { blocked: true, reason: 'Too late to call' };
     return { blocked: false };
