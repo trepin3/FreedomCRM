@@ -1037,6 +1037,11 @@ function doGet(e) {
     if (action === 'ping') {
       return jsonOut({
         ok: true,
+        // The client uses this to correct a wrong device clock before deciding
+        // whether a call is inside the legal window. Unauthenticated on purpose:
+        // it is the same fact as any public NTP server, and the sync has to work
+        // before anyone has signed in.
+        now: Date.now(),
         bootToHandlerMs: Date.now() - BOOT_T0,   // all of our top-level code
         note: 'registry is lazy; this request never reads Script Properties'
       });

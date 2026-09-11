@@ -137,6 +137,10 @@ body.is-admin .admin-only{display:flex;}
   .drill-row>*:nth-child(3),.drill-head>*:nth-child(3),
   .drill-row>*:nth-child(4),.drill-head>*:nth-child(4){display:none;}
 }
+.clock-warn{position:fixed;left:0;right:0;bottom:0;z-index:9998;padding:8px 14px;
+  font:700 13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  text-align:center;color:#fff;background:#c0362c;box-shadow:0 -1px 8px rgba(0,0,0,.25);}
+body.has-clock-warn{padding-bottom:40px;}
 .env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
   font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
@@ -1282,13 +1286,81 @@ function show(id) {
 // Wake the Apps Script container while the user is still reading the page.
 // Cold starts cost 15-25 seconds and land squarely on the sign-in click;
 // firing this on load moves that wait somewhere nobody is waiting.
+//
+// The same request now also carries the server's clock, because the device
+// clock decides whether a call is legal and a device clock can be wrong. One
+// agent's machine ran three hours fast — timezone set to Pacific with the clock
+// hand-set to show Eastern wall time — so every Eastern lead read as past the
+// 9pm cutoff and could not be dialled at 7pm. The same mistake in the other
+// direction would have let him dial North Carolina at midnight, which is the
+// expensive one.
 let prewarmed = false;
+let clockOffsetMs = 0;
+let clockSynced = false;
+
+// Everything that decides or displays a time uses this, never Date.now().
+function serverNow() {
+  return new Date(Date.now() + clockOffsetMs);
+}
+
 function prewarmBackend() {
   if (prewarmed || !CONFIG.APPS_SCRIPT_URL) return;
   prewarmed = true;
+  syncClock();
+}
+
+async function syncClock() {
+  if (!CONFIG.APPS_SCRIPT_URL) return;
   try {
-    fetch(CONFIG.APPS_SCRIPT_URL + '?action=ping', { cache: 'no-store' }).catch(function() {});
-  } catch (e) {}
+    const t0 = Date.now();
+    const res = await fetch(CONFIG.APPS_SCRIPT_URL + '?action=ping', { cache: 'no-store' });
+    const t1 = Date.now();
+    const data = await res.json();
+    if (!data || !data.now) return;
+    // Midpoint of the round trip is the best estimate of when the server read
+    // its own clock. A second of error is irrelevant against a 15-minute
+    // boundary; three hours is not.
+    clockOffsetMs = data.now - (t0 + (t1 - t0) / 2);
+    clockSynced = true;
+  } catch (e) {
+    // Left unsynced deliberately. Refusing to dial because one request failed
+    // would stop the business over a network blip; the banner says so instead.
+  }
+  renderClockWarning();
+  // The card may already be on screen, rendered against the uncorrected clock.
+  // Re-render so a blocked button clears the moment the offset is known rather
+  // than on the next minute tick.
+  try { updateLocalTime(); } catch (e) {}
+}
+
+// Worth telling someone about: their callback times, timestamps and anything
+// else they read off this screen are wrong too, not just the dial gate.
+const CLOCK_WARN_MS = 90 * 1000;
+
+function renderClockWarning() {
+  let el = document.getElementById('clockWarn');
+  const off = Math.abs(clockOffsetMs);
+  const bad = !clockSynced || off > CLOCK_WARN_MS;
+  if (!bad) { if (el) el.remove(); document.body.classList.remove('has-clock-warn'); return; }
+
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'clockWarn';
+    el.className = 'clock-warn';
+    document.body.appendChild(el);
+  }
+  document.body.classList.add('has-clock-warn');
+  if (!clockSynced) {
+    el.textContent = '\u23f1 Could not check the time with the server — using this ' +
+                     'computer\u2019s clock. If it is wrong, calling hours will be wrong.';
+    return;
+  }
+  const mins = Math.round(off / 60000);
+  const fast = clockOffsetMs < 0;
+  el.textContent = '\u23f1 This computer\u2019s clock is ' +
+    (mins >= 60 ? (off / 3600000).toFixed(1) + ' hours' : mins + ' minutes') + ' ' +
+    (fast ? 'fast' : 'slow') + '. Calling hours are being corrected automatically, ' +
+    'but turn on \u201cset date and time automatically\u201d to fix it properly.';
 }
 
 function initGoogleSignIn() {
@@ -2232,9 +2304,12 @@ function formatPhone(p) {
 }
 
 function getLeadLocalTime(stateCode) {
-  const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
+  // No silent Pacific fallback. Showing a confident time for a state we cannot
+  // resolve contradicts the dial button, which refuses that same lead.
+  const tz = CONFIG.STATE_TIMEZONES[String(stateCode || '').trim().toUpperCase()];
+  if (!tz) return '—';
   try {
-    return new Date().toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+    return serverNow().toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
   } catch (e) { return '—'; }
 }
 
@@ -2278,7 +2353,7 @@ function leadHour(tz) {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, hour: 'numeric', hour12: false
-    }).formatToParts(new Date());
+    }).formatToParts(serverNow());
     for (let i = 0; i < parts.length; i++) {
       if (parts[i].type !== 'hour') continue;
       const n = Number(parts[i].value);
@@ -2947,7 +3022,7 @@ function openCallbackModalFor(context) {
   document.getElementById('callbackModalSub').textContent = lead.name || 'Lead';
   // Pre-fill from existing callback if rescheduling
   const iso = context.date ? isoDateFromDisplay(context.date) : '';
-  const now = new Date();
+  const now = serverNow();
   if (iso) {
     const [y, m, d] = iso.split('-').map(Number);
     state.calSelected = new Date(y, m - 1, d);
@@ -2978,7 +3053,7 @@ function isoDateFromDisplay(s) {
 function renderCallbackCalendar() {
   const container = document.getElementById('cbCalendar');
   if (!container) return;
-  const now = new Date();
+  const now = serverNow();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -3220,7 +3295,7 @@ function renderMyCallbacks() {
   state.myCallbacksSorted = sorted;
   c.innerHTML = sorted.map((cb, i) => {
     const dt = cbDateTime(cb);
-    const now = Date.now();
+    const now = serverNow().getTime();
     let status = 'upcoming', label = 'Upcoming';
     if (dt < now - 60 * 60 * 1000) { status = 'overdue'; label = 'Overdue'; }
     else if (dt < now + 5 * 60 * 1000) { status = 'due'; label = 'Due Now'; }
@@ -3281,7 +3356,7 @@ function formatCbDate(cb) {
 }
 
 function checkCallbackAlerts() {
-  const now = Date.now();
+  const now = serverNow().getTime();
   const container = document.getElementById('cbAlerts');
   if (!state.myCallbacks) return;
   const due = state.myCallbacks.filter(cb => {
