@@ -137,6 +137,10 @@ body.is-admin .admin-only{display:flex;}
   .drill-row>*:nth-child(3),.drill-head>*:nth-child(3),
   .drill-row>*:nth-child(4),.drill-head>*:nth-child(4){display:none;}
 }
+.clock-warn{position:fixed;left:0;right:0;bottom:0;z-index:9998;padding:8px 14px;
+  font:700 13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  text-align:center;color:#fff;background:#c0362c;box-shadow:0 -1px 8px rgba(0,0,0,.25);}
+body.has-clock-warn{padding-bottom:40px;}
 .env-banner{position:fixed;left:0;right:0;top:0;z-index:9999;padding:5px 12px;
   font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   letter-spacing:.06em;text-transform:uppercase;text-align:center;color:#fff;
@@ -1282,13 +1286,81 @@ function show(id) {
 // Wake the Apps Script container while the user is still reading the page.
 // Cold starts cost 15-25 seconds and land squarely on the sign-in click;
 // firing this on load moves that wait somewhere nobody is waiting.
+//
+// The same request now also carries the server's clock, because the device
+// clock decides whether a call is legal and a device clock can be wrong. One
+// agent's machine ran three hours fast — timezone set to Pacific with the clock
+// hand-set to show Eastern wall time — so every Eastern lead read as past the
+// 9pm cutoff and could not be dialled at 7pm. The same mistake in the other
+// direction would have let him dial North Carolina at midnight, which is the
+// expensive one.
 let prewarmed = false;
+let clockOffsetMs = 0;
+let clockSynced = false;
+
+// Everything that decides or displays a time uses this, never Date.now().
+function serverNow() {
+  return new Date(Date.now() + clockOffsetMs);
+}
+
 function prewarmBackend() {
   if (prewarmed || !CONFIG.APPS_SCRIPT_URL) return;
   prewarmed = true;
+  syncClock();
+}
+
+async function syncClock() {
+  if (!CONFIG.APPS_SCRIPT_URL) return;
   try {
-    fetch(CONFIG.APPS_SCRIPT_URL + '?action=ping', { cache: 'no-store' }).catch(function() {});
-  } catch (e) {}
+    const t0 = Date.now();
+    const res = await fetch(CONFIG.APPS_SCRIPT_URL + '?action=ping', { cache: 'no-store' });
+    const t1 = Date.now();
+    const data = await res.json();
+    if (!data || !data.now) return;
+    // Midpoint of the round trip is the best estimate of when the server read
+    // its own clock. A second of error is irrelevant against a 15-minute
+    // boundary; three hours is not.
+    clockOffsetMs = data.now - (t0 + (t1 - t0) / 2);
+    clockSynced = true;
+  } catch (e) {
+    // Left unsynced deliberately. Refusing to dial because one request failed
+    // would stop the business over a network blip; the banner says so instead.
+  }
+  renderClockWarning();
+  // The card may already be on screen, rendered against the uncorrected clock.
+  // Re-render so a blocked button clears the moment the offset is known rather
+  // than on the next minute tick.
+  try { updateLocalTime(); } catch (e) {}
+}
+
+// Worth telling someone about: their callback times, timestamps and anything
+// else they read off this screen are wrong too, not just the dial gate.
+const CLOCK_WARN_MS = 90 * 1000;
+
+function renderClockWarning() {
+  let el = document.getElementById('clockWarn');
+  const off = Math.abs(clockOffsetMs);
+  const bad = !clockSynced || off > CLOCK_WARN_MS;
+  if (!bad) { if (el) el.remove(); document.body.classList.remove('has-clock-warn'); return; }
+
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'clockWarn';
+    el.className = 'clock-warn';
+    document.body.appendChild(el);
+  }
+  document.body.classList.add('has-clock-warn');
+  if (!clockSynced) {
+    el.textContent = '\u23f1 Could not check the time with the server — using this ' +
+                     'computer\u2019s clock. If it is wrong, calling hours will be wrong.';
+    return;
+  }
+  const mins = Math.round(off / 60000);
+  const fast = clockOffsetMs < 0;
+  el.textContent = '\u23f1 This computer\u2019s clock is ' +
+    (mins >= 60 ? (off / 3600000).toFixed(1) + ' hours' : mins + ' minutes') + ' ' +
+    (fast ? 'fast' : 'slow') + '. Calling hours are being corrected automatically, ' +
+    'but turn on \u201cset date and time automatically\u201d to fix it properly.';
 }
 
 function initGoogleSignIn() {
@@ -2077,8 +2149,8 @@ function renderLead() {
   state.callEnd = null;
   state.callDuration = '';
 
-  const localTime = getLeadLocalTime(lead.state);
-  const tcpa = checkTCPA(lead.state);
+  const localTime = getLeadLocalTime(lead.state, lead.zip);
+  const tcpa = checkTCPA(lead.state, lead.zip);
   const phoneClean = String(lead.phone || '').replace(/\D/g, '');
   const phoneDisplay = formatPhone(lead.phone);
 
@@ -2231,10 +2303,14 @@ function formatPhone(p) {
   return p;
 }
 
-function getLeadLocalTime(stateCode) {
-  const tz = CONFIG.STATE_TIMEZONES[stateCode] || 'America/Los_Angeles';
+function getLeadLocalTime(stateCode, zip) {
+  // The zone we actually judged by, so the time on the card and the state of the
+  // button can never disagree. No silent Pacific fallback either: a confident
+  // time for a state we cannot resolve contradicts a button that refuses it.
+  const tz = zonesFor(stateCode, zip)[0];
+  if (!tz) return '—';
   try {
-    return new Date().toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+    return serverNow().toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
   } catch (e) { return '—'; }
 }
 
@@ -2278,7 +2354,7 @@ function leadHour(tz) {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, hour: 'numeric', hour12: false
-    }).formatToParts(new Date());
+    }).formatToParts(serverNow());
     for (let i = 0; i < parts.length; i++) {
       if (parts[i].type !== 'hour') continue;
       const n = Number(parts[i].value);
@@ -2287,6 +2363,87 @@ function leadHour(tz) {
     }
   } catch (e) {}
   return null;
+}
+
+// A state is not one timezone, and guessing is unsafe in both directions at
+// different ends of the day: too far east and we allow calls before 8am where
+// the lead actually lives, too far west and we allow them after 9pm. The ZIP
+// settles it when we have one.
+//
+// [ eastern zone, western zone ] — eastern closes first, western opens last.
+const SPLIT_STATES = {
+  FL: ['America/New_York', 'America/Chicago'],
+  MI: ['America/New_York', 'America/Chicago'],
+  IN: ['America/New_York', 'America/Chicago'],
+  KY: ['America/New_York', 'America/Chicago'],
+  TN: ['America/New_York', 'America/Chicago'],
+  KS: ['America/Chicago',  'America/Denver'],
+  NE: ['America/Chicago',  'America/Denver'],
+  ND: ['America/Chicago',  'America/Denver'],
+  SD: ['America/Chicago',  'America/Denver'],
+  TX: ['America/Chicago',  'America/Denver'],
+  OR: ['America/Denver',   'America/Los_Angeles'],
+  ID: ['America/Denver',   'America/Los_Angeles'],
+  AK: ['America/Anchorage', 'America/Adak'],
+  // Arizona ignores daylight saving; the Navajo Nation inside it does not. For
+  // half the year they are an hour apart, and in winter these two are the same
+  // zone so checking both costs nothing at all.
+  AZ: ['America/Denver',   'America/Phoenix']
+};
+
+// Three-digit ZIP prefixes sitting in their state's *other* zone. Each list is
+// treated as complete for its state, so a ZIP that is not here gets the state's
+// primary zone.
+const ZIP_TZ = {
+  324:'America/Chicago', 325:'America/Chicago',                 // FL panhandle
+  499:'America/Chicago',                                        // western UP
+  463:'America/Chicago', 464:'America/Chicago',                 // NW Indiana
+  476:'America/Chicago', 477:'America/Chicago',                 // SW Indiana
+  420:'America/Chicago', 421:'America/Chicago', 422:'America/Chicago',
+  423:'America/Chicago', 424:'America/Chicago', 427:'America/Chicago',  // W Kentucky
+  373:'America/New_York', 374:'America/New_York',                 // Chattanooga
+  376:'America/New_York', 377:'America/New_York',
+  378:'America/New_York', 379:'America/New_York',                 // Knoxville, Tri-Cities
+  798:'America/Denver', 799:'America/Denver',                   // El Paso
+  691:'America/Denver', 693:'America/Denver',                   // NE panhandle
+  577:'America/Denver',                                         // western SD
+  586:'America/Denver',                                         // SW North Dakota
+  979:'America/Denver',                                         // Malheur County
+  835:'America/Los_Angeles', 838:'America/Los_Angeles'           // north Idaho
+};
+
+// Prefixes that straddle the line: the same three digits cover towns on both
+// sides, so there is no honest single answer and these check both zones. Better
+// than either guessing or writing off the whole state — Wichita and Fairbanks
+// keep their full window, only the genuinely ambiguous prefixes narrow.
+const ZIP_MIXED = {
+  498: true,              // MI: Escanaba is Eastern, Iron Mountain is Central
+  677: true, 678: true,   // KS: Goodland and Tribune are Mountain, Colby and Garden City are not
+  995: true,              // AK: Anchorage and the Aleutians share a prefix
+  860: true, 865: true    // AZ: Navajo observes DST, Hopi and the rest of Arizona do not
+};
+
+/**
+ * Which timezones a call to this lead must be legal in.
+ *
+ * One zone when we know it. Two when we do not, which narrows the window to the
+ * overlap — an hour off each end, and provably compliant either way.
+ */
+function zonesFor(stateCode, zip) {
+  const st = String(stateCode || '').trim().toUpperCase();
+  const primary = CONFIG.STATE_TIMEZONES[st];
+  if (!primary) return [];
+  const split = SPLIT_STATES[st];
+  if (!split) return [primary];
+
+  const d = String(zip || '').replace(/\D/g, '');
+  if (d.length >= 3) {
+    const p = Number(d.slice(0, 3));
+    if (ZIP_MIXED[p]) return split;
+    if (ZIP_TZ[p]) return [ZIP_TZ[p]];
+    return [primary];
+  }
+  return split;
 }
 
 // Fails CLOSED. Every unknown here used to allow the call: a state not in the
@@ -2305,16 +2462,25 @@ function logCallFrom(stateCode, rowIndex) {
     .catch(function() {});
 }
 
-function checkTCPA(stateCode) {
-  const tz = CONFIG.STATE_TIMEZONES[String(stateCode || '').trim().toUpperCase()];
-  if (!tz) {
+function checkTCPA(stateCode, zip) {
+  const zones = zonesFor(stateCode, zip);
+  if (!zones.length) {
     return { blocked: true, reason: 'No state on this lead — cannot check the calling window' };
   }
+  const spans = zones.length > 1;
   try {
-    const hour = leadHour(tz);
-    if (hour === null) return { blocked: true, reason: 'Could not read the local time' };
-    if (hour < CONFIG.TCPA_START_HOUR) return { blocked: true, reason: 'Too early to call' };
-    if (hour >= CONFIG.TCPA_END_HOUR) return { blocked: true, reason: 'Too late to call' };
+    for (let i = 0; i < zones.length; i++) {
+      const hour = leadHour(zones[i]);
+      if (hour === null) return { blocked: true, reason: 'Could not read the local time' };
+      if (hour < CONFIG.TCPA_START_HOUR) {
+        return { blocked: true, reason: spans
+          ? 'Too early — part of this state is an hour behind' : 'Too early to call' };
+      }
+      if (hour >= CONFIG.TCPA_END_HOUR) {
+        return { blocked: true, reason: spans
+          ? 'Too late — part of this state is an hour ahead' : 'Too late to call' };
+      }
+    }
     return { blocked: false };
   } catch (e) {
     return { blocked: true, reason: 'Could not check the calling window' };
@@ -2328,7 +2494,7 @@ function updateLocalTime() {
   if (state.cardState !== 'default') {
     // Just update the live local time text in-place without wiping card state
     document.querySelectorAll('.lead-localtime').forEach(el => {
-      el.textContent = '🕐 ' + CONFIG.STATE_NAMES[lead.state] + ': ' + getLeadLocalTime(lead.state);
+      el.textContent = '🕐 ' + CONFIG.STATE_NAMES[lead.state] + ': ' + getLeadLocalTime(lead.state, lead.zip);
     });
     return;
   }
@@ -2947,7 +3113,7 @@ function openCallbackModalFor(context) {
   document.getElementById('callbackModalSub').textContent = lead.name || 'Lead';
   // Pre-fill from existing callback if rescheduling
   const iso = context.date ? isoDateFromDisplay(context.date) : '';
-  const now = new Date();
+  const now = serverNow();
   if (iso) {
     const [y, m, d] = iso.split('-').map(Number);
     state.calSelected = new Date(y, m - 1, d);
@@ -2978,7 +3144,7 @@ function isoDateFromDisplay(s) {
 function renderCallbackCalendar() {
   const container = document.getElementById('cbCalendar');
   if (!container) return;
-  const now = new Date();
+  const now = serverNow();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -3220,7 +3386,7 @@ function renderMyCallbacks() {
   state.myCallbacksSorted = sorted;
   c.innerHTML = sorted.map((cb, i) => {
     const dt = cbDateTime(cb);
-    const now = Date.now();
+    const now = serverNow().getTime();
     let status = 'upcoming', label = 'Upcoming';
     if (dt < now - 60 * 60 * 1000) { status = 'overdue'; label = 'Overdue'; }
     else if (dt < now + 5 * 60 * 1000) { status = 'due'; label = 'Due Now'; }
@@ -3235,8 +3401,8 @@ function renderMyCallbacks() {
         <span class="cb-item-status ${status}">${label}</span>
         <div class="cb-item-actions">
           <button class="cb-mini-btn call" onclick="openCbFromList(${i})">👁️ View Lead</button>
-          ${checkTCPA(cb.state).blocked
-            ? `<span class="cb-mini-btn blocked" title="${checkTCPA(cb.state).reason}">📞 Call</span>`
+          ${checkTCPA(cb.state, cb.zip).blocked
+            ? `<span class="cb-mini-btn blocked" title="${checkTCPA(cb.state, cb.zip).reason}">📞 Call</span>`
             : `<a class="cb-mini-btn" href="tel:${telHref(phoneClean)}"
                   onclick="markDialing();logCallFrom('${cb.state}',${cb.rowIndex})">📞 Call</a>`}
           <button class="cb-mini-btn" onclick="addCallbackToCalendar('${cb.state}',${cb.rowIndex})">📆 Add to Calendar</button>
@@ -3281,7 +3447,7 @@ function formatCbDate(cb) {
 }
 
 function checkCallbackAlerts() {
-  const now = Date.now();
+  const now = serverNow().getTime();
   const container = document.getElementById('cbAlerts');
   if (!state.myCallbacks) return;
   const due = state.myCallbacks.filter(cb => {
@@ -3476,8 +3642,8 @@ function closeLeadView() {
 function renderLeadView() {
   if (!leadViewState) return;
   const lead = leadViewState.lead;
-  const localTime = getLeadLocalTime(lead.state);
-  const tcpa = checkTCPA(lead.state);
+  const localTime = getLeadLocalTime(lead.state, lead.zip);
+  const tcpa = checkTCPA(lead.state, lead.zip);
   const phoneClean = String(lead.phone || '').replace(/\D/g, '');
   const phoneDisplay = formatPhone(lead.phone);
   const cs = leadViewState.cardState;
@@ -3693,8 +3859,8 @@ function doSearch() {
             <div class="search-result-phone">${formatPhone(r.phone)}</div>
             <div class="search-result-meta">${escapeHtml(r.city || '')} ${escapeHtml(r.state || '')} ${r.callbackDate ? '• Scheduled: ' + r.callbackDate + ' ' + r.callbackTime : ''}</div>
             <div class="search-actions-grid">
-              ${checkTCPA(r.state).blocked
-                ? `<span class="search-action-btn sa-call blocked" title="${checkTCPA(r.state).reason}">📞 Call</span>`
+              ${checkTCPA(r.state, r.zip).blocked
+                ? `<span class="search-action-btn sa-call blocked" title="${checkTCPA(r.state, r.zip).reason}">📞 Call</span>`
                 : `<a class="search-action-btn sa-call" href="tel:${telHref(phoneClean)}"
                      onclick="markDialing();logCallFrom('${r.state}',${r.rowIndex})">📞 Call</a>`}
               <button class="search-action-btn sa-sold" onclick="searchSold('${r.state}',${r.rowIndex},'${r.sourceTab}')">✅ Sold</button>
