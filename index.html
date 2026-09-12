@@ -2500,7 +2500,7 @@ function zonesFor(stateCode, zip) {
 function logCallFrom(stateCode, rowIndex) {
   if (!stateCode || !rowIndex) return;
   api('POST', { action: 'callStarted', state: stateCode, rowIndex: rowIndex,
-                record: true, callStart: new Date().toISOString() })
+                record: true, callStart: serverNow().toISOString() })
     .catch(function() {});
 }
 
@@ -2556,7 +2556,10 @@ function startCall() {
     api('POST', { action: 'callStarted', state: onCall.state, rowIndex: onCall.rowIndex })
       .catch(function() {});
   }
-  state.callStart = new Date().toISOString();
+  // Server time, not the device's. This one is written to the sheet and feeds
+  // the stat drill-downs — a wrong clock here misfiles a call by hours, or by a
+  // whole day near midnight, and nobody would ever notice.
+  state.callStart = serverNow().toISOString();
   // Bump session dial-attempt counter for the current lead
   const lead = state.leads[state.currentIdx];
   if (lead) {
@@ -2585,7 +2588,7 @@ function startCall() {
 
 function doneCall() {
   if (state.callTimerId) { clearInterval(state.callTimerId); state.callTimerId = null; }
-  state.callEnd = new Date().toISOString();
+  state.callEnd = serverNow().toISOString();
   state.cardState = 'postcall';
   state.stats.calls++;
   updateStats();
@@ -3767,7 +3770,7 @@ function renderLeadView() {
 function startLeadViewCall() {
   if (!leadViewState) return;
   leadViewState.cardState = 'incall';
-  leadViewState.callStart = new Date().toISOString();
+  leadViewState.callStart = serverNow().toISOString();
   const startMs = Date.now();
   renderLeadView();
   if (leadViewCallTimerId) clearInterval(leadViewCallTimerId);
@@ -3781,7 +3784,7 @@ function startLeadViewCall() {
 }
 function doneLeadViewCall() {
   if (leadViewCallTimerId) { clearInterval(leadViewCallTimerId); leadViewCallTimerId = null; }
-  leadViewState.callEnd = new Date().toISOString();
+  leadViewState.callEnd = serverNow().toISOString();
   leadViewState.cardState = 'postcall';
   state.stats.calls++; updateStats();
   checkCallMilestones();
@@ -5822,7 +5825,7 @@ function downloadCsv(head, rows, basename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = basename + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.download = basename + '-' + serverNow().toISOString().slice(0, 10) + '.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
