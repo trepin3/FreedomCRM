@@ -413,6 +413,26 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // it straight to a second agent means the prospect is called twice by the same
 // agency inside a quarter of an hour.
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
+// A stack nobody has actually dialled or dispositioned in this long goes back,
+// however alive the browser looks. The heartbeat is meant to protect an agent
+// between calls, not to hold 150 leads because a tab is open on a spare
+// monitor. Measured from the real work on the rows themselves.
+const WORK_CEILING_MS      = 60 * 60 * 1000;
+
+/**
+ * Requests that mean an agent is actually working a stack.
+ *
+ * Deliberately not every authenticated call. The callbacks panel reloads itself
+ * every two minutes whether or not anybody is looking at the tab, and counting
+ * that as presence meant a stack was held for as long as the browser stayed
+ * open — overnight, over a weekend. A background timer is not a person.
+ *
+ * heartbeat is on the list because the client only sends it from a visible tab
+ * with a stack loaded, which is what it was built to mean.
+ */
+const WORK_ACTIONS_ = ['getLeads', 'heartbeat', 'callStarted', 'next', 'sold',
+                       'dcid', 'wrong', 'callback', 'leadById', 'updateLead',
+                       'search', 'returnToPool'];
 
 /**
  * Records that an agent is alive, right now.
@@ -1079,7 +1099,7 @@ function doGet(e) {
     }
 
     const user = verifySession_(e.parameter.s);
-    if (user && user.id) touchSeen_(user.id);
+    if (user && user.id && WORK_ACTIONS_.indexOf(action) !== -1) touchSeen_(user.id);
     if (!user) return jsonOut({ error: 'auth_required' });
 
     const isAdmin = user.role === 'admin';
@@ -1157,7 +1177,7 @@ function doPost(e) {
     if (action === 'trellusEvent') return jsonOut(actionTrellusEvent(body));
 
     const user = verifySession_(body.s);
-    if (user && user.id) touchSeen_(user.id);
+    if (user && user.id && WORK_ACTIONS_.indexOf(action) !== -1) touchSeen_(user.id);
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
     body.agentId = user.id;          // locks key on this; the name is display
@@ -1380,8 +1400,10 @@ function releaseStale_(sheet) {
   const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'),
         iOpen = ix_('Call Open At'), iLockAt = ix_('Locked At');
 
+  const iCall = ix_('Last Call Start');
   const freshest = {};   // owner -> the most recent thing we can see them do
   const onCall = {};     // owner -> has a call open right now
+  const worked = {};     // owner -> the last time they actually dialled one
   data.forEach(function(row) {
     const owner = String(row[iLockBy] || '');
     if (!owner) return;
@@ -1391,6 +1413,9 @@ function releaseStale_(sheet) {
                           parseStamp_(row[iLockAt]) || 0,
                           open || 0);
     if (seen > (freshest[owner] || 0)) freshest[owner] = seen;
+    const did = Math.max(parseStamp_(row[iCall]) || 0, open || 0,
+                         parseStamp_(row[iLockAt]) || 0);
+    if (did > (worked[owner] || 0)) worked[owner] = did;
   });
 
   const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
@@ -1400,13 +1425,32 @@ function releaseStale_(sheet) {
   data.forEach(function(row, i) {
     const owner = String(row[iLockBy] || '');
     if (!owner) return;
-    if (onCall[owner]) return;                  // mid-call, the stack stays put
-    if (seenRecently_(owner)) return;           // they have touched the server since
+    // Read as a list of rules, in order. Each one decides on its own.
+
+    // 1. On a call. Nothing else matters.
+    if (onCall[owner]) return;
+
+    // 2. Nothing dialled, dispositioned or reserved in an hour. An open browser
+    //    is not work, so this overrides the heartbeat and the idle clock both.
+    // Only when we can actually read a last-work time. An unreadable stack is
+    // handled by rule 4, which keeps it rather than guessing it is idle.
+    const lastWork = worked[owner] || 0;
+    if (lastWork && now - lastWork > WORK_CEILING_MS) {
+      lockVals[i][0] = ''; lockVals[i][1] = ''; lockVals[i][3] = '';
+      row[iLockBy] = '';
+      freed++;
+      return;
+    }
+
+    // 3. They have hit the server doing something real since.
+    if (seenRecently_(owner)) return;
+
+    // 4. Something in the stack is fresh.
     const seen = freshest[owner] || 0;
-    // No readable timestamp anywhere in the stack is not evidence of idleness.
-    // Leaving it costs one lead until somebody force-releases; dropping an
-    // active agent's stack over a parse failure is the worse of the two, and is
-    // exactly the bug this function already had.
+    // No readable timestamp anywhere is not evidence of idleness. Leaving it
+    // costs one lead until somebody force-releases; dropping an active agent's
+    // stack over a parse failure is the worse error, and was the bug this
+    // function already had.
     if (!seen) return;
     if (now - seen < IDLE_RELEASE_MS) return;
 
