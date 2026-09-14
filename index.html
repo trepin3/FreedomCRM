@@ -1801,7 +1801,10 @@ let holdCheckInFlight = false;
 async function checkStillHolding() {
   if (holdCheckInFlight) return;
   if (!state.currentState || !state.leads || !state.leads.length) return;
-  if (document.hidden) return;                 // a background tab is not working
+  // A hidden tab usually means nobody is working — except mid-call, when the
+  // agent is in the carrier portal or on Zoom and the CRM is behind it. Stopping
+  // the heartbeat then is what let their stack age out underneath them.
+  if (document.hidden && state.cardState !== 'incall') return;
   let out;
   holdCheckInFlight = true;
   try {
