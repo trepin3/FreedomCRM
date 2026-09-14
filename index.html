@@ -4031,7 +4031,7 @@ function splitCsvLine(line) {
 }
 
 // Guess which pasted column feeds which field, so the common case needs no clicks.
-function guessColumn(headers, field) {
+function guessColumn(headers, field, taken) {
   const want = {
     'Name': ['name','full name','fullname','lead name','contact','customer name'],
     'First Name': ['firstname','first name','fname','first','given name'],
@@ -4052,7 +4052,30 @@ function guessColumn(headers, field) {
   }[field] || [];
   for (let w = 0; w < want.length; w++) {
     for (let i = 0; i < headers.length; i++) {
+      if (taken && taken[i]) continue;
       if (headers[i].trim().toLowerCase() === want[w]) return i;
+    }
+  }
+
+  // Nothing matched exactly. Vendors ask questions rather than name fields —
+  // Dashly exports "What is your favorite hobby?" — so try again on a fragment.
+  //
+  // Only fragments that cannot collide: "phone" would swallow Secondary Phone
+  // and "name" would swallow Business Name, so neither is listed. Columns another
+  // field already claimed are skipped, which is why this runs claim-aware.
+  const loose = {
+    'Hobby': ['hobby', 'hobbies'],
+    'Beneficiary': ['beneficiar'],
+    'DOB': ['birth'],
+    'Lead Type': ['coverage type', 'type of coverage', 'what type of funeral'],
+    'Email': ['e-mail address'],
+    'Address': ['street addr', 'mailing addr'],
+    'Zip': ['zip', 'postal']
+  }[field] || [];
+  for (let w = 0; w < loose.length; w++) {
+    for (let i = 0; i < headers.length; i++) {
+      if (taken && taken[i]) continue;
+      if (headers[i].trim().toLowerCase().indexOf(loose[w]) !== -1) return i;
     }
   }
   return -1;
@@ -4145,7 +4168,17 @@ function parseUpload() {
   uploadState.dupEdits = {};
   uploadState.existing = {};
   uploadState.existingChoice = {};
-  UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = guessColumn(uploadState.headers, f); });
+  // Two passes so an exact match always beats a loose one, whatever order the
+  // fields happen to sit in. A column is claimed once and never reused.
+  const taken = {};
+  const sc0 = stateColumn(), zc0 = zipColumn();
+  if (sc0 >= 0) taken[sc0] = true;
+  if (zc0 >= 0) taken[zc0] = true;
+  UPLOAD_FIELDS.forEach(function(f) { uploadState.map[f] = -1; });
+  UPLOAD_FIELDS.forEach(function(f) {
+    const i = guessColumn(uploadState.headers, f, taken);
+    if (i >= 0) { uploadState.map[f] = i; taken[i] = true; }
+  });
   uploadState.autoState = autoPickState();
   renderMapping();
   checkExistingLeads();      // async; re-renders when the answer arrives
@@ -4509,6 +4542,19 @@ function mapRow(r) {
   }
   const st = rowState(r);
   if (st) obj['State'] = st;
+
+  // One shape in the sheet, decided here rather than by a backend command after
+  // the fact. Vendors export +16035551234, 1-603-555-1234 and 6035551234 for the
+  // same person; every agent uploads independently, and nobody should have to
+  // remember a cleanup step. Anything that is not a US number is left exactly as
+  // it came so it stays visible rather than being quietly mangled.
+  if (obj['Phone']) {
+    const d = String(obj['Phone']).replace(/\D/g, '');
+    if (d.length === 10) obj['Phone'] = d;
+    else if (d.length === 11 && d.charAt(0) === '1') obj['Phone'] = d.slice(1);
+    else if (d.length > 11 && d.charAt(0) === '1') obj['Phone'] = d.substr(1, 10);
+    else if (d.length > 11) obj['Phone'] = d.substr(0, 10);
+  }
 
   // Whatever the vendor sent that nothing above claimed. Lead files differ by
   // source and always will, so the columns nobody mapped are kept rather than
