@@ -1318,26 +1318,56 @@ function getLeads(stateCode, agent, me, size) {
 // A reservation dies after IDLE_RELEASE_MS of no activity. An open call holds
 // it past that — but only up to OPEN_CALL_CEILING_MS, so a browser that died
 // mid-call cannot sit on 150 leads forever.
+/**
+ * Releases reservations nobody is working.
+ *
+ * The unit is the STACK, not the row. It used to judge each lead on its own,
+ * which broke the moment an agent put the CRM in a background tab — the carrier
+ * portal, a quoter, a Zoom. The client heartbeat stops when the tab is hidden,
+ * every lead except the one being called goes stale at fifteen minutes, and an
+ * agent who was mid-call came back to 149 of their 150 leads handed to someone
+ * else. The one they were on survived only because Call Open At covered it.
+ *
+ * So: the freshest signal anywhere in an owner's stack speaks for all of it, and
+ * an owner with a live call keeps everything.
+ */
 function releaseStale_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
   const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
   const now = Date.now();
-  const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'), iOpen = ix_('Call Open At');
+  const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'),
+        iOpen = ix_('Call Open At'), iLockAt = ix_('Locked At');
+
+  const freshest = {};   // owner -> the most recent thing we can see them do
+  const onCall = {};     // owner -> has a call open right now
+  data.forEach(function(row) {
+    const owner = String(row[iLockBy] || '');
+    if (!owner) return;
+    const open = parseStamp_(row[iOpen]);
+    if (open && now - open < OPEN_CALL_CEILING_MS) onCall[owner] = true;
+    const seen = Math.max(parseStamp_(row[iAct]) || 0,
+                          parseStamp_(row[iLockAt]) || 0,
+                          open || 0);
+    if (seen > (freshest[owner] || 0)) freshest[owner] = seen;
+  });
 
   const lockRange = sheet.getRange(2, COL['Locked By'], lastRow - 1, 4);
   const lockVals = lockRange.getValues();
   let freed = 0;
 
   data.forEach(function(row, i) {
-    if (!row[iLockBy]) return;
-    const openAt = parseStamp_(row[iOpen]);
-    if (openAt) {
-      if (now - openAt < OPEN_CALL_CEILING_MS) return;   // still on the call
-    } else {
-      const act = parseStamp_(row[iAct]);
-      if (act && now - act < IDLE_RELEASE_MS) return;
-    }
+    const owner = String(row[iLockBy] || '');
+    if (!owner) return;
+    if (onCall[owner]) return;                  // mid-call, the stack stays put
+    const seen = freshest[owner] || 0;
+    // No readable timestamp anywhere in the stack is not evidence of idleness.
+    // Leaving it costs one lead until somebody force-releases; dropping an
+    // active agent's stack over a parse failure is the worse of the two, and is
+    // exactly the bug this function already had.
+    if (!seen) return;
+    if (now - seen < IDLE_RELEASE_MS) return;
+
     lockVals[i][0] = '';   // Locked By
     lockVals[i][1] = '';   // Locked At
     lockVals[i][3] = '';   // Call Open At
@@ -2694,12 +2724,45 @@ function actionTrellusEvent(body) {
   }
   writeCells_(found.sheet, found.rowIndex, write);
 
+  // Keep the rest of their stack alive. A rep mid-Trellus-session is working
+  // even though nothing in this app has been clicked.
+  if (who) { try { touchStack_(who, found.state); } catch (e) {} }
+
   processedTab_().appendRow([key, now, leadId, outcome,
                              rep + (who ? '' : ' (unattributed)'), applied]);
   logActivity_({ email: rep, name: repName || 'Trellus', role: 'system' },
                'trellusCall', leadId + ' — ' + applied, found.state);
 
   return { success: true, applied: applied, attributed: !!who };
+}
+
+/**
+ * Marks an agent's whole reserved stack as worked, right now.
+ *
+ * Trellus dials through its own extension, so the CRM's Call button is never
+ * pressed and Call Open At is never set. The only thing the server hears is the
+ * completion webhook. Without this, an agent running a Trellus session has no
+ * server-side signal at all — and if their CRM tab is behind the dialer, the
+ * client heartbeat is not running either, so the stack ages out underneath a
+ * working agent.
+ *
+ * A webhook is proof they are dialling. Treat it as activity across everything
+ * they hold, not just the lead the event names.
+ */
+function touchStack_(owner, state) {
+  if (!owner || !sheets_()[state]) return 0;
+  const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
+  const lr = sheet ? sheet.getLastRow() : 0;
+  if (lr < 2) return 0;
+  const range = sheet.getRange(2, COL['Locked By'], lr - 1, 4);
+  const vals = range.getValues();
+  const now = stamp_();
+  let touched = 0;
+  vals.forEach(function(r) {
+    if (lockOwnerIsMe_(r[0], owner)) { r[2] = now; touched++; }   // Last Activity At
+  });
+  if (touched) range.setValues(vals);
+  return touched;
 }
 
 // Sheet-level lookup with no visibility check — the caller is the Worker, not a
