@@ -183,6 +183,9 @@ function whereAmI() {
 
   const lines = [
     label ? '=== ' + label + ' ===' : '=== PRODUCTION ===',
+    'Code version: ' + CODE_VERSION +
+      '   (compare against what ping reports — if they differ, the deployment' +
+      ' was never given a new version)',
     label
       ? 'ENV_LABEL is set. New spreadsheets are named "' + envPrefix_() + '…".'
       : 'ENV_LABEL is NOT set. This project owns the real agents\' leads.',
@@ -412,6 +415,13 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // Somebody dialled this lead minutes ago. Even once their lock lapses, handing
 // it straight to a second agent means the prospect is called twice by the same
 // agency inside a quarter of an hour.
+// Bumped whenever Code.gs changes in a way worth confirming reached production.
+// Pasting into the editor and cutting a new deployment version are two separate
+// steps, and doing the first without the second leaves the web app serving old
+// code while the editor runs new code — which has quietly happened here more
+// than once. ping reports this so the question is answerable from outside.
+const CODE_VERSION         = '2026-09-13.lock-audit';
+
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
 // however alive the browser looks. The heartbeat is meant to protect an agent
@@ -1088,6 +1098,7 @@ function doGet(e) {
     if (action === 'ping') {
       return jsonOut({
         ok: true,
+        version: CODE_VERSION,
         // The client uses this to correct a wrong device clock before deciding
         // whether a call is inside the legal window. Unauthenticated on purpose:
         // it is the same fact as any public NTP server, and the sync has to work
