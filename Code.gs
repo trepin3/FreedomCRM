@@ -409,6 +409,37 @@ const RESERVE_SIZE         = 150;
 const IDLE_RELEASE_MS      = 15 * 60 * 1000;
 const OPEN_CALL_CEILING_MS = 2 * 60 * 60 * 1000;
 const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it this long
+// Somebody dialled this lead minutes ago. Even once their lock lapses, handing
+// it straight to a second agent means the prospect is called twice by the same
+// agency inside a quarter of an hour.
+const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
+
+/**
+ * Records that an agent is alive, right now.
+ *
+ * Called on every authenticated request, so anything counts as working —
+ * loading a lead, dispositioning, the heartbeat poll, a Trellus webhook. The
+ * stack then survives on the agent being *present* rather than on one specific
+ * poll continuing to fire from a tab that may be sitting behind a dialer.
+ *
+ * Cache rather than the sheet: this runs on every request, and a write per
+ * request would cost more than the protection is worth. If the cache evicts,
+ * the sheet timestamps still govern, so this only ever adds safety.
+ */
+function touchSeen_(id) {
+  if (!id) return;
+  try {
+    CacheService.getScriptCache().put('seen_' + id, String(Date.now()), 21600);
+  } catch (e) {}
+}
+
+function seenRecently_(owner) {
+  if (!owner) return false;
+  try {
+    const v = CacheService.getScriptCache().get('seen_' + String(owner));
+    return !!v && (Date.now() - Number(v)) < IDLE_RELEASE_MS;
+  } catch (e) { return false; }
+}
 const SOLD_FOLLOWUP_DAYS   = 3;
 
 const SEED_LEAD_SOURCES = ['$1 Bang Bang', '$1 Goat', 'DashlyPro', 'ERS Referral'];
@@ -1048,6 +1079,7 @@ function doGet(e) {
     }
 
     const user = verifySession_(e.parameter.s);
+    if (user && user.id) touchSeen_(user.id);
     if (!user) return jsonOut({ error: 'auth_required' });
 
     const isAdmin = user.role === 'admin';
@@ -1125,6 +1157,7 @@ function doPost(e) {
     if (action === 'trellusEvent') return jsonOut(actionTrellusEvent(body));
 
     const user = verifySession_(body.s);
+    if (user && user.id) touchSeen_(user.id);
     if (!user) return jsonOut({ error: 'auth_required' });
     body.agent = user.name;          // ignore whatever the client claimed
     body.agentId = user.id;          // locks key on this; the name is display
@@ -1241,6 +1274,14 @@ function getLeads(stateCode, agent, me, size) {
       // the donor's own path — so canSee_ hands it straight back. Giving a
       // lead away has to mean you stop being offered it.
       if (String(row[iDonBy] || '') === String(agent || '')) return;
+
+      // Called very recently by somebody. Their lock may have lapsed while they
+      // were still on the phone — Trellus writes nothing to the row until the
+      // call completes — so this is the last guard against two agents dialling
+      // the same prospect minutes apart.
+      const lastCall = parseStamp_(row[iStart]);
+      if (lastCall && now - lastCall < REDIAL_COOLDOWN_MS &&
+          !lockOwnerIsMe_(row[iLockBy], me)) return;
 
       const lockedBy = String(row[iLockBy] || '');
       if (lockedBy) {
@@ -1360,6 +1401,7 @@ function releaseStale_(sheet) {
     const owner = String(row[iLockBy] || '');
     if (!owner) return;
     if (onCall[owner]) return;                  // mid-call, the stack stays put
+    if (seenRecently_(owner)) return;           // they have touched the server since
     const seen = freshest[owner] || 0;
     // No readable timestamp anywhere in the stack is not evidence of idleness.
     // Leaving it costs one lead until somebody force-releases; dropping an
@@ -2724,9 +2766,15 @@ function actionTrellusEvent(body) {
   }
   writeCells_(found.sheet, found.rowIndex, write);
 
-  // Keep the rest of their stack alive. A rep mid-Trellus-session is working
-  // even though nothing in this app has been clicked.
-  if (who) { try { touchStack_(who, found.state); } catch (e) {} }
+  // Keep the stack alive. Credit whoever *holds* the lead rather than whoever
+  // rep_email resolved to: the holder is by definition the person dialling it,
+  // and an unrecognised rep_email must not cost them their stack.
+  try {
+    const holder = String(found.sheet.getRange(found.rowIndex, COL['Locked By'])
+                            .getValue() || '').trim();
+    if (holder) { touchSeen_(holder); touchStack_({ id: holder }, found.state); }
+    else if (who) { touchSeen_(who.id); touchStack_(who, found.state); }
+  } catch (e) {}
 
   processedTab_().appendRow([key, now, leadId, outcome,
                              rep + (who ? '' : ' (unattributed)'), applied]);
