@@ -81,8 +81,19 @@ export default {
 
     // Only ever this action. A relay that forwards whatever action it is handed
     // is an open door into every endpoint the CRM has.
+    // Absent means completion, which is all Trellus sent before the start
+    // signal existed. Their original integration keeps working with no change
+    // on their side.
+    const event = String(payload.event || payload.type || 'call.completed')
+      .trim().toLowerCase();
+    if (event !== 'call.started' && event !== 'call.completed') {
+      return json({ error: 'unknown event', got: event,
+                    expected: ['call.started', 'call.completed'] }, 400, origin);
+    }
+
     const body = {
       action: 'trellusEvent',
+      event:  event,
       secret: String(env.SHARED_SECRET || '').trim(),
       session_id: payload.session_id || payload.sessionId || '',
       lead_id:    payload.lead_id    || payload.leadId    || '',
@@ -125,6 +136,7 @@ export default {
 
     // 200 on a duplicate too. A retried delivery already applied is a success
     // from their side, and telling them otherwise invites an endless retry.
-    return json({ ok: true, applied: out.applied, duplicate: !!out.duplicate }, 200, origin);
+    return json({ ok: true, applied: out.applied, duplicate: !!out.duplicate,
+                  ignored: out.ignored }, 200, origin);
   }
 };

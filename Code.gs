@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-13.lock-audit';
+const CODE_VERSION         = '2026-09-14.sweep+callstart';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -1405,7 +1405,7 @@ function getLeads(stateCode, agent, me, size) {
  */
 function releaseStale_(sheet) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) return 0;
   const data = sheet.getRange(2, 1, lastRow - 1, LEAD_COLS.length).getValues();
   const now = Date.now();
   const iLockBy = ix_('Locked By'), iAct = ix_('Last Activity At'),
@@ -1457,7 +1457,18 @@ function releaseStale_(sheet) {
     if (seenRecently_(owner)) return;
 
     // 4. Something in the stack is fresh.
-    const seen = freshest[owner] || 0;
+    //
+    // lastWork counts here as well as in rule 2. Last Call Start is written to
+    // the sheet on every dial, whereas the whole-stack Last Activity At refresh
+    // comes from heartbeat_ — which stops the moment the tab is hidden. That
+    // left an agent who was dialling steadily behind a carrier portal resting
+    // on rule 3 alone, and rule 3 is a CacheService entry, which may be evicted
+    // at any time. One eviction and a working agent lost 150 leads.
+    //
+    // Taking the later of the two makes the durable signal the primary one and
+    // demotes the cache to what it should always have been: an optimisation
+    // that saves a read, not the thing standing between a rep and their stack.
+    const seen = Math.max(freshest[owner] || 0, lastWork);
     // No readable timestamp anywhere is not evidence of idleness. Leaving it
     // costs one lead until somebody force-releases; dropping an active agent's
     // stack over a parse failure is the worse error, and was the bug this
@@ -1475,6 +1486,106 @@ function releaseStale_(sheet) {
   // One write, however many were stale. Releasing a 150-lead stack row by row
   // would be 450 calls.
   if (freed) lockRange.setValues(lockVals);
+  return freed;
+}
+
+// ── The sweep ──────────────────────────────────────────────────────────────
+//
+// releaseStale_ used to be reachable from exactly one place: getLeads. Release
+// was therefore not a clock but a side effect of somebody asking for leads in
+// that specific state. A rep finished on North Carolina at eight in the
+// evening, nobody asked for North Carolina again, and 147 leads stayed locked
+// to them for thirteen hours — not because any rule held them, but because no
+// rule was ever consulted. Every other state was equally invisible: an agent
+// idle on NC while dialling VA kept the NC stack, because VA's getLeads has
+// never had any reason to look at NC.
+//
+// So the same rules now also run on a timer, across every state.
+
+/**
+ * Sweeps one state. Returns how many rows it freed.
+ *
+ * Reads the Locked By column on its own first. That is one narrow range
+ * against a few hundred rows, versus the full forty-column read releaseStale_
+ * needs — and most states, most of the time, have no locks at all. Overnight
+ * this makes the whole sweep close to free.
+ */
+function sweepState_(code) {
+  const id = sheets_()[code];
+  if (!id) return 0;
+  let sheet;
+  try {
+    sheet = SpreadsheetApp.openById(id).getSheetByName('Leads');
+  } catch (e) { return 0; }
+  if (!sheet) return 0;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  const owners = sheet.getRange(2, COL['Locked By'], lastRow - 1, 1).getValues();
+  let any = false;
+  for (let i = 0; i < owners.length; i++) {
+    if (String(owners[i][0] || '').trim()) { any = true; break; }
+  }
+  if (!any) return 0;
+
+  // getLeads reserves under the script lock. Sweeping without it could free a
+  // row in the instant between that read and its write, and the agent would
+  // hold a lead the sheet says is available.
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (e) { return 0; }
+  try {
+    return releaseStale_(sheet);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Trigger handler. Runs the release rules over every state that has leads.
+ *
+ * Unlike keepWarm this does NOT skip outside calling hours — after hours is
+ * precisely when nothing else would ever call it, and the stack sitting locked
+ * all night was the symptom that produced this function.
+ */
+function sweepLocks() {
+  const t0 = Date.now();
+  const detail = [];
+  let total = 0;
+  activeStates_().forEach(function(code) {
+    try {
+      const n = sweepState_(code);
+      if (n) { total += n; detail.push(code + ':' + n); }
+    } catch (e) {
+      detail.push(code + ' failed(' + e.message + ')');
+    }
+  });
+  const msg = 'Lock sweep — freed ' + total +
+              (detail.length ? ' [' + detail.join(', ') + ']' : '') +
+              ' in ' + (Date.now() - t0) + 'ms';
+  Logger.log(msg);
+  return msg;
+}
+
+function setupLockSweep() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'sweepLocks') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('sweepLocks').timeBased().everyMinutes(15).create();
+  // Sweep once now rather than leaving you to wonder for fifteen minutes.
+  const first = sweepLocks();
+  const msg = 'Lock sweep installed — every 15 minutes, around the clock.\n' + first;
+  Logger.log(msg);
+  return msg;
+}
+
+function removeLockSweep() {
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'sweepLocks') { ScriptApp.deleteTrigger(t); n++; }
+  });
+  const msg = 'Removed ' + n + ' lock-sweep trigger(s).';
+  Logger.log(msg);
+  return msg;
 }
 
 // Locks used to hold a display name. Two people sharing one could release and
@@ -2248,6 +2359,11 @@ function adminStats(range, scope) {
   const agents = {};
 
   activeStates_().forEach(function(state) {
+    // Sweep before counting. AVAILABLE and IN PROGRESS are read as the live
+    // pool and acted on — how many leads are left, who is holding what. A
+    // count that includes reservations the rules would have freed is not a
+    // slightly stale number, it is the wrong number.
+    try { sweepState_(state); } catch (e) {}
     const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
     const st = { available: 0, inProgress: 0, callbacks: 0, dcid: 0, sold: 0, wrong: 0, review: 0 };
     const lr = sheet.getLastRow();
@@ -2765,6 +2881,63 @@ function alreadyProcessed_(key) {
   return false;
 }
 
+/**
+ * call.started — the signal that closes the last stack-loss gap.
+ *
+ * Until this existed, Trellus only spoke at the end of a call. A rep whose very
+ * first call of a session ran long, with the CRM tab behind a carrier portal,
+ * had nothing anywhere telling us they were working: the heartbeat stops when
+ * the tab is hidden, the presence cache was never warmed, and no lead in the
+ * stack carried a fresh timestamp. Their stack aged out underneath a live call.
+ *
+ * Setting Call Open At is deliberately the strongest thing we can do — rule 1
+ * of releaseStale_ holds an owner's ENTIRE stack while any call is open, which
+ * is exactly right, because a rep on a call is unambiguously working.
+ *
+ * Kept cheap on purpose. No Attempts, no disposition, no ProcessedEvents row:
+ * this fires on every dial, and alreadyProcessed_ scans that whole tab on every
+ * completion, so recording starts there would make each event progressively
+ * more expensive for the rest of the system's life.
+ */
+function trellusCallStarted_(body, sessionId) {
+  const leadId = String(body.lead_id || '').trim().toUpperCase();
+  if (!leadId) return { error: 'no lead_id' };
+
+  // Already ended. See the tombstone written by the completion path.
+  try {
+    if (CacheService.getScriptCache().get('tdone_' + sessionId)) {
+      return { success: true, ignored: 'call already completed' };
+    }
+  } catch (e) {}
+
+  const found = leadRowById_(leadId);
+  if (!found) return { error: 'not_found' };
+
+  const now = stamp_();
+  const startedAt = body.started_at || now;
+
+  // Naturally idempotent — a redelivered start rewrites the same two cells.
+  // That is why this needs no dedupe key of its own.
+  writeCells_(found.sheet, found.rowIndex, {
+    'Call Open At': startedAt,
+    'Last Activity At': now
+  });
+
+  // Credit the holder, not rep_email. The holder is by definition the person
+  // dialling, and an unrecognised rep_email must never cost them their stack.
+  let held = 0;
+  try {
+    const holder = String(found.sheet.getRange(found.rowIndex, COL['Locked By'])
+                            .getValue() || '').trim();
+    const rep = String(body.rep_email || '').trim().toLowerCase();
+    const who = rep ? userByEmail_(rep) : null;
+    if (holder) { touchSeen_(holder); held = touchStack_({ id: holder }, found.state); }
+    else if (who) { touchSeen_(who.id); held = touchStack_(who, found.state); }
+  } catch (e) {}
+
+  return { success: true, applied: 'call opened', held: held };
+}
+
 function actionTrellusEvent(body) {
   const secret = PropertiesService.getScriptProperties()
     .getProperty(TRELLUS_SHARED_SECRET_PROP);
@@ -2772,6 +2945,15 @@ function actionTrellusEvent(body) {
 
   const sessionId = String(body.session_id || '').trim();
   if (!sessionId) return { error: 'no session_id' };
+
+  // Absent means completion. Trellus shipped against a one-event contract and
+  // their existing integration must keep working untouched while they roll the
+  // start signal out — an integration that breaks the moment we deploy is not
+  // one they will be keen to extend again.
+  const event = String(body.event || 'call.completed').trim().toLowerCase();
+  if (event === 'call.started') return trellusCallStarted_(body, sessionId);
+  if (event !== 'call.completed') return { error: 'unknown event: ' + event };
+
   const key = 'call.completed:' + sessionId;
 
   // Acknowledged, not re-applied. A retry must not disposition twice.
@@ -2833,6 +3015,11 @@ function actionTrellusEvent(body) {
 
   processedTab_().appendRow([key, now, leadId, outcome,
                              rep + (who ? '' : ' (unattributed)'), applied]);
+
+  // Tombstone, so a start event that arrives late — a retry, or a queue that
+  // drained out of order — cannot reopen a call that has already ended and sit
+  // on the rep's stack for the two-hour open-call ceiling.
+  try { CacheService.getScriptCache().put('tdone_' + sessionId, '1', 21600); } catch (e) {}
   logActivity_({ email: rep, name: repName || 'Trellus', role: 'system' },
                'trellusCall', leadId + ' — ' + applied, found.state);
 
@@ -3031,6 +3218,10 @@ function adminLocks(scope) {
     return nameCache[key];
   };
   activeStates_().forEach(state => {
+    // Same reason as adminStats: Live Agent Activity is the screen somebody
+    // checks to decide whether to force-release a stack. It has to show what
+    // the rules say is held, not what the sheet last happened to record.
+    try { sweepState_(state); } catch (e) {}
     const ss = SpreadsheetApp.openById(sheets_()[state]);
     const sheet = ss.getSheetByName('Leads');
     const lr = sheet.getLastRow();
