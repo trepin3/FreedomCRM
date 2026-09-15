@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.backfill-perf';
+const CODE_VERSION         = '2026-09-15.audit-polish';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3250,15 +3250,24 @@ function auditTrellusDispositions(days) {
 
   L.push('');
   L.push('OURS TO FIX — reps whose Trellus address is not their CRM address:');
-  const allPhantom = Object.assign({}, phantomAgents);
-  Object.keys(unattributed).forEach(function(e) { allPhantom[e] = allPhantom[e] || 0; });
-  if (!Object.keys(allPhantom).length) L.push('   none');
-  Object.keys(allPhantom).forEach(function(e) {
+  // Only what is still wrong on a lead. ProcessedEvents keeps the address
+  // Trellus actually sent, and it should — it is a log of what arrived, not a
+  // record to be rewritten. Listing those made a repaired account keep showing
+  // up as broken with "0 rows" beside it, which trains you to ignore the
+  // section that matters.
+  const live = Object.keys(phantomAgents).filter(function(e) { return phantomAgents[e] > 0; });
+  if (!live.length) L.push('   none');
+  live.forEach(function(e) {
     const u = userByEmail_(e);
-    L.push('   ' + e + '  — ' + allPhantom[e] + ' rows' +
+    L.push('   ' + e + '  — ' + phantomAgents[e] + ' rows' +
            (u ? '  → resolves now to ' + u.name + ', run repairAgentAttribution()'
               : '  → NOT in Users. Add it, or run repairAgentAttribution with a mapping.'));
   });
+  const histOnly = Object.keys(unattributed).filter(function(e) { return !phantomAgents[e]; });
+  if (histOnly.length) {
+    L.push('   (' + histOnly.join(', ') + ' appears in the event log but no longer on any lead' +
+           ' — already repaired, nothing to do)');
+  }
 
   L.push('');
   L.push('WORKING AS INTENDED — called, still dialable, event received: ' + withEvent.length);
