@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.upsell-backfill';
+const CODE_VERSION         = '2026-09-15.backfill-perf';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3061,16 +3061,22 @@ function backfillTrellusOwners(mapping) {
     map[String(k).trim().toLowerCase()] = String(mapping[k]).trim().toLowerCase();
   });
 
+  // Both indexes built once, up front. usersAll_ re-reads the Users sheet on
+  // every call and does not cache, so resolving per row meant a sheet read per
+  // row — thousands of them against ProcessedEvents, which is exactly how this
+  // hit the six-minute execution limit the first time it ran.
   const users = usersAll_();
-  const byName = {};
-  users.forEach(function(u) { byName[String(u.name || '').trim().toLowerCase()] = u; });
+  const byName = {}, byEmail = {};
+  users.forEach(function(u) {
+    byName[String(u.name || '').trim().toLowerCase()] = u;
+    if (u.email) byEmail[String(u.email).trim().toLowerCase()] = u;
+  });
 
   const resolve = function(v) {
     const s = String(v || '').trim().toLowerCase();
     if (!s) return null;
     if (s.indexOf('@') !== -1) {
-      const u = userByEmail_(s);
-      if (u) return u;
+      if (byEmail[s]) return byEmail[s];
       const mappedName = map[s];
       return mappedName ? (byName[mappedName] || null) : null;
     }
@@ -3291,6 +3297,15 @@ function repairAgentAttribution(mapping) {
   const changed = {}, unresolved = {};
   let rows = 0;
 
+  // Indexed once. userByEmail_ re-reads the Users sheet every call, so looking
+  // up per field per row was a sheet read per hit — seven hundred of them on
+  // the first real run, and it only finished because most values are names and
+  // short-circuit before the lookup.
+  const byEmail = {};
+  usersAll_().forEach(function(u) {
+    if (u.email) byEmail[String(u.email).trim().toLowerCase()] = u;
+  });
+
   activeStates_().forEach(function(code) {
     const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
     const n = sheet ? sheet.getLastRow() : 0;
@@ -3306,7 +3321,7 @@ function repairAgentAttribution(mapping) {
         const key = v.toLowerCase();
         let name = map[key];
         if (!name) {
-          const u = userByEmail_(key);
+          const u = byEmail[key];
           name = u ? u.name : '';
         }
         if (!name) { unresolved[key] = (unresolved[key] || 0) + 1; return; }
