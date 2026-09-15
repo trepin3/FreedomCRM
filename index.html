@@ -2136,7 +2136,14 @@ function startTimers() {
   state.lbPollTimer = setInterval(() => { if (state.activeTab === 'leaderboard') loadLeaderboard(); }, 60000);
   // Notice if this stack gets pulled out from under us — an admin force
   // release, or the idle timer expiring. Reads one column, so it is cheap.
-  state.holdTimer = setInterval(checkStillHolding, 10000);
+  // Thirty seconds, not ten. This is the single biggest source of requests in
+  // the app — six agents at ten seconds is around seventeen thousand calls a
+  // day, and every one that fails costs the agent a retry. It does not change
+  // how long a stack lives: heartbeat_ throttles the whole-stack refresh to once
+  // every four minutes on the server regardless of how often this asks. All
+  // that changes is learning up to thirty seconds later that a stack was
+  // pulled, which is rare and costs nothing when it happens.
+  state.holdTimer = setInterval(checkStillHolding, 30000);
 }
 
 // Coming back to the tab is exactly when a stale stack is most likely, and
