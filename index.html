@@ -79,6 +79,41 @@ body.is-admin .admin-only{display:flex;}
   align-items:center;justify-content:center;gap:12px;padding:40px 20px;}
 .sold-range{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
 .outside-sale-bar{display:flex;justify-content:flex-end;margin-bottom:12px;}
+
+/* ── Dialer upsell ────────────────────────────────────────────────────────
+   Positioned relative so the close button can sit inside the card's own top
+   left rather than floating over the page. */
+.trellus-card{position:relative;max-width:520px;padding-top:34px;}
+.trellus-x{position:absolute;top:12px;left:12px;width:28px;height:28px;border-radius:50%;
+  border:none;background:var(--input-bg);color:var(--text-secondary);font-size:13px;
+  line-height:1;cursor:pointer;font-family:inherit;display:flex;align-items:center;
+  justify-content:center;transition:background 0.15s,color 0.15s;}
+.trellus-x:hover{background:var(--danger);color:#fff;}
+.trellus-eyebrow{font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--primary);text-align:center;margin-bottom:8px;}
+.trellus-head{font-size:26px;font-weight:800;line-height:1.2;text-align:center;
+  letter-spacing:-0.5px;color:var(--text);margin-bottom:10px;}
+.trellus-sub{font-size:13.5px;line-height:1.5;text-align:center;color:var(--text-secondary);
+  margin:0 auto 20px;max-width:400px;}
+.trellus-feat{display:flex;flex-direction:column;gap:14px;margin-bottom:22px;}
+.tf{display:flex;gap:12px;align-items:flex-start;}
+.tf-i{flex-shrink:0;width:34px;height:34px;border-radius:9px;background:var(--input-bg);
+  display:flex;align-items:center;justify-content:center;font-size:17px;}
+.tf-t{font-size:14px;font-weight:800;color:var(--text);margin-bottom:2px;}
+.tf-d{font-size:12.5px;line-height:1.45;color:var(--text-secondary);}
+.trellus-cta{display:block;text-align:center;padding:14px;border-radius:var(--radius-sm);
+  background:var(--primary);color:#fff;font-size:15px;font-weight:800;text-decoration:none;
+  font-family:inherit;transition:background 0.15s,transform 0.1s;}
+.trellus-cta:hover{background:var(--primary-dark);}
+.trellus-cta:active{transform:scale(0.985);}
+.trellus-have{display:block;width:100%;margin-top:10px;padding:9px;border:none;
+  background:none;color:var(--text-secondary);font-size:12.5px;font-weight:700;
+  cursor:pointer;font-family:inherit;text-decoration:underline;}
+.trellus-have:hover{color:var(--text);}
+@media (max-width:480px){
+  .trellus-head{font-size:21px;}
+  .trellus-card{padding-top:30px;}
+}
 .sold-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
 .sold-stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;}
 .sold-stat-n{font-size:22px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;}
@@ -1004,6 +1039,45 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
      row behaves like any other sale afterwards: it counts toward AP and can be
      booked for ERS, which is the whole point, because these are exactly the
      clients who produce referrals. -->
+<!-- Shown at sign-in to agents who do not already have the dialer. Ownership is
+     decided on the server, so clearing a browser does not restart the pitch for
+     somebody who already bought. -->
+<div class="modal-overlay" id="trellusModal" onclick="trellusOverlayClick(event)">
+  <div class="modal-card trellus-card">
+    <button class="trellus-x" onclick="dismissTrellusModal()" aria-label="Close">✕</button>
+
+    <div class="trellus-eyebrow">Upgrade your dialer</div>
+    <div class="trellus-head">Dial five at once.<br>Never face a rebuttal alone.</div>
+    <div class="trellus-sub">
+      FreedomCRM is free and always will be. Trellus is the dialer that sits on
+      top of it — and it changes what a dialing day looks like.
+    </div>
+
+    <div class="trellus-feat">
+      <div class="tf"><div class="tf-i">📞</div><div>
+        <div class="tf-t">Five lines at a time</div>
+        <div class="tf-d">Parallel dialing connects you to the one who answers. Same hour, several times the conversations.</div>
+      </div></div>
+      <div class="tf"><div class="tf-i">🧠</div><div>
+        <div class="tf-t">Live rebuttal handling</div>
+        <div class="tf-d">AI listens on the call and puts the answer on your screen the moment the objection lands.</div>
+      </div></div>
+      <div class="tf"><div class="tf-i">🎧</div><div>
+        <div class="tf-t">Exclusive dial rooms</div>
+        <div class="tf-d">Dial alongside your team. Hear what is working today and borrow it on your next call.</div>
+      </div></div>
+      <div class="tf"><div class="tf-i">🥊</div><div>
+        <div class="tf-t">Practice against AI</div>
+        <div class="tf-d">Run live calls against AI prospects and drill the objections that cost you sales — before they cost you one.</div>
+      </div></div>
+    </div>
+
+    <a class="trellus-cta" href="https://app.trellus.ai/join/kepler" target="_blank"
+       rel="noopener" onclick="trellusCtaClicked()">Upgrade my dialer →</a>
+    <button class="trellus-have" onclick="alreadyHaveTrellus()">I already have Trellus</button>
+  </div>
+</div>
+
 <div class="modal-overlay" id="outsideSaleModal">
   <div class="modal-card">
     <div class="modal-title">➕ Sale made outside the CRM</div>
@@ -1555,6 +1629,72 @@ async function onGoogleCredential(res) {
   localStorage.setItem('fcrm_role', state.role);
 
   enterAfterSignIn();
+  maybeShowTrellusUpsell(session);
+}
+
+// ══════════════════════════════════════════════════
+// DIALER UPSELL
+//
+// Whether to pitch is decided on the server, because the question is about a
+// person and not a browser — clearing a cache should not restart the pitch for
+// somebody who already bought, and buying on one machine should settle it on
+// every machine.
+//
+// Detecting the extension from the page is the part that cannot be done
+// properly. A page cannot enumerate extensions, and Trellus does not announce
+// itself on load — it only speaks at dial and at hangup. So this listens for a
+// moment in case it says anything, and otherwise relies on the server flag,
+// which is set the first time any Trellus event arrives for this agent. That
+// is proof rather than a guess, but it only lands after their first dial.
+// Asking Trellus for a presence ping on load would close the gap entirely.
+// ══════════════════════════════════════════════════
+let trellusDetected = false;
+
+function noteTrellusPresent() {
+  if (trellusDetected) return;
+  trellusDetected = true;
+  const m = document.getElementById('trellusModal');
+  if (m) m.classList.remove('show');
+  api('POST', { action: 'trellusOwned', how: 'detected' }).catch(function() {});
+}
+
+function maybeShowTrellusUpsell(session) {
+  if (!session || session.trellusUpsell !== true) return;
+
+  // Give the extension a moment to say something first. It announces nothing
+  // on load today, so in practice this only catches an agent who signs in with
+  // a call already running — but it costs a second and it is the one signal
+  // that beats the server flag on the very first day they buy.
+  setTimeout(function() {
+    if (trellusDetected) return;
+    const m = document.getElementById('trellusModal');
+    if (m) m.classList.add('show');
+  }, 1200);
+}
+
+// Closing without buying is not "I own it" — it is "not now", and they get the
+// pitch again next sign-in. Only the explicit button settles it for good.
+function dismissTrellusModal() {
+  const m = document.getElementById('trellusModal');
+  if (m) m.classList.remove('show');
+}
+
+function trellusOverlayClick(e) {
+  // The overlay is the backdrop; a click that lands on the card itself bubbles
+  // up to here, so this has to check the target rather than just close.
+  if (e.target && e.target.id === 'trellusModal') dismissTrellusModal();
+}
+
+function alreadyHaveTrellus() {
+  dismissTrellusModal();
+  api('POST', { action: 'trellusOwned', how: 'said' }).catch(function() {});
+}
+
+function trellusCtaClicked() {
+  // The link opens in a new tab and this modal has done its job. Not marked as
+  // owned — clicking through is not buying, and the server will record it
+  // properly the first time they actually dial through it.
+  dismissTrellusModal();
 }
 
 function showLoginError(msg) {
@@ -1858,6 +1998,10 @@ window.addEventListener('message', function(e) {
   if (!d || typeof d !== 'object') return;
   if (d.source !== 'trellus-extension' || d.target !== 'freedomcrm') return;
   if (Number(d.version) !== 1) return;
+
+  // Whatever else this message is, it came from the extension — which means
+  // this agent has it, and should never see the upsell again.
+  noteTrellusPresent();
 
   const started = d.type === 'trellus:call.started';
   const ended   = d.type === 'trellus:call.completed';
