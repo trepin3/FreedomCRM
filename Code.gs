@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.sale-details';
+const CODE_VERSION         = '2026-09-15.outside-sale';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -1252,6 +1252,7 @@ function doPost(e) {
       case 'callStarted': result = actionCallStarted(userByEmail_(user.email), body); break;
       case 'trellusActivity': result = actionTrellusActivity(userByEmail_(user.email), body); break;
       case 'completeSale': result = actionCompleteSale(userByEmail_(user.email), body); break;
+      case 'outsideSale': result = actionAddOutsideSale(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -4149,6 +4150,124 @@ function updateLead_(me, body) {
 // A manager or admin looks at them before they are lost: back to the pool if
 // the agent was hasty, archived if genuinely dead. Either way the lead row
 // survives — archiving is a status, not a delete, so the history stays.
+/**
+ * A policy written outside the CRM — a referral, a walk-in, a client who rang
+ * the agent directly. There was no lead, so there is no row to disposition.
+ *
+ * Creates the lead and the sale in one step. The row it writes is deliberately
+ * indistinguishable from any other sale afterwards: it appears in the sold
+ * workspace, counts toward AP and the leaderboard, and can be booked for ERS —
+ * which matters, because an outside sale is exactly the kind that produces
+ * referrals.
+ *
+ * Refuses rather than duplicates when the phone is already in the CRM. A second
+ * row for the same person splits their history, and the right move is almost
+ * always to mark the lead they already have as sold. The caller is told which
+ * lead it is so they can go and do that.
+ */
+function actionAddOutsideSale(me, body) {
+  if (!me) return { error: 'auth_required' };
+
+  const name = String(body.name || '').trim();
+  if (!name) return { error: 'Client name is required.' };
+
+  const phone = phoneKey_(body.phone);
+  if (phone.length < 10) return { error: 'A 10-digit phone number is required.' };
+
+  const st = String(body.state || '').toUpperCase();
+  if (!US_STATES[st]) return { error: 'Pick the state the client lives in.' };
+
+  const monthly = Number(String(body.premium || '').replace(/[^0-9.]/g, '')) || 0;
+  if (monthly <= 0) return { error: 'Monthly premium is required.' };
+  if (!String(body.carrier || '').trim()) return { error: 'Carrier is required.' };
+
+  if (!ensureStateSheet_(st)) return { error: 'Could not open the ' + st + ' sheet.' };
+
+  // One at a time, or two agents adding the same client in the same second both
+  // read the same next id and one row overwrites the other.
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (e) { return { error: 'busy, try again' }; }
+
+  try {
+    const sheet = SpreadsheetApp.openById(sheets_()[st]).getSheetByName('Leads');
+    const lr = sheet.getLastRow();
+
+    // Already in the CRM? Say so instead of creating a twin.
+    if (lr >= 2) {
+      const cols = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+      for (let i = 0; i < cols.length; i++) {
+        if (phoneKey_(cols[i][ix_('Phone')]) !== phone) continue;
+        return {
+          error: 'That number is already in the CRM as ' +
+                 (String(cols[i][ix_('Name')] || '') || 'a lead') +
+                 ' (' + String(cols[i][ix_('Lead ID')] || '') + '). ' +
+                 'Open that lead and mark it sold so the history stays on one record.',
+          duplicate: { state: st, rowIndex: i + 2,
+                       leadId: String(cols[i][ix_('Lead ID')] || ''),
+                       name: String(cols[i][ix_('Name')] || ''),
+                       status: String(cols[i][ix_('Status')] || '') }
+        };
+      }
+    }
+
+    const now = stamp_();
+    const parts = splitName_(name);
+    const row = new Array(LEAD_COLS.length).fill('');
+
+    row[ix_('Lead ID')]     = st + '-' + ('000000' + nextLeadSeq_(sheet, st)).slice(-6);
+    row[ix_('Status')]      = STATUS.SOLD;
+    row[ix_('Status At')]   = now;
+    row[ix_('Status By')]   = me.name || me.email;
+    row[ix_('Status Reason')] = 'Sold outside the CRM';
+    // Theirs, not the pool's. Nobody else wrote this policy and nobody else
+    // should be able to dial the client.
+    row[ix_('Visibility')]  = VISIBILITY.EXCLUSIVE;
+    row[ix_('Owner ID')]    = me.id || '';
+    row[ix_('Name')]        = name;
+    row[ix_('First Name')]  = parts[0];
+    row[ix_('Last Name')]   = parts[1];
+    row[ix_('Phone')]       = phone;
+    row[ix_('State')]       = st;
+    row[ix_('City')]        = String(body.city || '').trim();
+    row[ix_('Zip')]         = String(body.zip || '').trim();
+    row[ix_('Address')]     = String(body.address || '').trim();
+    row[ix_('Email')]       = String(body.email || '').trim();
+    row[ix_('Date Added')]  = now;
+    row[ix_('Lead Source')] = 'Outside CRM';
+    row[ix_('Uploaded By')] = me.name || me.email;
+
+    row[ix_('Monthly Premium')]     = body.premium || '';
+    row[ix_('AP Amount')]           = monthly * 12;
+    row[ix_('Carrier')]             = String(body.carrier || '').trim();
+    row[ix_('First Draft Date')]    = String(body.firstDraft || '');
+    row[ix_('Recurring Draft Date')]= String(body.recurringDraft || '');
+    row[ix_('Reason for Policy')]   = String(body.reason || '');
+    row[ix_('Sale Notes')]          = String(body.notes || '');
+    // The sale date the agent gives, because an outside sale is often written
+    // up days after it happened. Falls back to now.
+    row[ix_('Sold Date')]           = body.soldDate || now;
+    row[ix_('Sold Agent')]          = me.name || me.email;
+    row[ix_('Follow Up At')]        = Utilities.formatDate(
+      new Date((parseStamp_(body.soldDate) || Date.now()) + SOLD_FOLLOWUP_DAYS * 86400000),
+      TZ, 'yyyy-MM-dd');
+
+    const at = lr + 1;
+    // Text format, or a leading zero is eaten and the number becomes undialable.
+    sheet.getRange(at, COL['Phone'], 1, 1).setNumberFormat('@');
+    sheet.getRange(at, 1, 1, LEAD_COLS.length).setValues([row]);
+    bumpStateCount_(st, 1);
+    invalidateStates_(me);
+
+    logActivity_(me, 'outsideSale',
+                 row[ix_('Lead ID')] + ' — ' + name + ' $' + monthly + '/mo', st);
+
+    return { success: true, state: st, rowIndex: at,
+             leadId: row[ix_('Lead ID')], ap: monthly * 12 };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /**
  * Every policy written anywhere in this manager's downline, with its detail.
  *

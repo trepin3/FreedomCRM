@@ -78,6 +78,7 @@ body.is-admin .admin-only{display:flex;}
 .state-grid > .empty-state{grid-column:1 / -1;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:12px;padding:40px 20px;}
 .sold-range{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
+.outside-sale-bar{display:flex;justify-content:flex-end;margin-bottom:12px;}
 .sold-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px;}
 .sold-stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;}
 .sold-stat-n{font-size:22px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;}
@@ -770,6 +771,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
         <button class="admin-tab" data-range="ytd" onclick="switchSoldRange('ytd')">YTD</button>
         <button class="admin-tab" data-range="all" onclick="switchSoldRange('all')">All Time</button>
       </div>
+      <div class="outside-sale-bar">
+        <button class="mini-btn team-add-btn" onclick="openOutsideSale()">➕ Sale made outside the CRM</button>
+      </div>
       <div id="soldContent"><div class="empty-state"><div class="spinner"></div></div></div>
     </div>
 
@@ -991,6 +995,94 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
     <div class="modal-actions">
       <button class="modal-btn modal-btn-cancel" onclick="closeModal('dcidModal')">Cancel</button>
       <button class="modal-btn modal-btn-danger" onclick="confirmDCID()">Confirm DCID</button>
+    </div>
+  </div>
+</div>
+
+<!-- A policy written with no lead behind it — a referral, a walk-in, a client
+     who rang the agent directly. Creates the lead and the sale together, so the
+     row behaves like any other sale afterwards: it counts toward AP and can be
+     booked for ERS, which is the whole point, because these are exactly the
+     clients who produce referrals. -->
+<div class="modal-overlay" id="outsideSaleModal">
+  <div class="modal-card">
+    <div class="modal-title">➕ Sale made outside the CRM</div>
+    <div class="modal-sub">The client is added as your lead and marked sold in one step.</div>
+
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Client Name *</label>
+        <input class="text-input" id="osName" placeholder="First and last" autocomplete="off" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Phone *</label>
+        <input class="text-input" id="osPhone" placeholder="(555) 555-5555" inputmode="tel" autocomplete="off" required>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">State *</label>
+        <input class="text-input" id="osState" placeholder="e.g. NC or North Carolina" autocomplete="off" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label">City</label>
+        <input class="text-input" id="osCity" placeholder="Optional" autocomplete="off">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Address</label>
+        <input class="text-input" id="osAddress" placeholder="Optional" autocomplete="off">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Zip</label>
+        <input class="text-input" id="osZip" placeholder="Optional" inputmode="numeric" autocomplete="off">
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Email</label>
+      <input class="text-input" id="osEmail" placeholder="Optional" inputmode="email" autocomplete="off">
+    </div>
+
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">Monthly Premium ($) *</label>
+        <input class="text-input" id="osPremium" type="number" placeholder="75" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Carrier *</label>
+        <input class="text-input" id="osCarrier" placeholder="Carrier name" autocomplete="off" required>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label">First Draft Date *</label>
+        <input class="text-input" id="osFirstDraft" type="date" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Recurring Draft Date *</label>
+        <input class="text-input" id="osRecurringDraft" placeholder="e.g. 15th" autocomplete="off" required>
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Date of the sale</label>
+      <input class="text-input" id="osSoldDate" type="date">
+      <div class="up-hint" style="margin-top:4px;">Leave blank for today. Set it if the
+        policy was written earlier, so it lands in the right week.</div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Reason for Policy *</label>
+      <textarea class="text-input" id="osReason" rows="2" style="resize:vertical;font-family:inherit;" required></textarea>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Notes (optional)</label>
+      <textarea class="text-input" id="osNotes" rows="2" style="resize:vertical;font-family:inherit;"></textarea>
+    </div>
+
+    <div class="login-error" id="osError" style="margin-top:6px;"></div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" onclick="closeModal('outsideSaleModal')">Cancel</button>
+      <button class="modal-btn modal-btn-confirm" id="osSubmit" onclick="submitOutsideSale()">Add the sale</button>
     </div>
   </div>
 </div>
@@ -2008,6 +2100,81 @@ function renderSold(totals) {
     '</div>';
 
   el.innerHTML = summary + state.sold.map(soldCard).join('');
+}
+
+// ── Sale made outside the CRM ────────────────────────────────────────────────
+function openOutsideSale() {
+  ['osName','osPhone','osState','osCity','osAddress','osZip','osEmail','osPremium',
+   'osCarrier','osFirstDraft','osRecurringDraft','osSoldDate','osReason','osNotes']
+    .forEach(function(id) {
+      const el = document.getElementById(id);
+      if (el) { el.value = ''; el.style.borderColor = ''; }
+    });
+  const err = document.getElementById('osError');
+  err.style.display = 'none';
+  err.textContent = '';
+  document.getElementById('osSubmit').disabled = false;
+  openModal('outsideSaleModal');
+}
+
+async function submitOutsideSale() {
+  const err = document.getElementById('osError');
+  const val = function(id) { return (document.getElementById(id).value || '').trim(); };
+
+  const required = ['osName','osPhone','osState','osPremium','osCarrier',
+                    'osFirstDraft','osRecurringDraft','osReason'];
+  let missing = [];
+  required.forEach(function(id) {
+    const el = document.getElementById(id);
+    if (!el.value.trim()) { el.style.borderColor = 'var(--danger)'; missing.push(id); }
+    else el.style.borderColor = '';
+  });
+  if (missing.length) {
+    err.textContent = 'Everything marked * is needed.';
+    err.style.display = 'block';
+    document.getElementById(missing[0]).focus();
+    return;
+  }
+
+  // Checked here as well as on the server so the agent is told before the
+  // round trip, and in the same words either way.
+  if (val('osPhone').replace(/\D/g, '').replace(/^1/, '').length < 10) {
+    err.textContent = 'That phone number is not 10 digits.';
+    err.style.display = 'block';
+    document.getElementById('osPhone').focus();
+    return;
+  }
+
+  const btn = document.getElementById('osSubmit');
+  btn.disabled = true;
+  err.style.display = 'none';
+
+  try {
+    const r = await api('POST', {
+      action: 'outsideSale',
+      name: val('osName'), phone: val('osPhone'), state: val('osState'),
+      city: val('osCity'), address: val('osAddress'), zip: val('osZip'),
+      email: val('osEmail'),
+      premium: val('osPremium'), carrier: val('osCarrier'),
+      firstDraft: val('osFirstDraft'), recurringDraft: val('osRecurringDraft'),
+      reason: val('osReason'), notes: val('osNotes'),
+      soldDate: val('osSoldDate')
+    });
+    if (r && r.error) {
+      // A duplicate is not a failure to retry — it is a different lead to go
+      // and work, so the message names it rather than just refusing.
+      err.textContent = r.error;
+      err.style.display = 'block';
+      btn.disabled = false;
+      return;
+    }
+    closeModal('outsideSaleModal');
+    if (state.tab === 'sold') loadSold();
+  } catch (e) {
+    err.textContent = 'Could not save that sale. Try again.';
+    err.style.display = 'block';
+    btn.disabled = false;
+  }
 }
 
 // Indexed rather than passed inline: the sale carries free text — carrier,
