@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.trellus-activity';
+const CODE_VERSION         = '2026-09-15.sale-details';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -1152,6 +1152,7 @@ function doGet(e) {
       case 'heartbeat':   result = heartbeat_(userByEmail_(user.email) || user, e.parameter.state); break;
       case 'myBatches':   result = myBatches_(userByEmail_(user.email)); break;
       case 'dcidQueue':   result = dcidQueue_(userByEmail_(user.email)); break;
+      case 'adminSales':  result = adminSales(userByEmail_(user.email), e.parameter.range); break;
       case 'roster':      result = rosterFor_(userByEmail_(user.email)); break;
       case 'donationInfo':result = donationInfo_(userByEmail_(user.email)); break;
       case 'myTeam': {
@@ -1250,6 +1251,7 @@ function doPost(e) {
       case 'leadById':    result = leadById_(userByEmail_(user.email), body.leadId || e.parameter.leadId); break;
       case 'callStarted': result = actionCallStarted(userByEmail_(user.email), body); break;
       case 'trellusActivity': result = actionTrellusActivity(userByEmail_(user.email), body); break;
+      case 'completeSale': result = actionCompleteSale(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -1825,6 +1827,83 @@ function actionSold(body) {
   });
 }
 
+/**
+ * A sale that carries no sale.
+ *
+ * actionSold writes ten fields. A sale dispositioned in Trellus arrives by
+ * webhook and writes one: Status. So the lead leaves the dial pool and nothing
+ * looks broken, while the policy is worth nothing on the leaderboard, has no
+ * carrier or draft dates, never generates an ERS appointment, and — because
+ * getSold filters on Sold Date — cannot be seen in the sold workspace at all.
+ *
+ * Derived rather than stored in a column of its own, which is what makes this
+ * work retroactively: every sale already marked in Trellus, going back as far
+ * as the sheet does, answers true here the moment this ships. A flag column
+ * would only have caught sales made after it existed.
+ */
+function saleNeedsDetails_(row) {
+  if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) return false;
+  const ap = Number(row[ix_('AP Amount')]) || 0;
+  return !row[ix_('Sold Date')] || ap <= 0;
+}
+
+/**
+ * Fills in the sale detail on a policy that is already marked sold.
+ *
+ * Deliberately NOT the `sold` action. That one runs setStatus_, which would
+ * rewrite Status At, Status By and Status Reason — so completing a sale from
+ * three weeks ago would restamp it as having happened today and credit it to
+ * whoever typed it in. The disposition already happened; this only supplies
+ * what the webhook could not.
+ */
+function actionCompleteSale(me, body) {
+  if (!me) return { error: 'auth_required' };
+  const st = String(body.state || '').toUpperCase();
+  if (!sheets_()[st]) return { error: 'bad state' };
+  const rowIndex = Number(body.rowIndex);
+  if (!rowIndex || rowIndex < 2) return { error: 'bad row' };
+
+  const sheet = SpreadsheetApp.openById(sheets_()[st]).getSheetByName('Leads');
+  const row = sheet.getRange(rowIndex, 1, 1, LEAD_COLS.length).getValues()[0];
+  if (!canSee_(row, me)) return { error: 'not_permitted' };
+  if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) {
+    return { error: 'that lead is not marked sold' };
+  }
+
+  const monthly = Number(String(body.premium || '').replace(/[^0-9.]/g, '')) || 0;
+  if (monthly <= 0) return { error: 'premium is required' };
+
+  const write = {
+    'Monthly Premium': body.premium || '',
+    'AP Amount': monthly * 12,
+    'Carrier': body.carrier || '',
+    'First Draft Date': body.firstDraft || '',
+    'Recurring Draft Date': body.recurringDraft || '',
+    'Reason for Policy': body.reason || '',
+    'Sale Notes': body.notes || ''
+  };
+
+  // When the sale actually happened, not when the form was filled in. Status At
+  // is the moment the Trellus webhook landed, which is the real sale.
+  if (!row[ix_('Sold Date')]) {
+    write['Sold Date'] = row[ix_('Status At')] || stamp_();
+  }
+  // Credit the rep who made the sale. Status By is what the webhook recorded.
+  if (!row[ix_('Sold Agent')]) {
+    write['Sold Agent'] = String(row[ix_('Status By')] || me.name || '');
+  }
+  if (!row[ix_('Follow Up At')]) {
+    const base = parseStamp_(write['Sold Date'] || row[ix_('Sold Date')]) || Date.now();
+    write['Follow Up At'] = Utilities.formatDate(
+      new Date(base + SOLD_FOLLOWUP_DAYS * 86400000), TZ, 'yyyy-MM-dd');
+  }
+
+  writeCells_(sheet, rowIndex, write);
+  logActivity_(me, 'completeSale',
+               String(row[ix_('Lead ID')] || '') + ' — $' + monthly + '/mo', st);
+  return { success: true, ap: monthly * 12 };
+}
+
 // ══════════════════════════════════════════════════════════════════
 // SOLD WORKSPACE — the policies an agent has written, and the ERS
 // appointment on each one. Referrals collected at that appointment
@@ -1847,8 +1926,14 @@ function getSold(me, range) {
     data.forEach(function(row, i) {
       if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) return;
       if (!canSee_(row, me)) return;
-      const soldAt = row[ix_('Sold Date')];
-      if (cutoff && !dateInRange(soldAt, cutoff)) return;
+      const pending = saleNeedsDetails_(row);
+      // A sale with no details has no Sold Date to filter on, so the date range
+      // silently dropped it — which is why a sale marked in Trellus could not be
+      // found anywhere in this workspace. Something a rep has to act on must not
+      // be hidden by a filter it cannot satisfy; it surfaces in every range and
+      // sorts to the top.
+      const soldAt = row[ix_('Sold Date')] || row[ix_('Status At')];
+      if (!pending && cutoff && !dateInRange(soldAt, cutoff)) return;
 
       out.push({
         state: state,
@@ -1872,21 +1957,33 @@ function getSold(me, range) {
         ersBy: String(row[ix_('ERS By')] || ''),
         ersNotes: String(row[ix_('ERS Notes')] || ''),
         referrals: Number(row[ix_('Referral Count')]) || 0,
-        mine: String(row[ix_('Sold Agent')] || '') === String(me.name || '')
+        needsDetails: pending,
+        // Sold Agent is blank on a webhook sale, so attribution falls back to
+        // whoever the disposition was recorded against. Without this a rep's
+        // own Trellus sales did not read as theirs.
+        mine: String(row[ix_('Sold Agent')] || row[ix_('Status By')] || '')
+                === String(me.name || '')
       });
     });
   });
 
-  out.sort(function(a, b) { return b.soldSort - a.soldSort; });
+  // Anything needing detail first — it is a job, not a record. Newest first
+  // within each group.
+  out.sort(function(a, b) {
+    if (a.needsDetails !== b.needsDetails) return a.needsDetails ? -1 : 1;
+    return b.soldSort - a.soldSort;
+  });
 
   const totals = out.reduce(function(t, o) {
     t.policies++; t.ap += o.ap;
+    if (o.needsDetails) t.needsDetails++;
     if (o.ersStatus === ERS.DONE) t.ersDone++;
     else if (o.ersStatus === ERS.BOOKED) t.ersBooked++;
     else t.ersUnbooked++;
     t.referrals += o.referrals;
     return t;
-  }, { policies: 0, ap: 0, ersDone: 0, ersBooked: 0, ersUnbooked: 0, referrals: 0 });
+  }, { policies: 0, ap: 0, needsDetails: 0,
+       ersDone: 0, ersBooked: 0, ersUnbooked: 0, referrals: 0 });
 
   return { sold: out, totals: totals };
 }
@@ -2399,7 +2496,14 @@ function adminStats(range, scope) {
         // Dispositions in range, each dated and attributed by its own columns.
         DISPOSITION_METRICS.forEach(function(d) {
           if (status !== d[0]) return;
-          const at = row[ix_(d[1])], by = row[ix_(d[2])];
+          // Fall back to the generic disposition columns. A disposition made in
+          // Trellus arrives by webhook and writes Status/Status At/Status By,
+          // never the per-disposition pair — so `!at` was true and the row was
+          // skipped outright. Every sale marked in Trellus was therefore absent
+          // from the SOLD tile, from the AP total, and from every agent's
+          // numbers, while still leaving the dial pool and looking fine.
+          const at = row[ix_(d[1])] || row[ix_('Status At')];
+          const by = row[ix_(d[2])] || row[ix_('Status By')];
           if (!at || !dateInRange(at, cutoff) || !inScope_(scope, by)) return;
           st[d[3]]++;
           totals[d[4]]++;
@@ -4045,6 +4149,90 @@ function updateLead_(me, body) {
 // A manager or admin looks at them before they are lost: back to the pool if
 // the agent was hasty, archived if genuinely dead. Either way the lead row
 // survives — archiving is a status, not a delete, so the history stays.
+/**
+ * Every policy written anywhere in this manager's downline, with its detail.
+ *
+ * adminStats gives counts; this gives the sales themselves — who wrote what,
+ * for how much, with which carrier — which is what a manager actually reviews.
+ * Scoped on the SELLER rather than on lead ownership: the question is "what did
+ * my people write", and a rep can sell a lead owned by someone else.
+ */
+function adminSales(me, range) {
+  if (!me || (me.role !== 'admin' && me.role !== 'manager')) return { error: 'not_permitted' };
+  const scope = scopeNamesFor_(me);          // null for admin = everyone
+  const cutoff = getRangeCutoff(range || 'today');
+  const out = [];
+
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const lr = sheet ? sheet.getLastRow() : 0;
+    if (lr < 2) return;
+    const data = sheet.getRange(2, 1, lr - 1, LEAD_COLS.length).getValues();
+
+    data.forEach(function(row, i) {
+      if (String(row[ix_('Status')] || '').toLowerCase() !== STATUS.SOLD) return;
+
+      // Same fallback as everywhere else: a sale dispositioned in Trellus has
+      // neither Sold Agent nor Sold Date, only the generic Status pair.
+      const seller = String(row[ix_('Sold Agent')] || row[ix_('Status By')] || '');
+      if (!inScope_(scope, seller)) return;
+
+      const at = row[ix_('Sold Date')] || row[ix_('Status At')];
+      if (!at || !dateInRange(at, cutoff)) return;
+
+      const monthly = Number(String(row[ix_('Monthly Premium')] || '')
+                        .replace(/[^0-9.]/g, '')) || 0;
+      out.push({
+        state: code,
+        rowIndex: i + 2,
+        leadId: String(row[ix_('Lead ID')] || ''),
+        name: String(row[ix_('Name')] || ''),
+        phone: String(row[ix_('Phone')] || ''),
+        city: String(row[ix_('City')] || ''),
+        agent: seller,
+        premium: monthly,
+        ap: Number(row[ix_('AP Amount')]) || 0,
+        carrier: String(row[ix_('Carrier')] || ''),
+        firstDraft: fmtDate(row[ix_('First Draft Date')]),
+        recurringDraft: String(row[ix_('Recurring Draft Date')] || ''),
+        reason: String(row[ix_('Reason for Policy')] || ''),
+        notes: String(row[ix_('Sale Notes')] || ''),
+        soldDate: fmtDateTime(at),
+        soldSort: parseStamp_(at) || 0,
+        ersStatus: String(row[ix_('ERS Status')] || ''),
+        referrals: Number(row[ix_('Referral Count')]) || 0,
+        needsDetails: saleNeedsDetails_(row)
+      });
+    });
+  });
+
+  out.sort(function(a, b) { return b.soldSort - a.soldSort; });
+
+  const totals = out.reduce(function(t, s) {
+    t.policies++; t.ap += s.ap;
+    if (s.needsDetails) t.needsDetails++;
+    return t;
+  }, { policies: 0, ap: 0, needsDetails: 0 });
+
+  // Per agent, so a manager can see the split without doing the arithmetic.
+  const byAgent = {};
+  out.forEach(function(s) {
+    const k = s.agent || '(unattributed)';
+    byAgent[k] = byAgent[k] || { agent: k, policies: 0, ap: 0, needsDetails: 0 };
+    byAgent[k].policies++;
+    byAgent[k].ap += s.ap;
+    if (s.needsDetails) byAgent[k].needsDetails++;
+  });
+
+  return {
+    range: range || 'today',
+    sales: out,
+    totals: totals,
+    byAgent: Object.keys(byAgent).map(function(k) { return byAgent[k]; })
+                .sort(function(a, b) { return b.ap - a.ap; })
+  };
+}
+
 function dcidQueue_(me) {
   if (!me || (me.role !== 'admin' && me.role !== 'manager')) return { error: 'not_permitted' };
 

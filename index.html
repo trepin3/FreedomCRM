@@ -599,6 +599,21 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
 .admin-stat{background:var(--input-bg);border-radius:var(--radius-sm);padding:12px;text-align:center;}
 .admin-stat-num{font-size:22px;font-weight:800;color:var(--primary);}
 .admin-stat-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-top:2px;}
+/* A sales table has more columns than a phone has room for, so it scrolls
+   inside its own box rather than making the whole page scroll sideways. */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.admin-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.admin-table th.num{text-align:right;}
+.admin-sale-actions{white-space:nowrap;display:flex;gap:6px;}
+/* A sale with no premium or carrier. Flagged rather than hidden: it still
+   counts as a policy, it just cannot be scored or booked until completed. */
+.sale-flag{display:inline-block;background:var(--warning);color:#fff;font-size:10px;
+           font-weight:800;text-transform:uppercase;letter-spacing:0.4px;
+           padding:2px 6px;border-radius:99px;vertical-align:middle;}
+.sale-row-pending td{background:rgba(255,159,10,0.09);}
+.sold-pending-note{background:rgba(255,159,10,0.13);border-radius:var(--radius-sm);
+                   padding:9px 11px;margin-bottom:10px;font-size:12.5px;
+                   line-height:1.45;color:var(--text);}
 .admin-table{width:100%;border-collapse:collapse;font-size:13px;}
 .admin-table th{text-align:left;padding:8px 10px;background:var(--input-bg);font-weight:800;color:var(--text-secondary);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
 .admin-table td{padding:10px;border-bottom:1px solid var(--border);color:var(--text);}
@@ -874,6 +889,9 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <button class="admin-refresh" onclick="loadAdminData()">↻ Refresh</button>
     </div>
     <div id="adminContent"><div class="empty-state"><div class="spinner"></div></div></div>
+    <!-- Downline sales, with their detail. Follows the stats rather than
+         replacing them: the tiles answer how many, this answers which. -->
+    <div id="adminSalesBox"></div>
   </div>
     </div>
 </div>
@@ -1986,9 +2004,19 @@ function renderSold(totals) {
       stat(money(totals.ap), 'Annual premium') +
       stat(totals.ersUnbooked, 'ERS to book') +
       stat(totals.referrals, 'Referrals') +
+      (totals.needsDetails ? stat(totals.needsDetails, 'Need details') : '') +
     '</div>';
 
   el.innerHTML = summary + state.sold.map(soldCard).join('');
+}
+
+// Indexed rather than passed inline: the sale carries free text — carrier,
+// reason, notes — and building a JS call out of it invites a quote in a
+// carrier name to break the handler.
+function openSoldForIdx(i) {
+  const s = state.sold[i];
+  if (!s) return;
+  openSoldFor(s.state, s.rowIndex, s.name, s);
 }
 
 function stat(n, label) {
@@ -2011,7 +2039,14 @@ function soldCard(s, i) {
   if (s.referrals) facts.push('🤝 ' + s.referrals + ' referral' + (s.referrals === 1 ? '' : 's'));
 
   const done = s.ersStatus === 'done';
-  const actions = done
+  // A sale with no detail cannot be booked for ERS or counted, so completing it
+  // is the only action offered until it is done.
+  const actions = s.needsDetails
+    ? '<div class="ers-actions">' +
+        '<button class="mini-btn team-add-btn" onclick="openSoldForIdx(' + i + ')">' +
+          '📝 Add sale details</button>' +
+      '</div>'
+    : done
     ? ''
     : '<div class="ers-actions">' +
         '<button class="mini-btn" onclick="openErsModal(' + i + ')">' +
@@ -2021,7 +2056,12 @@ function soldCard(s, i) {
           : '') +
       '</div>';
 
-  return '<div class="sold-card">' +
+  return '<div class="sold-card"' +
+      (s.needsDetails ? ' style="border-color:var(--warning);"' : '') + '>' +
+    (s.needsDetails
+      ? '<div class="sold-pending-note">⚠️ Marked sold in Trellus — no premium or carrier ' +
+        'recorded, so it is worth $0 on the leaderboard and cannot be booked for ERS yet.</div>'
+      : '') +
     '<div class="sold-head">' +
       '<div><div class="sold-name">' + escapeHtml(s.name || '(no name)') + '</div>' +
       '<div class="sold-meta">' + escapeHtml(s.soldAgent || '') +
@@ -2828,8 +2868,34 @@ function confirmDCID() {
 // ══════════════════════════════════════════════════
 // SOLD
 // ══════════════════════════════════════════════════
-function openSold() {
-  const lead = state.leads[state.currentIdx];
+// Filling in a sale that was dispositioned elsewhere — in Trellus, or before
+// this existed. Same modal, but it submits `completeSale` rather than `sold`,
+// so the original disposition date and the rep it was credited to survive.
+// Without that, completing a sale from three weeks ago would restamp it as
+// today's and credit it to whoever happened to type it in.
+function openSoldFor(state_, rowIndex, name, sale) {
+  soldModal_({ state: state_, rowIndex: rowIndex, name: name });
+  // Anything already known is pre-filled, so a rep is only ever completing the
+  // gaps rather than retyping a policy the CRM already has.
+  if (sale) {
+    const set = function(id, v) { if (v) document.getElementById(id).value = v; };
+    set('soldPremium', sale.premium);
+    set('soldCarrier', sale.carrier);
+    set('soldFirstDraft', sale.firstDraft);
+    set('soldRecurringDraft', sale.recurringDraft);
+    set('soldReason', sale.reason);
+    set('soldNotes', sale.notes);
+  }
+}
+
+// The ✅ Sold button on the dial card. Clearing the target is the whole point
+// of the split: without it, a rep who completed an old sale and then sold the
+// lead in front of them would file the new sale against the old lead.
+function openSold() { soldModal_(null); }
+
+function soldModal_(target) {
+  state.soldTarget = target;
+  const lead = target || state.leads[state.currentIdx];
   document.getElementById('soldModalSub').textContent = lead.name;
   ['soldPremium', 'soldCarrier', 'soldFirstDraft', 'soldRecurringDraft', 'soldReason', 'soldNotes'].forEach(id => {
     const el = document.getElementById(id);
@@ -2864,6 +2930,27 @@ function confirmSold() {
   }
   errEl.style.display = 'none';
   closeModal('soldModal');
+
+  // Completing a sale that already happened. Not the `sold` action: that would
+  // restamp the disposition as today's and recredit it to whoever filled the
+  // form, so a sale from three weeks ago would move to this week's numbers.
+  // There is also no lead card to advance and no undo window to offer.
+  if (state.soldTarget) {
+    const t = state.soldTarget;
+    state.soldTarget = null;
+    api('POST', {
+      action: 'completeSale', state: t.state, rowIndex: t.rowIndex,
+      premium: values.soldPremium, carrier: values.soldCarrier,
+      firstDraft: values.soldFirstDraft, recurringDraft: values.soldRecurringDraft,
+      reason: values.soldReason, notes: document.getElementById('soldNotes').value
+    }).then(function(r) {
+      if (r && r.error) { alert(r.error); return; }
+      if (typeof loadSold === 'function' && state.tab === 'sold') loadSold();
+      if (typeof loadAdminSales === 'function') loadAdminSales();
+    }).catch(function() { alert('Could not save those details. Try again.'); });
+    return;
+  }
+
   const lead = state.leads[state.currentIdx];
   const payload = {
     action: 'sold',
@@ -4082,7 +4169,12 @@ function searchResched(s, r, tab) {
 // ══════════════════════════════════════════════════
 function switchAdminRange(range) {
   state.adminRange = range;
-  document.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t.dataset.range === range));
+  // Scoped to this panel. The sold workspace uses the same .admin-tab class
+  // with the same data-range values, so an unscoped query changed which range
+  // looked selected over there too — the workspace then showed one range while
+  // highlighting another.
+  document.querySelectorAll('#adminStatsPanel .admin-tab')
+    .forEach(t => t.classList.toggle('active', t.dataset.range === range));
   loadAdminData();
 }
 
@@ -5767,15 +5859,116 @@ async function teamAct(action, userId) {
   } catch (e) { teamMsg(e.message, false); }
 }
 
+// ══════════════════════════════════════════════════
+// DOWNLINE SALES — every policy the manager's team wrote, with its detail.
+// adminStats answers "how many"; this answers "which ones, and for how much",
+// which is what actually gets reviewed.
+// ══════════════════════════════════════════════════
+let adminSalesRows = [];
+
+function loadAdminSales() {
+  if (document.getElementById('adminSalesBox')) loadAdminData();
+}
+
+function renderAdminSales(d) {
+  const box = document.getElementById('adminSalesBox');
+  if (!box) return;
+  if (!d || d.error) { box.innerHTML = ''; return; }
+
+  adminSalesRows = d.sales || [];
+  const t = d.totals || { policies: 0, ap: 0, needsDetails: 0 };
+
+  const head = '<div class="admin-section-title">💰 Sales — ' + escapeHtml(labelForRange(d.range)) + '</div>';
+
+  if (!adminSalesRows.length) {
+    box.innerHTML = '<div class="admin-section">' + head +
+      '<div class="empty-msg" style="padding:14px 0;">No sales in this range.</div></div>';
+    return;
+  }
+
+  const summary =
+    '<div class="sold-summary">' +
+      stat(t.policies, 'Policies') +
+      stat(money(t.ap), 'Annual premium') +
+      (t.needsDetails ? stat(t.needsDetails, 'Need details') : '') +
+    '</div>';
+
+  const perAgent = (d.byAgent || []).map(function(a) {
+    return '<tr><td>' + escapeHtml(a.agent) + '</td>' +
+      '<td class="num">' + a.policies + '</td>' +
+      '<td class="num">' + money(a.ap) + '</td>' +
+      '<td class="num">' + (a.needsDetails
+        ? '<span class="sale-flag">' + a.needsDetails + '</span>' : '—') + '</td></tr>';
+  }).join('');
+
+  const rows = adminSalesRows.map(function(s, i) {
+    return '<tr' + (s.needsDetails ? ' class="sale-row-pending"' : '') + '>' +
+      '<td>' + escapeHtml(s.name || '(no name)') +
+        (s.needsDetails ? ' <span class="sale-flag">needs details</span>' : '') +
+        '<div class="sold-meta">' + escapeHtml(s.leadId || '') +
+        (s.city ? ' · ' + escapeHtml(s.city) : '') + '</div></td>' +
+      '<td>' + escapeHtml(s.agent || '—') + '</td>' +
+      '<td class="num">' + (s.premium ? money(s.premium) + '/mo' : '—') + '</td>' +
+      '<td class="num">' + (s.ap ? money(s.ap) : '—') + '</td>' +
+      '<td>' + escapeHtml(s.carrier || '—') + '</td>' +
+      '<td>' + escapeHtml(s.firstDraft || '—') + '</td>' +
+      '<td>' + escapeHtml(s.soldDate || '—') + '</td>' +
+      '<td class="admin-sale-actions">' +
+        '<button class="mini-btn" onclick="openAdminSaleLead(' + i + ')">View</button>' +
+        (s.needsDetails
+          ? '<button class="mini-btn team-add-btn" onclick="openAdminSaleDetails(' + i + ')">Add details</button>'
+          : '<button class="mini-btn" onclick="openAdminSaleDetails(' + i + ')">Edit sale</button>') +
+      '</td></tr>';
+  }).join('');
+
+  box.innerHTML =
+    '<div class="admin-section">' + head + summary +
+      '<div class="table-scroll"><table class="admin-table">' +
+        '<thead><tr><th>Agent</th><th class="num">Policies</th>' +
+        '<th class="num">AP</th><th class="num">Incomplete</th></tr></thead>' +
+        '<tbody>' + perAgent + '</tbody></table></div>' +
+    '</div>' +
+    '<div class="admin-section">' +
+      '<div class="admin-section-title">Every policy</div>' +
+      '<div class="table-scroll"><table class="admin-table">' +
+        '<thead><tr><th>Lead</th><th>Agent</th><th class="num">Premium</th>' +
+        '<th class="num">AP</th><th>Carrier</th><th>1st draft</th><th>Sold</th><th></th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>' +
+    '</div>';
+}
+
+function labelForRange(r) {
+  return { today: 'Today', week: 'This week', month: 'This month',
+           ytd: 'Year to date', all: 'All time' }[r] || 'Today';
+}
+
+// Indexed, never inlined — carrier and notes are free text and a stray quote
+// in a carrier name would otherwise break the onclick.
+function openAdminSaleDetails(i) {
+  const s = adminSalesRows[i];
+  if (!s) return;
+  openSoldFor(s.state, s.rowIndex, s.name, s);
+}
+
+async function openAdminSaleLead(i) {
+  const s = adminSalesRows[i];
+  if (!s) return;
+  const r = await api('GET', { action: 'leadById', leadId: s.leadId });
+  if (r.error || !r.lead) { alert(r.error || 'Could not open that lead.'); return; }
+  openLeadView(r.lead);
+}
+
 async function loadAdminData() {
   const c = document.getElementById('adminContent');
   c.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
   try {
-    const [stats, locks] = await Promise.all([
+    const [stats, locks, sales] = await Promise.all([
       api('GET', { action: 'adminStats', range: state.adminRange }),
-      state.adminRange === 'today' ? api('GET', { action: 'adminLocks' }) : Promise.resolve({ byAgent: [] })
+      state.adminRange === 'today' ? api('GET', { action: 'adminLocks' }) : Promise.resolve({ byAgent: [] }),
+      api('GET', { action: 'adminSales', range: state.adminRange })
     ]);
     renderAdmin(stats, locks);
+    renderAdminSales(sales);
   } catch (e) {
     c.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">Failed to load: ' + e.message + '</div><button class="login-btn" style="max-width:200px;margin-top:16px;" onclick="loadAdminData()">Retry</button></div>';
   }
