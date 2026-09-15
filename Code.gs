@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.ers-calendar';
+const CODE_VERSION         = '2026-09-15.dialer-upsell';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -446,7 +446,7 @@ const WORK_ACTIONS_ = ['getLeads', 'heartbeat', 'callStarted', 'next', 'sold',
 
 // Actions that happen many times a call and say nothing a human would read.
 // They still count as work; they just do not earn a row in the activity sheet.
-const QUIET_ACTIONS_ = ['trellusActivity', 'heartbeat'];
+const QUIET_ACTIONS_ = ['trellusActivity', 'heartbeat', 'trellusOwned'];
 
 /**
  * Records that an agent is alive, right now.
@@ -1046,7 +1046,10 @@ function actionLogin_(body) {
   return {
     token: signSession_({ e: agent.email, n: name, r: agent.role,
                           x: Date.now() + SESSION_HOURS * 3600 * 1000 }),
-    email: agent.email, name: name, role: agent.role
+    email: agent.email, name: name, role: agent.role,
+    // Whether to pitch the dialer. Decided here rather than on the client so
+    // clearing a browser does not start pitching somebody who already bought.
+    trellusUpsell: !hasTrellus_(u)
   };
 }
 
@@ -1253,6 +1256,7 @@ function doPost(e) {
       case 'trellusActivity': result = actionTrellusActivity(userByEmail_(user.email), body); break;
       case 'completeSale': result = actionCompleteSale(userByEmail_(user.email), body); break;
       case 'outsideSale': result = actionAddOutsideSale(userByEmail_(user.email), body); break;
+      case 'trellusOwned': result = actionTrellusOwned(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -2982,6 +2986,259 @@ const TRELLUS_OUTCOMES = {
   'no_answer_vm_match': '', 'left_voicemail': ''
 };
 
+// ══════════════════════════════════════════════════════════════════
+// WHO ALREADY HAS TRELLUS
+//
+// Kept on the server, not in localStorage, because the question is about a
+// person and not a browser — an agent who dials from the office desktop and
+// their laptop is one agent, and should not be pitched a product they own the
+// moment they sign in somewhere new.
+//
+// Two ways in. `has` is set automatically the first time any Trellus event
+// arrives for them, which is proof rather than a claim. `dismissed` is the
+// agent saying so themselves, or the extension announcing itself on the page.
+// ══════════════════════════════════════════════════════════════════
+
+const TRELLUS_USERS_PROP = 'TRELLUS_USERS';
+
+function trellusFlags_() {
+  try {
+    return JSON.parse(PropertiesService.getScriptProperties()
+             .getProperty(TRELLUS_USERS_PROP) || '{}');
+  } catch (e) { return {}; }
+}
+
+function markTrellusUser_(userId, patch) {
+  if (!userId) return;
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const all = trellusFlags_();
+    // Already recorded the same way — skip the write. This runs on every
+    // Trellus event, and a property write per dial is pure waste.
+    const cur = all[userId] || {};
+    let same = true;
+    Object.keys(patch).forEach(function(k) { if (cur[k] !== patch[k]) same = false; });
+    if (same) return;
+    all[userId] = Object.assign(cur, patch);
+    props.setProperty(TRELLUS_USERS_PROP, JSON.stringify(all));
+  } catch (e) { /* never break a dial over an upsell flag */ }
+}
+
+function hasTrellus_(user) {
+  if (!user || !user.id) return true;      // unknown user: say nothing
+  const f = trellusFlags_()[user.id];
+  return !!(f && (f.has || f.dismissed));
+}
+
+// The extension announced itself, or the agent said they already have it.
+function actionTrellusOwned(me, body) {
+  if (!me || !me.id) return { error: 'auth_required' };
+  markTrellusUser_(me.id, String(body && body.how) === 'detected'
+    ? { has: true, at: stamp_() }
+    : { dismissed: true, at: stamp_() });
+  return { success: true };
+}
+
+// Admin view of who is being pitched and who is not.
+function trellusOwnership() {
+  const flags = trellusFlags_();
+  const L = ['TRELLUS OWNERSHIP', ''];
+  usersAll_().forEach(function(u) {
+    const f = flags[u.id] || {};
+    L.push('   ' + (u.name + '                    ').slice(0, 22) +
+           (f.has ? 'owns it (seen dialling)'
+                  : f.dismissed ? 'said they own it'
+                  : 'being pitched'));
+  });
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// TRELLUS DIAGNOSTICS — run from the editor, read the log.
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * Why dispositions look like they are going missing.
+ *
+ * Three different things produce that complaint and only one of them is
+ * Trellus's, so the point of this is to separate them before anybody is asked
+ * to debug anything:
+ *
+ *   applied            the disposition landed — nothing wrong
+ *   call recorded      Trellus said no_answer/voicemail/screener, which by
+ *                      design records the call and leaves the lead dialable
+ *   unknown outcome    a word we do not map — needs their vocabulary
+ *   attributed to an email rather than an agent — a rep whose Trellus address
+ *                      is not their CRM address; invisible to their manager
+ *   called, no event   the lead shows a Trellus call but no event ever
+ *                      arrived — genuinely theirs to explain
+ */
+function auditTrellusDispositions(days) {
+  const back = Number(days) || 7;
+  const cutoff = Date.now() - back * 86400000;
+  const sh = processedTab_();
+  const lr = sh.getLastRow();
+
+  const byResult = {}, unknown = {}, unattributed = {};
+  const seenLeadIds = {};
+  let events = 0;
+
+  if (lr >= 2) {
+    sh.getRange(2, 1, lr - 1, 6).getValues().forEach(function(r) {
+      const at = parseStamp_(r[1]);
+      if (at && at < cutoff) return;
+      events++;
+      seenLeadIds[String(r[2] || '').toUpperCase()] = true;
+      const res = String(r[5] || '');
+      byResult[res] = (byResult[res] || 0) + 1;
+      if (res.indexOf('unknown outcome') === 0) {
+        const o = String(r[3] || '(blank)');
+        unknown[o] = (unknown[o] || 0) + 1;
+      }
+      const rep = String(r[4] || '');
+      if (rep.indexOf('(unattributed)') !== -1) {
+        const e = rep.replace('(unattributed)', '').trim();
+        unattributed[e] = (unattributed[e] || 0) + 1;
+      }
+    });
+  }
+
+  // Leads a Trellus call touched that are still sitting dialable, split by
+  // whether we ever received an event for them.
+  const noEvent = [], withEvent = [];
+  const phantomAgents = {};
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const n = sheet ? sheet.getLastRow() : 0;
+    if (n < 2) return;
+    sheet.getRange(2, 1, n - 1, LEAD_COLS.length).getValues().forEach(function(row) {
+      // Any agent field holding an email is a rep we failed to resolve.
+      ['Last Call Agent', 'Status By', 'Wrong Number Agent', 'Sold Agent', 'DCID Agent']
+        .forEach(function(f) {
+          const v = String(row[ix_(f)] || '');
+          if (v.indexOf('@') !== -1) phantomAgents[v.toLowerCase()] =
+            (phantomAgents[v.toLowerCase()] || 0) + 1;
+        });
+
+      const started = parseStamp_(row[ix_('Last Call Start')]);
+      if (!started || started < cutoff) return;
+      const st = String(row[ix_('Status')] || '').toLowerCase();
+      if (DIALABLE.indexOf(st) === -1) return;          // it was dispositioned
+      const id = String(row[ix_('Lead ID')] || '').toUpperCase();
+      const line = code + ' ' + id + ' ' + String(row[ix_('Name')] || '') +
+                   ' — called ' + fmtDateTime(row[ix_('Last Call Start')]) +
+                   ' by ' + String(row[ix_('Last Call Agent')] || '?');
+      if (seenLeadIds[id]) withEvent.push(line); else noEvent.push(line);
+    });
+  });
+
+  const L = [];
+  L.push('TRELLUS DISPOSITION AUDIT — last ' + back + ' days');
+  L.push('');
+  L.push('Events received: ' + events);
+  Object.keys(byResult).sort(function(a, b) { return byResult[b] - byResult[a]; })
+    .forEach(function(k) { L.push('   ' + (byResult[k] + '    ').slice(0, 5) + (k || '(blank)')); });
+
+  L.push('');
+  L.push('OURS TO FIX — unrecognised outcome words: ' + Object.keys(unknown).length);
+  Object.keys(unknown).forEach(function(k) { L.push('   ' + unknown[k] + '   "' + k + '"'); });
+  if (!Object.keys(unknown).length) L.push('   none');
+
+  L.push('');
+  L.push('OURS TO FIX — reps whose Trellus address is not their CRM address:');
+  const allPhantom = Object.assign({}, phantomAgents);
+  Object.keys(unattributed).forEach(function(e) { allPhantom[e] = allPhantom[e] || 0; });
+  if (!Object.keys(allPhantom).length) L.push('   none');
+  Object.keys(allPhantom).forEach(function(e) {
+    const u = userByEmail_(e);
+    L.push('   ' + e + '  — ' + allPhantom[e] + ' rows' +
+           (u ? '  → resolves now to ' + u.name + ', run repairAgentAttribution()'
+              : '  → NOT in Users. Add it, or run repairAgentAttribution with a mapping.'));
+  });
+
+  L.push('');
+  L.push('WORKING AS INTENDED — called, still dialable, event received: ' + withEvent.length);
+  L.push('   (no_answer, voicemail, screener and the like record the call and');
+  L.push('    deliberately leave the lead in the pool)');
+
+  L.push('');
+  L.push('THEIRS TO EXPLAIN — called, still dialable, NO event ever arrived: ' + noEvent.length);
+  noEvent.slice(0, 25).forEach(function(x) { L.push('   ' + x); });
+  if (noEvent.length > 25) L.push('   ... and ' + (noEvent.length - 25) + ' more');
+
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
+/**
+ * Rewrites rows credited to a raw email so they belong to the real agent.
+ *
+ * Call with nothing to heal everything that can be resolved from the Users
+ * sheet, or with an explicit map for an address that is not in Users at all:
+ *
+ *   repairAgentAttribution({ 'ibrahimmubarak793@gmail.com': 'Ibrahim Mubarak' })
+ *
+ * Only ever rewrites values containing an @, so a real agent name can never be
+ * touched by it.
+ */
+function repairAgentAttribution(mapping) {
+  const map = {};
+  Object.keys(mapping || {}).forEach(function(k) {
+    map[String(k).trim().toLowerCase()] = String(mapping[k]).trim();
+  });
+
+  const FIELDS = ['Last Call Agent', 'Status By', 'Wrong Number Agent',
+                  'Sold Agent', 'DCID Agent', 'Scheduled By', 'ERS By'];
+  const changed = {}, unresolved = {};
+  let rows = 0;
+
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const n = sheet ? sheet.getLastRow() : 0;
+    if (n < 2) return;
+    const range = sheet.getRange(2, 1, n - 1, LEAD_COLS.length);
+    const data = range.getValues();
+    let touched = 0;
+
+    data.forEach(function(row) {
+      FIELDS.forEach(function(f) {
+        const v = String(row[ix_(f)] || '').trim();
+        if (!v || v.indexOf('@') === -1) return;       // never touch a real name
+        const key = v.toLowerCase();
+        let name = map[key];
+        if (!name) {
+          const u = userByEmail_(key);
+          name = u ? u.name : '';
+        }
+        if (!name) { unresolved[key] = (unresolved[key] || 0) + 1; return; }
+        row[ix_(f)] = name;
+        changed[key + ' → ' + name] = (changed[key + ' → ' + name] || 0) + 1;
+        touched++;
+      });
+    });
+
+    if (touched) { range.setValues(data); rows += touched; }
+  });
+
+  const L = ['Repaired ' + rows + ' field(s).'];
+  Object.keys(changed).forEach(function(k) { L.push('   ' + changed[k] + '   ' + k); });
+  if (Object.keys(unresolved).length) {
+    L.push('');
+    L.push('Still unresolved — not in Users, and no mapping given:');
+    Object.keys(unresolved).forEach(function(k) {
+      L.push('   ' + unresolved[k] + '   ' + k);
+    });
+    L.push('Pass a map, e.g. repairAgentAttribution({"' +
+           Object.keys(unresolved)[0] + '": "Their Name"})');
+  }
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
 function processedTab_() {
   const ss = authSS_();
   let sh = ss.getSheetByName(PROCESSED_TAB);
@@ -3117,6 +3374,7 @@ function actionTrellusActivity(me, body) {
 
   let held = 0;
   try { held = touchStack_(me, found.state); } catch (e) {}
+  try { markTrellusUser_(me.id, { has: true }); } catch (e) {}
 
   return { success: true, applied: ev, state: found.state, held: held };
 }
@@ -3148,18 +3406,41 @@ function actionTrellusEvent(body) {
   const found = leadRowById_(leadId);
   if (!found) return { error: 'not_found' };
 
-  // rep_email may be someone we do not have. The call still happened and still
-  // belongs on the lead — it is the credit that goes nowhere, not the record.
+  // rep_email may be an address we do not hold. It used to fall through to
+  // writing the raw email into Last Call Agent, Status By and Wrong Number
+  // Agent — which invented an agent. One rep whose Trellus address differed
+  // from their CRM address appeared twice on the leaderboard, 608 dials under
+  // an email and 2 under their name, and because inScope_ matches on agent
+  // NAME, none of those 608 were visible to their manager. An admin saw them
+  // only because admin scope is unrestricted. Their dispositions and sales
+  // were scoped out the same way.
+  //
+  // So: resolve the address, and when it does not resolve, fall back to
+  // whoever HOLDS the lead. The holder is by definition the person dialling
+  // it — the same reasoning the stack-keeping below has always used. The raw
+  // email is never written as an agent again.
   const rep = String(body.rep_email || '').trim().toLowerCase();
   const who = rep ? userByEmail_(rep) : null;
-  const repName = who ? who.name : '';
+
+  let holderUser = null;
+  try {
+    const holderId = String(found.sheet.getRange(found.rowIndex, COL['Locked By'])
+                              .getValue() || '').trim();
+    if (holderId) {
+      holderUser = /^U\d+$/i.test(holderId) ? userById_(holderId) : null;
+      // Locks predating the id change still carry a display name.
+      if (!holderUser && holderId) holderUser = { id: '', name: holderId };
+    }
+  } catch (e) {}
+
+  const repName = (who && who.name) || (holderUser && holderUser.name) || '';
 
   const outcome = String(body.outcome || '').trim().toLowerCase();
   const status = TRELLUS_OUTCOMES.hasOwnProperty(outcome) ? TRELLUS_OUTCOMES[outcome] : null;
 
   const now = stamp_();
   const write = {
-    'Last Call Agent': repName || rep || 'Trellus',
+    'Last Call Agent': repName || 'Trellus',
     'Last Call Start': body.started_at || now,
     'Last Call End': body.ended_at || '',
     'Last Call Duration': body.duration || '',
@@ -3172,12 +3453,12 @@ function actionTrellusEvent(body) {
   if (status) {
     write['Status'] = status;
     write['Status At'] = now;
-    write['Status By'] = repName || rep || 'Trellus';
+    write['Status By'] = repName || 'Trellus';
     write['Status Reason'] = 'Trellus: ' + outcome;
     applied = status;
     if (status === STATUS.WRONG) {
       write['Wrong Number Date'] = now;
-      write['Wrong Number Agent'] = repName || rep || 'Trellus';
+      write['Wrong Number Agent'] = repName || 'Trellus';
     }
   } else if (status === null) {
     // Unrecognised vocabulary. Record the call, flag it, disposition nothing.
@@ -3186,14 +3467,21 @@ function actionTrellusEvent(body) {
   }
   writeCells_(found.sheet, found.rowIndex, write);
 
-  // Keep the stack alive. Credit whoever *holds* the lead rather than whoever
-  // rep_email resolved to: the holder is by definition the person dialling it,
-  // and an unrecognised rep_email must not cost them their stack.
+  // Keep the stack alive, on the same holder resolved above — an unrecognised
+  // rep_email must not cost the person dialling their stack.
+  // Dialling through Trellus is proof they have it. Never pitch them again.
   try {
-    const holder = String(found.sheet.getRange(found.rowIndex, COL['Locked By'])
-                            .getValue() || '').trim();
-    if (holder) { touchSeen_(holder); touchStack_({ id: holder }, found.state); }
-    else if (who) { touchSeen_(who.id); touchStack_(who, found.state); }
+    if (who && who.id) markTrellusUser_(who.id, { has: true });
+    else if (holderUser && holderUser.id) markTrellusUser_(holderUser.id, { has: true });
+  } catch (e) {}
+
+  try {
+    if (holderUser) {
+      const key2 = holderUser.id || holderUser.name;
+      touchSeen_(key2);
+      touchStack_(holderUser.id ? { id: holderUser.id } : { name: holderUser.name },
+                  found.state);
+    } else if (who) { touchSeen_(who.id); touchStack_(who, found.state); }
   } catch (e) {}
 
   processedTab_().appendRow([key, now, leadId, outcome,
