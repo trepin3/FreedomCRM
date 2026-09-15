@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.dialer-upsell';
+const CODE_VERSION         = '2026-09-15.upsell-backfill';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3037,6 +3037,102 @@ function actionTrellusOwned(me, body) {
     ? { has: true, at: stamp_() }
     : { dismissed: true, at: stamp_() });
   return { success: true };
+}
+
+/**
+ * Marks everyone who has already dialled through Trellus, so the upsell never
+ * reaches them.
+ *
+ * The flag is only set as events arrive, which means every rep already using
+ * the dialer would have been pitched it once more — including the one with six
+ * hundred dials on record. This reads the history instead.
+ *
+ * Two sources. ProcessedEvents is the definitive one: every webhook event ever
+ * received, with the rep's address. The lead rows are the backstop, because a
+ * disposition made in Trellus leaves "Trellus:" in Status Reason and the agent
+ * in Status By — which survives even if ProcessedEvents was trimmed.
+ *
+ * Pass a map for any address that is not in the Users sheet:
+ *   backfillTrellusOwners({ 'ibrahimmubarak793@gmail.com': 'Ibrahim Mubarak' })
+ */
+function backfillTrellusOwners(mapping) {
+  const map = {};
+  Object.keys(mapping || {}).forEach(function(k) {
+    map[String(k).trim().toLowerCase()] = String(mapping[k]).trim().toLowerCase();
+  });
+
+  const users = usersAll_();
+  const byName = {};
+  users.forEach(function(u) { byName[String(u.name || '').trim().toLowerCase()] = u; });
+
+  const resolve = function(v) {
+    const s = String(v || '').trim().toLowerCase();
+    if (!s) return null;
+    if (s.indexOf('@') !== -1) {
+      const u = userByEmail_(s);
+      if (u) return u;
+      const mappedName = map[s];
+      return mappedName ? (byName[mappedName] || null) : null;
+    }
+    return byName[s] || null;
+  };
+
+  const found = {}, unresolved = {};
+  const note = function(v) {
+    const u = resolve(v);
+    if (u) { found[u.id] = u.name; return; }
+    const s = String(v || '').trim();
+    if (s && s.toLowerCase() !== 'trellus') unresolved[s] = (unresolved[s] || 0) + 1;
+  };
+
+  // 1. Every event we have ever received.
+  const sh = processedTab_();
+  const lr = sh.getLastRow();
+  let events = 0;
+  if (lr >= 2) {
+    sh.getRange(2, 5, lr - 1, 1).getValues().forEach(function(r) {
+      events++;
+      note(String(r[0] || '').replace('(unattributed)', '').trim());
+    });
+  }
+
+  // 2. Dispositions the webhook wrote, still visible on the lead.
+  let rows = 0;
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const n = sheet ? sheet.getLastRow() : 0;
+    if (n < 2) return;
+    sheet.getRange(2, 1, n - 1, LEAD_COLS.length).getValues().forEach(function(row) {
+      if (String(row[ix_('Status Reason')] || '').indexOf('Trellus') !== 0) return;
+      rows++;
+      note(row[ix_('Status By')]);
+    });
+  });
+
+  Object.keys(found).forEach(function(id) { markTrellusUser_(id, { has: true }); });
+
+  const L = ['BACKFILL — who has already dialled through Trellus', ''];
+  L.push('Scanned ' + events + ' event(s) and ' + rows + ' Trellus-dispositioned lead(s).');
+  L.push('');
+  L.push('Marked as owners — they will not see the upsell again:');
+  const names = Object.keys(found).map(function(id) { return found[id]; }).sort();
+  if (!names.length) L.push('   nobody');
+  names.forEach(function(n) { L.push('   ' + n); });
+
+  if (Object.keys(unresolved).length) {
+    L.push('');
+    L.push('Could not resolve these to a user — they will still be pitched:');
+    Object.keys(unresolved).forEach(function(k) {
+      L.push('   ' + unresolved[k] + '   ' + k);
+    });
+    L.push('');
+    L.push('Add them to Users, or pass a map:');
+    L.push('   backfillTrellusOwners({"' + Object.keys(unresolved)[0] + '": "Their Name"})');
+  }
+
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
 }
 
 // Admin view of who is being pitched and who is not.
