@@ -1,6 +1,62 @@
-# Trellus relay — deployment
+# FreedomCRM edge gateway — deployment
 
 Free Cloudflare account, no card. Ten minutes.
+
+One Worker, two paths:
+
+| Path | Who calls it | What it does |
+|---|---|---|
+| `POST /` | Trellus | relays call events — **unchanged, do not repoint them** |
+| `GET\|POST /api` | the CRM front end | proxies to Apps Script and retries its routing miss |
+
+---
+
+## The gateway, and why
+
+Apps Script's `/exec` URL returns a Google "Page Not Found" page instead of the
+app for roughly **a quarter of requests** — measured over hours, spaced twenty
+seconds apart, with nobody dialling. The script answers in single-digit
+milliseconds when it runs, so this is Google's routing failing ahead of our code.
+
+The browser already retried, but badly: three attempts three seconds apart, on
+the agent's machine, triggered only by `JSON.parse` happening to throw. Nine
+seconds of an agent's time to cover a failure that comes back instantly.
+
+Retrying at the edge costs tens of milliseconds, and retries for the right
+reason — the shape of that error page, not any parse failure. Four attempts take
+a 25% failure rate to about **one request in 250**.
+
+**POSTs are treated more carefully than GETs.** `sold` and `dcid` are not
+idempotent, and replaying one that actually landed would disposition a lead
+twice. So an error *page* is retried for both (the script never ran, nothing
+happened), but a request that *threw* is only retried for a GET, because that
+case is ambiguous — it may have run and the reply was lost. The browser's retry
+never drew that distinction.
+
+### Rotating a flaky deployment
+
+This is the other reason it exists. The deployment URL is no longer baked into
+`index.html`, so replacing it is a **secret update here** — instant, no
+`gh-pages` deploy, and no window where half the agents are on the old URL and
+half on the new one. Update `SCRIPT_URL`, done.
+
+### Testing the gateway
+
+```sh
+curl -s "WORKER_URL/api?action=ping"
+```
+
+Expect `{"ok":true,"version":"…"}`. Run it twenty times — every one should
+succeed, where the raw `/exec` URL fails about a quarter of the time. The
+`X-Gateway-Attempts` response header says how many tries it took.
+
+```sh
+for i in $(seq 1 20); do curl -s -o /dev/null -w "%{http_code} " "WORKER_URL/api?action=ping"; done
+```
+
+---
+
+## The Trellus relay
 
 ## 1. Create the Worker
 
