@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.outside-sale';
+const CODE_VERSION         = '2026-09-15.ers-calendar';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -1942,6 +1942,13 @@ function getSold(me, range) {
         leadId: String(row[ix_('Lead ID')] || ''),
         name: String(row[ix_('Name')] || ''),
         phone: String(row[ix_('Phone')] || ''),
+        // The ERS calendar invite needs these: the ZIP to resolve which
+        // timezone the appointment is in, the rest to put something useful in
+        // the event body rather than just a name.
+        zip: String(row[ix_('Zip')] || ''),
+        city: String(row[ix_('City')] || ''),
+        address: String(row[ix_('Address')] || ''),
+        email: String(row[ix_('Email')] || ''),
         premium: row[ix_('Monthly Premium')],
         ap: Number(row[ix_('AP Amount')]) || 0,
         carrier: String(row[ix_('Carrier')] || ''),

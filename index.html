@@ -2180,6 +2180,14 @@ async function submitOutsideSale() {
 // Indexed rather than passed inline: the sale carries free text — carrier,
 // reason, notes — and building a JS call out of it invites a quote in a
 // carrier name to break the handler.
+function openErsCalendar(i) {
+  const s = state.sold[i];
+  if (!s) return;
+  const url = ersCalendarUrl(s);
+  if (!url) { alert('That appointment has no usable date and time yet.'); return; }
+  window.open(url, '_blank');
+}
+
 function openSoldForIdx(i) {
   const s = state.sold[i];
   if (!s) return;
@@ -2219,7 +2227,11 @@ function soldCard(s, i) {
         '<button class="mini-btn" onclick="openErsModal(' + i + ')">' +
           (s.ersStatus === 'booked' ? 'Reschedule' : '📅 Book ERS') + '</button>' +
         (s.ersStatus === 'booked'
-          ? '<button class="mini-btn team-add-btn" onclick="openErsDone(' + i + ')">Mark complete</button>'
+          // Booking already opens the calendar tab. This is for the agent who
+          // closed it, or booked on another device — without it the only way
+          // back to the invite is to reschedule an appointment that is fine.
+          ? '<button class="mini-btn" onclick="openErsCalendar(' + i + ')">📅 Calendar</button>' +
+            '<button class="mini-btn team-add-btn" onclick="openErsDone(' + i + ')">Mark complete</button>'
           : '') +
       '</div>';
 
@@ -2264,6 +2276,83 @@ function openErsModal(i) {
   document.getElementById('ersModal').classList.add('show');
 }
 
+// The zone abbreviation AT the appointment, not at the moment of booking.
+// zoneLabel() reads serverNow(), so an appointment booked in September for
+// November came out labelled EDT when it will actually happen in EST — an
+// hour's error, in writing, on the invite.
+function zoneLabelAt(stateCode, zip, when) {
+  const tz = zonesFor(stateCode, zip)[0];
+  if (!tz) return '';
+  try {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+      .formatToParts(when).find(function(x) { return x.type === 'timeZoneName'; });
+    return p ? p.value : '';
+  } catch (e) { return ''; }
+}
+
+// The stored ERS time is the lead's wall clock, exactly as callbacks are: the
+// appointment belongs to the client's day. Reading it in the agent's timezone
+// would put a 2pm Carolina appointment on a Phoenix agent's calendar at 2pm
+// Arizona — three hours late.
+function ersMoment(s, iso) {
+  const raw = iso || s.ersAtRaw || '';
+  const m = String(raw).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (!m) return null;
+  const tz = zonesFor(s.state, s.zip)[0];
+  const t = tz ? zonedWallToEpoch(m[1], m[2], tz) : new Date(m[1] + 'T' + m[2]).getTime();
+  return t ? new Date(t) : null;
+}
+
+function ersCalendarUrl(s, iso) {
+  const start = ersMoment(s, iso);
+  if (!start) return '';
+  const end = new Date(start.getTime() + 60 * 60000);   // ERS runs about an hour
+  const stamp = function(d) { return icsStamp(d).replace(/[^0-9TZ]/g, ''); };
+
+  // "2:00 PM EDT" — the client's time, named, so an agent in another zone
+  // reading the invite knows whose clock it is.
+  const shown = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: zonesFor(s.state, s.zip)[0] || undefined
+  }).format(start);
+  const zone = zoneLabelAt(s.state, s.zip, start);
+  const title = (s.name || 'Client') + ' ERS Appointment ' + shown + (zone ? ' ' + zone : '');
+
+  const phone = formatPhone(s.phone);
+  // null means "this lead has no such field, drop the line"; '' is a deliberate
+  // blank line between sections. Filtering on '' collapsed the two together and
+  // ran the whole invite into one block.
+  const details = [
+    'Emergency Response System appointment — FreedomCRM',
+    '',
+    'Client: ' + (s.name || ''),
+    'Phone: ' + phone,
+    s.email ? 'Email: ' + s.email : null,
+    s.address ? 'Address: ' + s.address : null,
+    (s.city || s.state) ? 'Location: ' + [s.city, s.state, s.zip].filter(Boolean).join(', ') : null,
+    s.leadId ? 'Lead ID: ' + s.leadId : null,
+    '',
+    'POLICY',
+    s.carrier ? 'Carrier: ' + s.carrier : null,
+    s.premium ? 'Premium: ' + money(s.premium) + '/mo' : null,
+    s.ap ? 'Annual premium: ' + money(s.ap) : null,
+    s.firstDraft ? 'First draft: ' + s.firstDraft : null,
+    s.soldDate ? 'Sold: ' + s.soldDate : null,
+    s.soldAgent ? 'Written by: ' + s.soldAgent : null,
+    '',
+    'Bring the referral sheet — this appointment is where referrals come from.'
+  ].filter(function(x) { return x !== null; }).join('\n');
+
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
+    '&text=' + encodeURIComponent(title) +
+    '&dates=' + stamp(start) + '/' + stamp(end) +
+    '&details=' + encodeURIComponent(details) +
+    ((s.city || s.address)
+      ? '&location=' + encodeURIComponent(
+          [s.address, s.city, s.state, s.zip].filter(Boolean).join(', '))
+      : '');
+}
+
 async function confirmErsBooking() {
   const s = state.sold[state.ersIdx];
   if (!s) return;
@@ -2275,10 +2364,36 @@ async function confirmErsBooking() {
     err.style.display = 'block';
     return;
   }
+
+  // Opened now, while the click is still the reason anything is happening.
+  // Opening it after the await makes it a popup as far as the browser is
+  // concerned, and it gets blocked — silently, on most setups.
+  const tab = window.open('', '_blank');
+
+  const iso = d + 'T' + tm + ':00';
   const out = await api('POST', {
-    action: 'bookErs', state: s.state, rowIndex: s.rowIndex, ersAt: d + 'T' + tm + ':00'
+    action: 'bookErs', state: s.state, rowIndex: s.rowIndex, ersAt: iso
   });
-  if (out.error) { err.textContent = out.error; err.style.display = 'block'; return; }
+  if (out.error) {
+    if (tab) tab.close();
+    err.textContent = out.error;
+    err.style.display = 'block';
+    return;
+  }
+
+  // Reschedules land here too, carrying the new time rather than the old one:
+  // `iso` is what was just saved, not what the lead had before.
+  const url = ersCalendarUrl(s, iso);
+  if (tab) {
+    if (url) tab.location = url;
+    else tab.close();
+  } else if (url) {
+    // Popup blocked despite the gesture. Better to offer it than to drop it.
+    if (confirm('Add this ERS appointment to your Google Calendar?')) {
+      window.open(url, '_blank');
+    }
+  }
+
   closeModal('ersModal');
   loadSold();
 }
