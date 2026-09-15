@@ -1692,6 +1692,101 @@ document.addEventListener('click', function(e) {
   if (a) markDialing();
 }, true);
 
+// ══════════════════════════════════════════════════════════════════
+// TRELLUS ACTIVITY SIGNALS
+//
+// When a rep dials through the Trellus extension the CRM never sees a click,
+// so none of the things that normally prove they are working happen: no tel:
+// navigation, no callStarted, and with the tab behind a carrier portal, no
+// heartbeat either. Their first long call of a session could age their whole
+// stack out from underneath a live conversation.
+//
+// Trellus fixed this by posting a message into this page at dial and at
+// hangup. It is deliberately not a webhook and deliberately not a heartbeat —
+// best-effort browser signals, in their words — so nothing here is allowed to
+// be load-bearing. The server-side rules remain the guarantee; this only makes
+// them better informed.
+//
+// Their contract:
+//   source 'trellus-extension', target 'freedomcrm', version 1
+//   type   'trellus:call.started' | 'trellus:call.completed'
+//   payload { event_id, session_id, lead_id, started_at, ended_at, ... }
+// ══════════════════════════════════════════════════════════════════
+
+// Redials get their own session id, so the id is safe to key on. Bounded
+// because this page can stay open all day and an unbounded Set is a slow leak.
+const trellusSeenEvents = new Set();
+const TRELLUS_SEEN_MAX = 500;
+
+// Parallel dialling means several calls can be live at once. The rep stays on
+// a call until the last one ends, so this is a set rather than a flag.
+const trellusActiveSessions = new Map();   // session_id -> { leadId, at }
+const TRELLUS_SESSION_MAX_MS = 2 * 60 * 60 * 1000;
+
+function trellusRelay(event, sessionId, leadId, startedAt) {
+  api('POST', { action: 'trellusActivity', event: event,
+                sessionId: sessionId, leadId: leadId, startedAt: startedAt || '' })
+    .catch(function() {});   // an activity hint is never worth a visible failure
+}
+
+// A session whose completion never arrived — a closed tab, a crashed
+// extension. Dropped locally so the page stops believing a call is live; the
+// server's own open-call ceiling is what actually frees the lead.
+function trellusReapSessions() {
+  const now = Date.now();
+  trellusActiveSessions.forEach(function(v, k) {
+    if (now - v.at > TRELLUS_SESSION_MAX_MS) trellusActiveSessions.delete(k);
+  });
+}
+
+window.addEventListener('message', function(e) {
+  // Same page, same origin, or it is not from the extension sitting on it.
+  if (e.source !== window) return;
+  if (e.origin !== window.location.origin) return;
+
+  const d = e.data;
+  if (!d || typeof d !== 'object') return;
+  if (d.source !== 'trellus-extension' || d.target !== 'freedomcrm') return;
+  if (Number(d.version) !== 1) return;
+
+  const started = d.type === 'trellus:call.started';
+  const ended   = d.type === 'trellus:call.completed';
+  if (!started && !ended) return;
+
+  const p = d.payload || {};
+  const sessionId = String(p.session_id || '').trim();
+  const leadId    = String(p.lead_id || '').trim();
+  if (!sessionId || !leadId) return;
+
+  // Trellus retry and redeliver; event_id is theirs to make unique.
+  const eventId = String(p.event_id || (d.type + ':' + sessionId));
+  if (trellusSeenEvents.has(eventId)) return;
+  trellusSeenEvents.add(eventId);
+  if (trellusSeenEvents.size > TRELLUS_SEEN_MAX) {
+    trellusSeenEvents.delete(trellusSeenEvents.values().next().value);
+  }
+
+  trellusReapSessions();
+
+  if (started) {
+    trellusActiveSessions.set(sessionId, { leadId: leadId, at: Date.now() });
+    // The lead attached to the call, never whichever card happens to be on
+    // screen — a rep parallel dialling is looking at one and talking to another.
+    trellusRelay('start', sessionId, leadId, p.started_at || '');
+    // Ends the same stack loss a tel: click already guards against.
+    markDialing();
+  } else {
+    trellusActiveSessions.delete(sessionId);
+    // Always relayed, even while other legs of a parallel dial are still live.
+    // Call Open At belongs to the lead, not to the agent: leaving it set on a
+    // call that has ended is exactly the stuck flag Trellus warned about. The
+    // rep stays protected anyway — releaseStale_ holds the whole stack while
+    // ANY row they own still has an open call, so the legs still running keep
+    // doing that job.
+    trellusRelay('end', sessionId, leadId, '');
+  }
+}, false);
+
 // Closing the tab is the common case, and fetch does not survive unload.
 // sendBeacon does, and a text/plain body avoids the CORS preflight Apps
 // Script cannot answer. Best effort — the 15-minute idle release remains
