@@ -3860,6 +3860,9 @@ function scriptToolUrlFor(lead) {
   if (first)          q.push('firstName=' + encodeURIComponent(first));
   if (lead.last_name) q.push('lastName=' + encodeURIComponent(lead.last_name));
   if (lead.address)   q.push('address=' + encodeURIComponent(lead.address));
+  // The Version 2 opener says "I'm licensed in the state of ___" out loud, and
+  // the state an agent must be licensed in is the one the lead lives in.
+  if (lead.state)     q.push('state=' + encodeURIComponent(lead.state));
   return base + 'bang-bang.html' + (q.length ? '?' + q.join('&') : '');
 }
 
