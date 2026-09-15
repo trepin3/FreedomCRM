@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-14.sweep+callstart';
+const CODE_VERSION         = '2026-09-15.trellus-activity';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -442,7 +442,11 @@ const WORK_CEILING_MS      = 60 * 60 * 1000;
  */
 const WORK_ACTIONS_ = ['getLeads', 'heartbeat', 'callStarted', 'next', 'sold',
                        'dcid', 'wrong', 'callback', 'leadById', 'updateLead',
-                       'search', 'returnToPool'];
+                       'search', 'returnToPool', 'trellusActivity'];
+
+// Actions that happen many times a call and say nothing a human would read.
+// They still count as work; they just do not earn a row in the activity sheet.
+const QUIET_ACTIONS_ = ['trellusActivity', 'heartbeat'];
 
 /**
  * Records that an agent is alive, right now.
@@ -1195,7 +1199,13 @@ function doPost(e) {
     // Any POST here can change what is dialable, so the caller's cached
     // picker counts are dropped rather than left to expire.
     invalidateStates_(userByEmail_(user.email));
-    logActivity_(user, action, body.rowIndex ? ('row ' + body.rowIndex) : '', body.state);
+    // Trellus posts a start and an end for every dial, and more than one at a
+    // time when a rep is parallel dialling. Logging each would double the
+    // activity sheet and spend a row write on something that is already
+    // recorded properly by the completion webhook.
+    if (QUIET_ACTIONS_.indexOf(action) === -1) {
+      logActivity_(user, action, body.rowIndex ? ('row ' + body.rowIndex) : '', body.state);
+    }
 
     const ua = userAction_(user, action, body);
     if (ua) return jsonOut(ua);
@@ -1239,6 +1249,7 @@ function doPost(e) {
       }
       case 'leadById':    result = leadById_(userByEmail_(user.email), body.leadId || e.parameter.leadId); break;
       case 'callStarted': result = actionCallStarted(userByEmail_(user.email), body); break;
+      case 'trellusActivity': result = actionTrellusActivity(userByEmail_(user.email), body); break;
       case 'sold': result = actionSold(body); break;
       case 'bookErs': result = actionBookErs(userByEmail_(user.email), body); break;
       case 'completeErs': result = actionCompleteErs(userByEmail_(user.email), body); break;
@@ -2936,6 +2947,66 @@ function trellusCallStarted_(body, sessionId) {
   } catch (e) {}
 
   return { success: true, applied: 'call opened', held: held };
+}
+
+/**
+ * Trellus activity relayed by the agent's own browser.
+ *
+ * Trellus does not post these to the Worker. Their extension fires a
+ * window.postMessage into the CRM page at dial and at hangup, and the front end
+ * forwards it here on the agent's authenticated session. Two consequences:
+ *
+ *   1. There is no rep_email to resolve and no shared secret to check. The
+ *      session already names the agent, which is better than either.
+ *   2. A page-level message is NOT authentication — anything running on that
+ *      page could send one. Trellus say so themselves.
+ *
+ * So this trusts the session for *who* and refuses to trust the message for
+ * *what*: the only lead it will touch is one the caller already holds. A forged
+ * message can therefore do nothing except keep the sender's own stack alive,
+ * which they could do by pressing a button anyway.
+ *
+ * Outcomes still arrive by webhook. This writes no disposition and no attempt.
+ */
+function actionTrellusActivity(me, body) {
+  const ev = String(body.event || '').trim().toLowerCase();
+  if (ev !== 'start' && ev !== 'end') return { error: 'bad event' };
+
+  const leadId = String(body.leadId || '').trim().toUpperCase();
+  if (!leadId) return { error: 'no leadId' };
+
+  const found = leadRowById_(leadId);
+  // Silent success, not an error. The lead may live outside this agent's pool,
+  // or have been uploaded by someone else entirely; either way it is a hint we
+  // could not use, and a red error in their console helps nobody.
+  if (!found) return { success: true, ignored: 'lead not found' };
+
+  const holder = String(found.sheet.getRange(found.rowIndex, COL['Locked By'])
+                          .getValue() || '').trim();
+  if (!lockOwnerIsMe_(holder, me)) {
+    return { success: true, ignored: 'not your lead' };
+  }
+
+  const now = stamp_();
+  if (ev === 'start') {
+    // Rule 1 of releaseStale_ holds an owner's whole stack while any call is
+    // open, which is the strongest protection available and exactly right: a
+    // rep on a call is unambiguously working.
+    writeCells_(found.sheet, found.rowIndex,
+                { 'Call Open At': body.startedAt || now, 'Last Activity At': now });
+  } else {
+    // Cleared at hangup rather than left for the 2-hour ceiling. Trellus warn
+    // that a missed completion must not hold leads forever, and touchStack_
+    // below still carries the rep through the disposition screen on rules 3
+    // and 4 for the next fifteen minutes.
+    writeCells_(found.sheet, found.rowIndex,
+                { 'Call Open At': '', 'Last Activity At': now });
+  }
+
+  let held = 0;
+  try { held = touchStack_(me, found.state); } catch (e) {}
+
+  return { success: true, applied: ev, state: found.state, held: held };
 }
 
 function actionTrellusEvent(body) {

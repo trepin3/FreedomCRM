@@ -1,76 +1,100 @@
-# `call.started` — spec for Trellus
+# Trellus activity signals — as built
 
-One extra event. Same endpoint, same bearer token, same body shape as today,
-plus one field.
+> **Superseded.** This file originally proposed a `call.started` event posted to
+> the Cloudflare Worker alongside the existing completion webhook. Trellus built
+> something different and better suited: `window.postMessage` from the extension
+> into the CRM page. The webhook contract is **unchanged** and still owns every
+> outcome. What follows is what actually exists.
 
-## Why we're asking
+## Two channels, different jobs
 
-Trellus currently posts once, at the end of a call. FreedomCRM reserves a rep a
-stack of ~150 leads and releases it when nothing says they're still working — so
-the completion event doubles as our "this rep is alive" signal.
+| | Transport | Carries | Owns |
+|---|---|---|---|
+| **Webhook** | extension → Worker → Apps Script | outcome, duration, timestamps | dispositions, attempts, call records |
+| **Activity signal** | extension → `postMessage` → CRM page → Apps Script | session id, lead id, timestamps | keeping a rep's stack alive |
 
-That works until a rep's **first** call of a session runs long. The CRM tab is
-usually behind a carrier portal or a quoter by then, our in-page heartbeat stops
-when the tab is hidden, and no completion has arrived yet. Nothing anywhere says
-the rep is on a call, and their stack ages out from underneath a live
-conversation. Simulated against our release rules: **150 of 150 leads released
-mid-call without a start signal, 0 with one.**
+Nothing was removed. The activity signal answers one question the webhook
+could not: *is this rep on a call right now?*
 
-## The change
+## Why it was needed
 
-Add `"event"` to the payload you already send.
+A rep dialling through Trellus never clicks anything in the CRM. No `tel:`
+navigation, no `callStarted`, and with the tab behind a carrier portal, no
+heartbeat either. Their first long call of a session could age their whole
+stack out from under a live conversation.
 
-| `event` | When |
-|---|---|
-| `"call.started"` | the moment dialling begins |
-| `"call.completed"` | what you send today |
+Measured against the release rules with the presence cache cold: a 25-minute
+first call released **150 of 150 leads** without a start signal, and **0** with
+one.
 
-**The field is optional and defaults to `call.completed`.** Your current
-integration keeps working with no change — we deployed it that way on purpose so
-you can roll this out whenever suits you.
-
-## `call.started` payload
+## The message
 
 ```json
 {
-  "event": "call.started",
-  "session_id": "abc123",
-  "lead_id": "NC-001042",
-  "rep_email": "brad@example.com",
-  "started_at": "2026-09-14T14:32:11Z"
+  "source": "trellus-extension",
+  "target": "freedomcrm",
+  "type": "trellus:call.started",
+  "version": 1,
+  "payload": {
+    "event_id":   "call.started:session_123",
+    "session_id": "session_123",
+    "lead_id":    "OH-000513",
+    "direction":  "outbound",
+    "started_at": "2026-09-14T19:00:00.000Z",
+    "timestamp":  "2026-09-14T19:00:00.000Z"
+  }
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `event` | yes | literal `call.started` |
-| `session_id` | yes | **must match the `session_id` of the eventual `call.completed`** |
-| `lead_id` | yes | the id we handed you |
-| `rep_email` | no | we credit whoever holds the lead, so this is nice-to-have |
-| `started_at` | no | ISO 8601. We stamp server-side if absent |
+At hangup: `type` is `trellus:call.completed`, `event_id` is
+`call.completed:session_123`, and the payload adds `ended_at`. Same
+`session_id` and `lead_id` identify the attempt. `started_at` may be null.
 
-No outcome, no duration — there isn't one yet.
+## What the CRM does
 
-## Delivery semantics
+**Validation** — rejects anything failing `event.source === window`,
+`event.origin === window.location.origin`, `source`, `target`, `version`, a
+known `type`, or a payload missing `session_id` / `lead_id`. Ten rejection
+cases are covered by test.
 
-- **Fire and forget.** Don't retry, don't block the dial on our response. A lost
-  start event costs us nothing that the completion won't fix.
-- **Redelivery is safe.** The handler is idempotent — a repeated start rewrites
-  the same two cells.
-- **Out-of-order is safe.** A start arriving after its own completion is
-  detected and ignored, so it can't reopen a finished call.
-- The completion event is unchanged in every respect.
+**Deduplication** — by `event_id`, in a set capped at 500. Redials carry their
+own session id, so the id is safe to key on.
 
-## Response
+**Parallel dialling** — active sessions are held in a Map, added on start and
+removed on completion. A completion is relayed **even while other legs are
+still live**, because `Call Open At` belongs to the lead, not the agent —
+leaving it set on a finished call is exactly the stuck flag to avoid. The rep
+stays protected regardless: the release rules hold an owner's entire stack
+while *any* row they own has an open call.
 
-`200` with `{"ok": true, "applied": "call opened"}`.
+**The lead attached to the call** — never whichever card is on screen. A rep
+parallel dialling is looking at one lead and talking to another.
 
-A start for a session we've already seen completed returns
-`200 {"ok": true, "ignored": "call already completed"}` — success, nothing to do.
+## Security
 
-## What we do with it
+Trellus are explicit that this is an activity hint, not authentication — any
+script on the page could post one.
 
-Mark the call open on that lead, which holds the rep's whole stack for as long
-as the call runs (capped at 2 hours, so a browser that dies mid-call can't sit on
-150 leads forever). We do **not** increment attempts or write a disposition —
-the completion event still owns both.
+So the CRM trusts the **session** for *who* and refuses to trust the **message**
+for *what*. The relay runs on the agent's own authenticated session, and the
+backend will only touch a lead **that agent already holds**. A forged message
+can do nothing except keep the sender's own stack alive, which they could do by
+pressing a button anyway.
+
+It writes no disposition and no attempt. Outcomes remain the webhook's job.
+
+## Stale-session recovery
+
+Trellus note that a missed completion must never hold leads forever. Three
+layers:
+
+1. Completion clears `Call Open At` at hangup rather than waiting for a ceiling.
+2. The page drops locally-tracked sessions after 2 hours.
+3. `releaseStale_` frees any call open longer than `OPEN_CALL_CEILING_MS`, and
+   since `sweepLocks()` this actually runs on a timer rather than only when
+   somebody happens to request that state.
+
+## Status
+
+Built and deployed on the CRM side. **Not yet in the published Chrome Store
+build** — until Trellus ship it, no messages arrive and nothing changes.
