@@ -1660,16 +1660,43 @@ async function onGoogleCredential(res) {
 // Asking Trellus for a presence ping on load would close the gap entirely.
 // ══════════════════════════════════════════════════
 let trellusDetected = false;
+let trellusOwnedPending = false;
 
+/**
+ * The extension has spoken, so this agent has it.
+ *
+ * Trellus fire `trellus:present` when their adapter initialises — at or just
+ * after DOMContentLoaded, which is well before the agent has signed in. There
+ * is no session to authenticate a write with at that point, so telling the
+ * server then would simply be refused and the fact would be lost. It is held
+ * and sent once there is a token.
+ */
 function noteTrellusPresent() {
-  if (trellusDetected) return;
-  trellusDetected = true;
   const m = document.getElementById('trellusModal');
   if (m) m.classList.remove('show');
+  if (trellusDetected) return;
+  trellusDetected = true;
+  if (state.authToken) {
+    api('POST', { action: 'trellusOwned', how: 'detected' }).catch(function() {});
+  } else {
+    trellusOwnedPending = true;
+  }
+}
+
+// Called once sign-in has a token. Without this the server never learns, and
+// the agent is pitched again on every machine where the extension happens to
+// announce itself before they log in — which is all of them.
+function flushTrellusOwned() {
+  if (!trellusOwnedPending || !state.authToken) return;
+  trellusOwnedPending = false;
   api('POST', { action: 'trellusOwned', how: 'detected' }).catch(function() {});
 }
 
 function maybeShowTrellusUpsell(session) {
+  // Send anything the extension told us before there was a session to send it
+  // on. Runs whether or not the upsell is due — the server may not know yet
+  // even when it has already decided not to pitch this agent.
+  flushTrellusOwned();
   if (!session || session.trellusUpsell !== true) return;
 
   // Give the extension a moment to say something first. It announces nothing
