@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-15.audit-polish';
+const CODE_VERSION         = '2026-09-16.event-perf';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3370,15 +3370,44 @@ function processedTab_() {
   return sh;
 }
 
+// How far back to look in the event log. A retry arrives within seconds or
+// minutes, never days, so the whole history was never the right search space.
+// At the current rate this is around two hours of events, and — unlike reading
+// the entire tab — it does not get slower as the business grows.
+const PROCESSED_SCAN_ROWS = 400;
+
+/**
+ * Has this exact event already been applied?
+ *
+ * This used to read every row of ProcessedEvents. That tab is append-only and
+ * grows by roughly sixteen hundred rows a day, so by the second week every
+ * single dial was scanning tens of thousands of rows before anything else
+ * happened — and a dial that takes too long to acknowledge is reported by the
+ * dialer as a call it could not log.
+ *
+ * Cache first, which costs nothing and catches the case this exists for: a
+ * retry moments after the original. The sheet is then consulted only as a
+ * backstop, and only over the recent tail.
+ */
 function alreadyProcessed_(key) {
+  try {
+    if (CacheService.getScriptCache().get('pe_' + key)) return true;
+  } catch (e) {}
+
   const sh = processedTab_();
   const lr = sh.getLastRow();
   if (lr < 2) return false;
-  const keys = sh.getRange(2, 1, lr - 1, 1).getValues();
+  const first = Math.max(2, lr - PROCESSED_SCAN_ROWS + 1);
+  const keys = sh.getRange(first, 1, lr - first + 1, 1).getValues();
   for (let i = 0; i < keys.length; i++) {
     if (String(keys[i][0]) === key) return true;
   }
   return false;
+}
+
+// Remember it for the next six hours, so a retry never reaches the sheet.
+function markProcessed_(key) {
+  try { CacheService.getScriptCache().put('pe_' + key, '1', 21600); } catch (e) {}
 }
 
 /**
@@ -3500,6 +3529,10 @@ function actionTrellusActivity(me, body) {
 }
 
 function actionTrellusEvent(body) {
+  // Reported on every response. A dialer that gives up on a slow acknowledgement
+  // reports it as a call it could not log, so how long this takes is the first
+  // thing worth knowing when that starts happening.
+  const t0 = Date.now();
   const secret = PropertiesService.getScriptProperties()
     .getProperty(TRELLUS_SHARED_SECRET_PROP);
   if (!secret || String(body.secret || '') !== secret) return { error: 'not_permitted' };
@@ -3606,6 +3639,7 @@ function actionTrellusEvent(body) {
 
   processedTab_().appendRow([key, now, leadId, outcome,
                              rep + (who ? '' : ' (unattributed)'), applied]);
+  markProcessed_(key);
 
   // Tombstone, so a start event that arrives late — a retry, or a queue that
   // drained out of order — cannot reopen a call that has already ended and sit
@@ -3614,7 +3648,8 @@ function actionTrellusEvent(body) {
   logActivity_({ email: rep, name: repName || 'Trellus', role: 'system' },
                'trellusCall', leadId + ' — ' + applied, found.state);
 
-  return { success: true, applied: applied, attributed: !!who };
+  return { success: true, applied: applied, attributed: !!who,
+           ms: Date.now() - t0 };
 }
 
 /**

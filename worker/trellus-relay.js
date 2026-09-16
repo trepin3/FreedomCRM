@@ -258,7 +258,9 @@ export default {
 
     // 200 on a duplicate too. A retried delivery already applied is a success
     // from their side, and telling them otherwise invites an endless retry.
+    // ms is how long Apps Script spent on it. Surfaced so a dialer reporting
+    // calls it could not log can be checked against how slow we actually were.
     return json({ ok: true, applied: out.applied, duplicate: !!out.duplicate,
-                  ignored: out.ignored }, 200, origin);
+                  ignored: out.ignored, ms: out.ms }, 200, origin);
   }
 };
