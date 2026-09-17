@@ -2041,6 +2041,15 @@ window.addEventListener('message', function(e) {
   // this agent has it, and should never see the upsell again.
   noteTrellusPresent();
 
+  // They can ask for the stack rather than wait for it to change. Covers the
+  // ordering we cannot control: an extension that initialises after the stack
+  // has already loaded would otherwise wait for the next reload to hear
+  // anything at all.
+  if (d.type === 'trellus:stack.request' || d.type === 'trellus:present') {
+    if (state.leads && state.leads.length) announceStack('requested');
+    if (d.type === 'trellus:stack.request') return;
+  }
+
   const started = d.type === 'trellus:call.started';
   const ended   = d.type === 'trellus:call.completed';
   if (!started && !ended) return;
@@ -2216,6 +2225,10 @@ function loseStack(message) {
   state.currentIdx = 0;
   state.history = [];
   state.seenIds.clear();
+  // Before the alert, which blocks. A dialer left holding a queue of leads the
+  // rep no longer owns would carry on calling them, and someone else is now
+  // working that stack.
+  announceStack('released');
   alert(message || 'Your reserved leads have been released and are back in the pool.\n\n' +
         'Pick a state to start a new stack.');
   goToCrm();
@@ -2706,12 +2719,58 @@ async function loadLeads() {
     state.currentIdx = 0;
     if (fresh.length === 0) {
       renderEmpty();
+      announceStack('empty');
     } else {
       renderLead();
+      announceStack('loaded');
     }
   } catch (e) {
     renderError('Unable to load leads. ' + e.message);
   }
+}
+
+// ══════════════════════════════════════════════════
+// TELLING THE DIALER THE STACK CHANGED
+//
+// A rep's stack is not static. It is topped back up to 150 on every reload,
+// leads drop out as they are dispositioned, and the whole thing can be pulled
+// by an admin or aged out by the release rules. Trellus build their task list
+// once and had no way to know any of that had happened — so a rep who
+// refreshed their stack sat looking at "No dialable tasks available" while the
+// CRM behind it held a hundred and fifty leads.
+//
+// Same envelope as their messages, pointing the other way. Fire and forget: if
+// nothing is listening, nothing happens, which is exactly what should happen
+// for a rep who does not have the extension.
+// ══════════════════════════════════════════════════
+function announceStack(reason) {
+  try {
+    const leads = (state.leads || []).map(function(l) {
+      return {
+        lead_id: l.lead_id || '',
+        // Their queue needs something to dial. Sent as stored — the CRM's own
+        // tel: handling is what turns it into E.164, and guessing here would
+        // put two different formats in front of the same prospect.
+        phone: l.phone || '',
+        name: l.name || '',
+        state: l.state || ''
+      };
+    }).filter(function(l) { return l.lead_id && l.phone; });
+
+    window.postMessage({
+      source: 'freedomcrm',
+      target: 'trellus-extension',
+      type: 'freedomcrm:stack.changed',
+      version: 1,
+      payload: {
+        reason: reason || 'loaded',      // loaded | empty | released | requested
+        agent_email: state.agentEmail || '',
+        state: state.currentState || '',
+        count: leads.length,
+        leads: leads
+      }
+    }, window.location.origin);
+  } catch (e) { /* an unlistened-for hint is never worth breaking a load over */ }
 }
 
 // Manual reload from the empty-state button — always clear dedup first so the
