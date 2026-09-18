@@ -1916,6 +1916,12 @@ function clearSaved() {
 // every retry — a retry would otherwise go out unauthenticated.
 function releaseMyLeads(agent, token) {
   if (!agent || !token) return Promise.resolve();
+  // Announced here rather than at each call site, because this function IS the
+  // release — every path that hands leads back goes through it, and Switch
+  // State and sign-out were both doing so silently. Trellus found that in
+  // testing: the leads went back to the pool and their queue carried on
+  // holding them, which is how two reps end up on the same prospect.
+  announceStack('released');
   return api('POST', { action: 'releaseAll', agent: agent, s: token })
     .catch(function() { /* the server's idle release is the real guarantee */ });
 }
@@ -2745,7 +2751,11 @@ async function loadLeads() {
 // ══════════════════════════════════════════════════
 function announceStack(reason) {
   try {
-    const leads = (state.leads || []).map(function(l) {
+    // released and empty both mean "you hold nothing", so they carry nothing.
+    // Sending the old list alongside a message saying it is gone invites a
+    // reader to use it, and at that moment those leads belong to the pool.
+    const gone = (reason === 'released' || reason === 'empty');
+    const leads = (gone ? [] : (state.leads || [])).map(function(l) {
       return {
         lead_id: l.lead_id || '',
         // Their queue needs something to dial. Sent as stored — the CRM's own

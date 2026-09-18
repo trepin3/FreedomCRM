@@ -50,11 +50,15 @@ at our own origin.
 |---|---|---|
 | `loaded` | a stack was reserved or refilled | replace the task list with `leads` |
 | `empty` | nothing available in that state | clear the task list |
-| `released` | the stack was pulled or aged out | **clear the task list and stop dialling it** |
+| `released` | the stack was handed back — **Switch State, sign-out**, pulled by an admin, or aged out | **clear the task list and stop dialling it** |
 | `requested` | you asked | replace the task list |
 
 `leads` is the complete stack, not a delta — replacing wholesale is simpler than
 reconciling and cannot drift. Leads with no phone number are omitted.
+
+`released` and `empty` both carry `count: 0` and an empty `leads` array. Sending
+the old list alongside a message saying it is gone invites a reader to use it,
+and at that moment those leads belong to the pool again.
 
 ## Asking for it
 
