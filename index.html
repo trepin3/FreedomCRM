@@ -790,6 +790,10 @@ body:not(.on-dial) .lead-rail,body:not(.on-dial) .rail-scrim{display:none !impor
       <div class="nav-row">
         <button class="back-btn" id="backBtn" onclick="goBackLead()" disabled>← Prior Lead</button>
         <button class="rail-toggle" onclick="toggleLeadRail()">&#9776; My Leads <span class="rail-count" id="railCount">0</span></button>
+        <!-- The stack tops itself up with 25 left, so this is for the case the
+             agent notices before we do — most often a dialer that has worked
+             through its own queue faster than the CRM card advanced. -->
+        <button class="rail-toggle" onclick="getMoreLeads()">＋ More Leads</button>
       </div>
       <div id="dialContent"><div class="empty-state"><div class="spinner"></div><div class="empty-title" style="margin-top:16px;">Loading leads…</div></div></div>
     </div>
@@ -2052,7 +2056,15 @@ window.addEventListener('message', function(e) {
   // has already loaded would otherwise wait for the next reload to hear
   // anything at all.
   if (d.type === 'trellus:stack.request' || d.type === 'trellus:present') {
-    if (state.leads && state.leads.length) announceStack('requested');
+    // A dialer asking for the stack has usually just worked through the one it
+    // had, so top up first and answer with the larger list. Guarded on what is
+    // left, or a chatty extension would fetch a stack on every ping.
+    const left = (state.leads || []).length - state.currentIdx - 1;
+    if (state.currentState && left <= TOP_UP_WHEN_LEFT) {
+      topUpLeads(true);                      // announces 'loaded' itself
+    } else if (state.leads && state.leads.length) {
+      announceStack('requested');
+    }
     if (d.type === 'trellus:stack.request') return;
   }
 
@@ -3363,6 +3375,78 @@ function advanceLead() {
     loadLeads();
   } else {
     renderLead();
+    maybeTopUp();
+  }
+}
+
+// ══════════════════════════════════════════════════
+// TOPPING THE STACK UP BEFORE IT RUNS OUT
+//
+// The stack only ever refilled when the agent walked the CRM card past the
+// last lead. That worked while they dialled from the CRM. It does not work
+// when Trellus is driving: their queue empties first, they show "No dialable
+// tasks available", and the CRM sits there holding leads the dialer has never
+// been told about because nothing triggered a reload.
+//
+// loadLeads cannot be used for this — it replaces the list and resets the
+// index, which would throw the agent back to lead one mid-session. So this
+// appends instead, keeps their position, and announces the larger stack.
+// ══════════════════════════════════════════════════
+const TOP_UP_WHEN_LEFT = 25;
+let topUpInFlight = false;
+
+function maybeTopUp() {
+  const left = (state.leads || []).length - state.currentIdx - 1;
+  if (left > TOP_UP_WHEN_LEFT) return;
+  topUpLeads();
+}
+
+async function topUpLeads(announceWhenNothingNew) {
+  if (topUpInFlight || !state.currentState) return 0;
+  topUpInFlight = true;
+  try {
+    const data = await api('GET', { action: 'getLeads',
+                                    state: state.currentState, agent: state.agentName });
+    if (!data || data.error) return 0;
+
+    const have = {};
+    (state.leads || []).forEach(function(l) { have[leadKey(l)] = true; });
+    const add = (data.leads || []).filter(function(l) { return !have[leadKey(l)]; });
+
+    if (!add.length) {
+      // Nothing new in the pool. Still worth re-announcing when the agent asked
+      // for it, so a dialer holding a stale queue is corrected rather than left
+      // to look empty.
+      if (announceWhenNothingNew) announceStack('loaded');
+      return 0;
+    }
+
+    state.leads = state.leads.concat(add);
+    // The counter only, not renderLead — redrawing the card mid-call would
+    // take the script and the notes out from under the agent.
+    const c = document.getElementById('leadCounter');
+    if (c) c.textContent = 'Lead ' + (state.currentIdx + 1) + ' of ' + state.leads.length;
+    const rc = document.getElementById('railCount');
+    if (rc) rc.textContent = state.leads.length;
+    if (typeof renderLeadRail === 'function') { try { renderLeadRail(); } catch (e) {} }
+
+    announceStack('loaded');
+    return add.length;
+  } catch (e) {
+    return 0;
+  } finally {
+    topUpInFlight = false;
+  }
+}
+
+// The button. Named for what the agent wants, not for what it does.
+async function getMoreLeads() {
+  const n = await topUpLeads(true);
+  if (n > 0) {
+    toast('Added ' + n + ' more lead' + (n === 1 ? '' : 's') + ' to your stack.');
+  } else {
+    toast('No more ' + (CONFIG.STATE_NAMES[state.currentState] || state.currentState) +
+          ' leads available right now.');
   }
 }
 
