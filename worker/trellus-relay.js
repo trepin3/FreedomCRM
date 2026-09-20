@@ -84,6 +84,39 @@ function json(body, status, origin) {
 const sleep = ms => (ms ? new Promise(r => setTimeout(r, ms)) : Promise.resolve());
 
 /**
+ * One request to Apps Script, retried past its routing miss.
+ *
+ * Shared by both paths. The CRM gateway had this from the start and the Trellus
+ * relay did not, which is the whole of why roughly one call in four came back
+ * to the rep as "a call couldn't be logged": a single fetch, a Google error
+ * page instead of JSON, and a 502 handed straight to the dialer.
+ *
+ * `replaySafe` says whether a request that THREW may be repeated. An error page
+ * is always safe — the script never ran. A throw is ambiguous, so only callers
+ * that are idempotent at the other end opt in.
+ */
+async function originFetch(url, init, replaySafe) {
+  let detail = '';
+  for (let i = 0; i < ORIGIN_ATTEMPTS; i++) {
+    await sleep(ORIGIN_BACKOFF_MS[i] || 0);
+    let res, text;
+    try {
+      res = await fetch(url, init);
+      text = await res.text();
+    } catch (e) {
+      detail = 'fetch failed: ' + String(e);
+      if (replaySafe) continue;
+      break;
+    }
+    if (!looksLikeGoogleMiss(res.status, text)) {
+      return { ok: true, status: res.status, text: text, attempts: i + 1 };
+    }
+    detail = 'origin returned a non-JSON page (HTTP ' + res.status + ')';
+  }
+  return { ok: false, detail: detail, attempts: ORIGIN_ATTEMPTS };
+}
+
+/**
  * The CRM gateway. Proxies to Apps Script and retries the routing miss.
  *
  * A POST here is not necessarily safe to repeat — `sold` and `dcid` are not
@@ -113,44 +146,33 @@ async function handleApi(request, env, origin) {
     catch (e) { return json({ error: 'could not read request body' }, 400, origin); }
   }
 
-  let lastDetail = '';
-  for (let i = 0; i < ORIGIN_ATTEMPTS; i++) {
-    await sleep(ORIGIN_BACKOFF_MS[i] || 0);
-    let res, text;
-    try {
-      res = await fetch(target, isGet ? { method: 'GET', redirect: 'follow' } : {
-        method: 'POST',
-        // text/plain on purpose: application/json would trigger a preflight on
-        // the hop to Apps Script, which is the problem this Worker exists for.
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: body,
-        redirect: 'follow'
-      });
-      text = await res.text();
-    } catch (e) {
-      lastDetail = 'fetch failed: ' + String(e);
-      if (isGet) continue;                 // safe to repeat
-      break;                               // a POST may already have landed
-    }
+  // A GET may be repeated after a throw; a POST may already have landed, and
+  // sold/dcid are not idempotent on this path the way Trellus events are.
+  const hit = await originFetch(target, isGet ? { method: 'GET', redirect: 'follow' } : {
+    method: 'POST',
+    // text/plain on purpose: application/json would trigger a preflight on the
+    // hop to Apps Script, which is the problem this Worker exists for.
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: body,
+    redirect: 'follow'
+  }, isGet);
 
-    if (!looksLikeGoogleMiss(res.status, text)) {
-      // Straight through, including application errors — those are answers.
-      return new Response(text, {
-        status: res.status,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Gateway-Attempts': String(i + 1),
-          ...corsHeaders(origin)
-        }
-      });
-    }
-    lastDetail = 'origin returned a non-JSON page (HTTP ' + res.status + ')';
+  if (hit.ok) {
+    // Straight through, including application errors — those are answers.
+    return new Response(hit.text, {
+      status: hit.status,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Gateway-Attempts': String(hit.attempts),
+        ...corsHeaders(origin)
+      }
+    });
   }
 
   // Shaped like every other response so the client's existing error handling
   // reads it without a special case.
   return json({ error: 'The CRM backend did not respond. Please try again.',
-                detail: lastDetail, gateway: true }, 502, origin);
+                detail: hit.detail, gateway: true }, 502, origin);
 }
 
 export default {
@@ -229,25 +251,28 @@ export default {
     if (!body.session_id) return json({ error: 'session_id required' }, 400, origin);
     if (!body.lead_id)    return json({ error: 'lead_id required' },    400, origin);
 
-    let res;
-    try {
+    // Retried, and safe to retry even on a throw: the receiver dedupes on
+    // session_id, so a redelivered event that already applied comes back as a
+    // duplicate rather than dispositioning the lead twice. That guarantee is
+    // what lets this be more aggressive than the CRM path.
+    const hit = await originFetch(String(env.SCRIPT_URL || '').trim(), {
+      method: 'POST',
       // text/plain on purpose: application/json would trigger a preflight on
       // the hop to Apps Script, which is the problem we came here to avoid.
-      res = await fetch(String(env.SCRIPT_URL || '').trim(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(body),
-        redirect: 'follow'
-      });
-    } catch (e) {
-      // 502 rather than 500: retrying is the right thing for them to do.
-      return json({ error: 'crm unreachable', detail: String(e) }, 502, origin);
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body),
+      redirect: 'follow'
+    }, true);
+
+    if (!hit.ok) {
+      // 502 rather than 500: retrying is the right thing for them to do, and
+      // they hold the call details until it works.
+      return json({ error: 'crm unreachable', detail: hit.detail }, 502, origin);
     }
 
-    const text = await res.text();
     let out;
-    try { out = JSON.parse(text); }
-    catch (e) { return json({ error: 'crm returned non-json', status: res.status }, 502, origin); }
+    try { out = JSON.parse(hit.text); }
+    catch (e) { return json({ error: 'crm returned non-json', status: hit.status }, 502, origin); }
 
     if (out.error) {
       // not_found and not_permitted are their problem to fix, so 4xx. Anything

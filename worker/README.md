@@ -9,6 +9,17 @@ One Worker, two paths:
 | `POST /` | Trellus | relays call events — **unchanged, do not repoint them** |
 | `GET\|POST /api` | the CRM front end | proxies to Apps Script and retries its routing miss |
 
+**Both paths share one retry.** They did not at first — the gateway had it and
+the Trellus relay did not, which is the whole of why roughly one call in four
+came back to the rep as *"A call couldn't be logged to freedomcrm."* A single
+fetch, a Google error page instead of JSON, a 502 handed to the dialer.
+
+The relay is the more aggressive of the two: it retries even a request that
+threw, because the receiver dedupes on `session_id`, so a redelivered event that
+already applied returns `duplicate: true` rather than dispositioning twice. The
+CRM path cannot assume that — `sold` and `dcid` are not idempotent — so there a
+throw is not replayed.
+
 ---
 
 ## The gateway, and why
