@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-16.event-perf';
+const CODE_VERSION         = '2026-09-20.find-calls';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3177,6 +3177,99 @@ function trellusOwnership() {
  *   called, no event   the lead shows a Trellus call but no event ever
  *                      arrived — genuinely theirs to explain
  */
+/**
+ * Every call on one lead, with the Trellus session id for each.
+ *
+ * The recording lives in Trellus, not here. What this gives you is the session
+ * id, which is how you find it over there — and the full event history, which
+ * is how you tell a hang-up and a redial apart when they happened minutes
+ * apart and look identical on the lead row.
+ *
+ *   findCalls('Michael Jaichne')     name, any part, case-insensitive
+ *   findCalls('8033602329')          or the number
+ */
+function findCalls(needle) {
+  const q = String(needle || '').trim().toLowerCase();
+  if (!q) return 'Give me a name or a phone number.';
+  const qDigits = q.replace(/\D/g, '');
+
+  const L = ['CALLS FOR "' + needle + '"', ''];
+  const hits = [];
+
+  activeStates_().forEach(function(code) {
+    const sheet = SpreadsheetApp.openById(sheets_()[code]).getSheetByName('Leads');
+    const n = sheet ? sheet.getLastRow() : 0;
+    if (n < 2) return;
+    sheet.getRange(2, 1, n - 1, LEAD_COLS.length).getValues().forEach(function(row, i) {
+      const name = String(row[ix_('Name')] || '');
+      const phone = phoneKey_(row[ix_('Phone')]);
+      const nameHit = name.toLowerCase().indexOf(q) !== -1;
+      const phoneHit = qDigits.length >= 7 && phone.indexOf(qDigits) !== -1;
+      if (!nameHit && !phoneHit) return;
+      hits.push({ state: code, rowIndex: i + 2, row: row,
+                  leadId: String(row[ix_('Lead ID')] || '').toUpperCase() });
+    });
+  });
+
+  if (!hits.length) {
+    L.push('No lead matched. Try fewer letters, or the phone number.');
+    const out = L.join('\n'); Logger.log(out); return out;
+  }
+
+  // One read of the event log for all of them.
+  const sh = processedTab_();
+  const lr = sh.getLastRow();
+  const events = lr >= 2 ? sh.getRange(2, 1, lr - 1, 6).getValues() : [];
+
+  hits.forEach(function(h) {
+    const r = h.row;
+    L.push(h.leadId + '   ' + String(r[ix_('Name')] || '') +
+           '   ' + formatPhoneLike_(r[ix_('Phone')]) +
+           '   ' + h.state + ' row ' + h.rowIndex);
+    L.push('   status    : ' + (String(r[ix_('Status')] || '') || '(dialable)') +
+           (r[ix_('Status At')] ? '  at ' + fmtDateTime(r[ix_('Status At')]) : '') +
+           (r[ix_('Status By')] ? '  by ' + r[ix_('Status By')] : ''));
+    L.push('   attempts  : ' + (Number(r[ix_('Attempts')]) || 0));
+    L.push('   last call : ' + (fmtDateTime(r[ix_('Last Call Start')]) || '—') +
+           '  by ' + (String(r[ix_('Last Call Agent')] || '') || '—') +
+           (r[ix_('Last Call Duration')] ? '  (' + r[ix_('Last Call Duration')] + ')' : ''));
+
+    const mine = events.filter(function(e) {
+      return String(e[2] || '').toUpperCase() === h.leadId;
+    });
+    L.push('');
+    L.push('   Trellus events — ' + mine.length + ':');
+    if (!mine.length) L.push('      none recorded');
+    mine.forEach(function(e) {
+      // Key is "call.completed:<session_id>" — the part after the colon is what
+      // Trellus knows the call by.
+      const key = String(e[0] || '');
+      const session = key.indexOf(':') !== -1 ? key.slice(key.indexOf(':') + 1) : key;
+      L.push('      ' + fmtDateTime(e[1]) +
+             '   session ' + session +
+             '   outcome "' + String(e[3] || '') + '"' +
+             '   -> ' + String(e[5] || '') +
+             '   rep ' + String(e[4] || ''));
+    });
+    L.push('');
+  });
+
+  L.push('The recording is in Trellus, not here. Search their call history for');
+  L.push('the session id, or for the number at that timestamp.');
+
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
+// Display only. phoneKey_ strips to digits for matching; this puts it back into
+// something a human reads at a glance.
+function formatPhoneLike_(v) {
+  const d = phoneKey_(v);
+  if (d.length !== 10) return String(v || '');
+  return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6);
+}
+
 function auditTrellusDispositions(days) {
   const back = Number(days) || 7;
   const cutoff = Date.now() - back * 86400000;
