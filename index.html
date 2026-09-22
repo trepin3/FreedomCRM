@@ -2060,7 +2060,11 @@ window.addEventListener('message', function(e) {
     // had, so top up first and answer with the larger list. Guarded on what is
     // left, or a chatty extension would fetch a stack on every ping.
     const left = (state.leads || []).length - state.currentIdx - 1;
-    if (state.currentState && left <= TOP_UP_WHEN_LEFT) {
+    if (state.currentState && left <= TOP_UP_WHEN_LEFT &&
+        Date.now() >= topUpNextAllowedAt) {
+      // Cooldown applies here too. This fires on their presence ping, so an
+      // extension that reinitialises often would otherwise ask for a fresh
+      // stack every time it woke up.
       topUpLeads(true);                      // announces 'loaded' itself
     } else if (state.leads && state.leads.length) {
       announceStack('requested');
@@ -3393,17 +3397,32 @@ function advanceLead() {
 // appends instead, keeps their position, and announces the larger stack.
 // ══════════════════════════════════════════════════
 const TOP_UP_WHEN_LEFT = 25;
+// getLeads is the heaviest call in the system: it takes the script lock, runs
+// the release rules and reads and writes the whole state sheet. Asking for it
+// on every disposition once the stack got low meant twenty-five of them per
+// stack — and when the pool had nothing left to give, the stack never grew, so
+// the condition stayed true and it fired on every advance for the rest of the
+// session. Several agents doing that at once is enough load to slow Apps
+// Script for everybody, which is what "kicked out of the CRM" and "a call
+// couldn't be logged" both look like from the outside.
+const TOP_UP_COOLDOWN_MS = 90 * 1000;
+const TOP_UP_DRY_COOLDOWN_MS = 10 * 60 * 1000;   // nothing to give: back off hard
 let topUpInFlight = false;
+let topUpNextAllowedAt = 0;
 
 function maybeTopUp() {
   const left = (state.leads || []).length - state.currentIdx - 1;
   if (left > TOP_UP_WHEN_LEFT) return;
+  if (Date.now() < topUpNextAllowedAt) return;
   topUpLeads();
 }
 
 async function topUpLeads(announceWhenNothingNew) {
   if (topUpInFlight || !state.currentState) return 0;
   topUpInFlight = true;
+  // Set before the request, not after. A slow call must not leave the door open
+  // for the next disposition to fire a second one behind it.
+  topUpNextAllowedAt = Date.now() + TOP_UP_COOLDOWN_MS;
   try {
     const data = await api('GET', { action: 'getLeads',
                                     state: state.currentState, agent: state.agentName });
@@ -3414,9 +3433,12 @@ async function topUpLeads(announceWhenNothingNew) {
     const add = (data.leads || []).filter(function(l) { return !have[leadKey(l)]; });
 
     if (!add.length) {
-      // Nothing new in the pool. Still worth re-announcing when the agent asked
-      // for it, so a dialer holding a stale queue is corrected rather than left
-      // to look empty.
+      // The pool is dry. Asking again in ninety seconds will get the same
+      // answer, so wait considerably longer — this is the case that turned into
+      // a request on every disposition for the rest of the session.
+      topUpNextAllowedAt = Date.now() + TOP_UP_DRY_COOLDOWN_MS;
+      // Still worth re-announcing when the agent asked for it, so a dialer
+      // holding a stale queue is corrected rather than left to look empty.
       if (announceWhenNothingNew) announceStack('loaded');
       return 0;
     }
