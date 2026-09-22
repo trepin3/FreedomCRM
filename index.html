@@ -6904,7 +6904,42 @@ async function api(method, params) {
 // Without it, every request quietly fails and the agent concludes the app is
 // broken rather than that they need to sign in again.
 let sessionExpiredHandled = false;
-function handleSessionExpired() {
+/**
+ * One `auth_required` is not proof the session is dead.
+ *
+ * Six handlers on the server answer `auth_required` simply because the Users
+ * sheet came back empty for them — not because anything is wrong with the
+ * token. That sheet is read several times per request and is not cached, so a
+ * single flaky read was enough to throw an agent out of a live call and hand
+ * their stack back to the pool.
+ *
+ * So this asks again before believing it. A genuinely dead session fails the
+ * second check too and the agent is signed out as before, a second later. A
+ * backend hiccup does not cost anybody their call.
+ */
+let authFailStreak = 0;
+
+async function handleSessionExpired() {
+  if (sessionExpiredHandled) return;
+  if (!state.authToken) return;
+
+  authFailStreak++;
+  if (authFailStreak < 2) {
+    // Confirm with the cheapest authenticated call there is, after a beat to
+    // let a momentary wobble pass.
+    await new Promise(function(r) { setTimeout(r, 1500); });
+    try {
+      const probe = await api('GET', { action: 'heartbeat', state: state.currentState || '' });
+      if (!probe || probe.error !== 'auth_required') {
+        authFailStreak = 0;                 // it was the backend, not the token
+        return;
+      }
+    } catch (e) {
+      authFailStreak = 0;                   // could not tell; do not sign them out
+      return;
+    }
+  }
+
   if (sessionExpiredHandled) return;
   sessionExpiredHandled = true;
 

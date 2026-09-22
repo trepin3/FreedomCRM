@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-20.find-calls';
+const CODE_VERSION         = '2026-09-22.session-stability';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -771,10 +771,24 @@ function usersSheet_() {
   return sh;
 }
 
+// Read once per execution, not once per lookup.
+//
+// userByEmail_ has fifty call sites and every one of them re-read this sheet.
+// A single request read it three or more times — verifySession_ alone does it
+// twice — and six handlers answer `auth_required` purely because the read came
+// back empty for them. So one flaky read threw an agent out of a live call and
+// handed their stack back to the pool, with nothing wrong with their token.
+//
+// Cleared by every write below, or a promotion would not take effect until the
+// container recycled.
+let _users = null;
+function usersDirty_() { _users = null; }
+
 function usersAll_() {
+  if (_users) return _users;
   const sh = usersSheet_();
   if (sh.getLastRow() < 2) return [];
-  return sh.getRange(2, 1, sh.getLastRow() - 1, USER_COLS.length).getValues().map(function(r, i) {
+  _users = sh.getRange(2, 1, sh.getLastRow() - 1, USER_COLS.length).getValues().map(function(r, i) {
     return {
       row: i + 2,
       id: String(r[0]).trim(),
@@ -787,6 +801,7 @@ function usersAll_() {
       lastLogin: r[7]
     };
   });
+  return _users;
 }
 
 function userByEmail_(email) {
@@ -857,6 +872,7 @@ function createUser_(actor, opts) {
 
   const id = nextUserId_();
   usersSheet_().appendRow([id, email, name, role, parent.id, parent.path + '>' + id, 'active', '']);
+  usersDirty_();
   logActivity_(actor, 'createUser', role + ' ' + email + ' under ' + parent.email, '');
   return { ok: true, id: id };
 }
@@ -884,6 +900,7 @@ function reassignUser_(actor, userId, newParentId) {
     sh.getRange(u.row, 6).setValue(newPath + u.path.slice(oldPath.length));
   });
   sh.getRange(target.row, 5).setValue(parent.id);
+  usersDirty_();                    // paths and parent just moved
   logActivity_(actor, 'reassignUser', target.email + ' -> ' + parent.email, '');
   return { ok: true };
 }
@@ -903,6 +920,7 @@ function disableUser_(actor, userId) {
     });
   }
   usersSheet_().getRange(userById_(userId).row, 7).setValue('disabled');
+  usersDirty_();
   logActivity_(actor, 'disableUser', target.email, '');
   return { ok: true };
 }
@@ -915,6 +933,7 @@ function promoteUser_(actor, userId) {
   if (!canManage_(actor, target)) return { error: 'That person is not in your downline.' };
   if (target.role !== 'agent') return { error: 'Only agents can be promoted.' };
   usersSheet_().getRange(target.row, 4).setValue('manager');
+  usersDirty_();
   logActivity_(actor, 'promoteUser', target.email, '');
   return { ok: true };
 }
@@ -928,6 +947,7 @@ function demoteUser_(actor, userId) {
   if (target.role !== 'manager') return { error: 'That account is not a manager.' };
   rollUpReports_(actor, target);
   usersSheet_().getRange(userById_(userId).row, 4).setValue('agent');
+  usersDirty_();
   logActivity_(actor, 'demoteUser', target.email, '');
   return { ok: true };
 }
@@ -939,6 +959,7 @@ function revokeUser_(actor, userId) {
   if (target.role === 'admin') return { error: 'The admin account cannot be revoked.' };
   rollUpReports_(actor, target);
   usersSheet_().getRange(userById_(userId).row, 7).setValue('revoked');
+  usersDirty_();
   releaseReservations_(target.name);
   logActivity_(actor, 'revokeUser', target.email, '');
   return { ok: true };
@@ -951,6 +972,7 @@ function setPaused_(actor, userId, paused) {
   if (!target) return { error: 'User not found.' };
   if (target.role === 'admin') return { error: 'The admin account cannot be paused.' };
   usersSheet_().getRange(target.row, 7).setValue(paused ? 'paused' : 'active');
+  usersDirty_();
   if (paused) releaseReservations_(target.name);
   logActivity_(actor, paused ? 'pauseUser' : 'resumeUser', target.email, '');
   return { ok: true };
@@ -986,6 +1008,7 @@ function releaseReservations_(agentName) {
 
 // ── One-time migration from the flat Agents sheet ───────────────────────────
 function migrateAgentsToUsers() {
+  usersDirty_();   // it is about to add rows
   const ss = authSS_();
   const sh = usersSheet_();
   if (sh.getLastRow() > 1) return 'Users already populated — nothing to do.';
