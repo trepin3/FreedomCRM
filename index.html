@@ -1872,7 +1872,13 @@ function restoreSession() {
   const name = localStorage.getItem('fcrm_agent');
   const email = localStorage.getItem('fcrm_email');
   if (!name || !email) return false;
-  state.authToken  = localStorage.getItem('fcrm_session') || '';
+  // A remembered name with no token is not a session. This used to walk them
+  // into the dialer looking signed in, and every request then came back
+  // auth_required — which reads as being thrown out seconds after arriving,
+  // rather than as never having been let in.
+  const tok = localStorage.getItem('fcrm_session') || '';
+  if (!tok) return false;
+  state.authToken  = tok;
   state.agentName  = name;
   state.agentEmail = email;
   state.role       = localStorage.getItem('fcrm_role') || 'agent';
