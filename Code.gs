@@ -3232,7 +3232,16 @@ function trellusOwnership() {
  */
 function whoIs(needle) {
   const q = String(needle || '').trim().toLowerCase();
-  if (!q) return 'Give me a name or an email.';
+  if (!q) {
+    // Logged, not just returned. Run from the editor's dropdown there is no
+    // argument and no return value on screen, so a bare return looked like the
+    // function had done nothing at all.
+    const msg = 'whoIs needs a name or an email.\n' +
+                'Run it from a wrapper:\n' +
+                '   function checkTeri() { Logger.log(whoIs("teri")); }';
+    Logger.log(msg);
+    return msg;
+  }
   const L = ['WHO IS "' + needle + '"', ''];
 
   const users = usersAll_().filter(function(u) {
@@ -3298,7 +3307,13 @@ function whoIs(needle) {
 
 function findCalls(needle) {
   const q = String(needle || '').trim().toLowerCase();
-  if (!q) return 'Give me a name or a phone number.';
+  if (!q) {
+    const msg = 'findCalls needs a name or a phone number.\n' +
+                'Run it from a wrapper:\n' +
+                '   function checkLead() { Logger.log(findCalls("dejohn")); }';
+    Logger.log(msg);
+    return msg;
+  }
   const qDigits = q.replace(/\D/g, '');
 
   const L = ['CALLS FOR "' + needle + '"', ''];
