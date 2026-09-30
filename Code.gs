@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-22.session-stability';
+const CODE_VERSION         = '2026-09-29.whois';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3055,7 +3055,12 @@ function hasTrellus_(user) {
 
 // The extension announced itself, or the agent said they already have it.
 function actionTrellusOwned(me, body) {
-  if (!me || !me.id) return { error: 'auth_required' };
+  // Never auth_required. This records that somebody owns the dialer so they
+  // stop being pitched it — and the client treats auth_required from anything
+  // as a dead session. An agent whose Users record cannot be resolved was
+  // therefore signed out mid-call by the upsell, which the extension pokes on
+  // every message it sends. A cosmetic feature must not be able to do that.
+  if (!me || !me.id) return { success: true, ignored: 'no user record' };
   markTrellusUser_(me.id, String(body && body.how) === 'detected'
     ? { has: true, at: stamp_() }
     : { dismissed: true, at: stamp_() });
@@ -3211,6 +3216,86 @@ function trellusOwnership() {
  *   findCalls('Michael Jaichne')     name, any part, case-insensitive
  *   findCalls('8033602329')          or the number
  */
+/**
+ * Why one person keeps getting signed out and nobody else does.
+ *
+ * Nine handlers answer `auth_required` when the Users lookup comes back empty
+ * for them, and one of those additionally requires an id. None of that means
+ * the session is bad — an agent can sign in perfectly well through the legacy
+ * Agents sheet and then fail every one of those calls, because login and the
+ * handlers do not look the person up the same way.
+ *
+ * So this walks the same path the server does, for one person, and reports
+ * where it diverges.
+ *
+ *   whoIs('teri')
+ */
+function whoIs(needle) {
+  const q = String(needle || '').trim().toLowerCase();
+  if (!q) return 'Give me a name or an email.';
+  const L = ['WHO IS "' + needle + '"', ''];
+
+  const users = usersAll_().filter(function(u) {
+    return String(u.name || '').toLowerCase().indexOf(q) !== -1 ||
+           String(u.email || '').toLowerCase().indexOf(q) !== -1;
+  });
+
+  L.push('Users sheet — ' + users.length + ' match:');
+  if (!users.length) L.push('   NONE. Every handler needing a Users record will refuse them.');
+  users.forEach(function(u) {
+    L.push('   row ' + u.row + '   id "' + u.id + '"' + (u.id ? '' : '   <-- BLANK'));
+    L.push('      email  ' + u.email);
+    L.push('      name   ' + u.name);
+    L.push('      role   ' + u.role + '      status ' + u.status +
+           (u.status === 'active' ? '' : '   <-- NOT ACTIVE, session checks fail'));
+    L.push('      path   ' + (u.path || '(none)'));
+  });
+
+  // The legacy sheet is the one that lets someone sign in without a Users row.
+  L.push('');
+  try {
+    const sh = authSS_().getSheetByName(AGENTS_SHEET);
+    const lr = sh ? sh.getLastRow() : 0;
+    const rows = lr >= 2 ? sh.getRange(2, 1, lr - 1, 5).getValues() : [];
+    const legacy = rows.filter(function(r) {
+      return String(r[0] || '').toLowerCase().indexOf(q) !== -1 ||
+             String(r[1] || '').toLowerCase().indexOf(q) !== -1;
+    });
+    L.push('Legacy Agents sheet — ' + legacy.length + ' match:');
+    legacy.forEach(function(r) { L.push('   ' + r.slice(0, 4).join('  |  ')); });
+    if (legacy.length && !users.length) {
+      L.push('   ^ THIS IS THE PROBLEM. They can sign in through here, and then');
+      L.push('     every handler that needs a Users record refuses them.');
+    }
+  } catch (e) { L.push('Legacy Agents sheet — unreadable (' + e.message + ')'); }
+
+  // Now the actual path, per email.
+  L.push('');
+  L.push('What the server does with each address:');
+  const emails = {};
+  users.forEach(function(u) { emails[u.email] = true; });
+  Object.keys(emails).forEach(function(e) {
+    const byEmail = userByEmail_(e);
+    const agent = findAgent_(e);
+    L.push('   ' + e);
+    L.push('      findAgent_    : ' + (agent ? 'found, status ' + agent.status : 'NOT FOUND — cannot sign in'));
+    L.push('      userByEmail_  : ' + (byEmail ? 'found, id "' + byEmail.id + '"'
+                                               : 'NULL — nine handlers answer auth_required'));
+    L.push('      id present    : ' + (byEmail && byEmail.id ? 'yes' :
+             'NO — actionTrellusOwned refuses, and the dialer calls it on every extension message'));
+  });
+
+  L.push('');
+  L.push('Handlers that refuse when the Users lookup is empty: getSold, statLeads,');
+  L.push('leadById, actionCompleteSale, actionAddOutsideSale, myBatches,');
+  L.push('apiBookCallback, actionTrellusOwned. The client treats any of those as');
+  L.push('a dead session.');
+
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
 function findCalls(needle) {
   const q = String(needle || '').trim().toLowerCase();
   if (!q) return 'Give me a name or a phone number.';
