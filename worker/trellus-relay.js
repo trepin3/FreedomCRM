@@ -50,6 +50,18 @@ const ALLOWED_ORIGINS = [
 const ORIGIN_ATTEMPTS = 4;
 const ORIGIN_BACKOFF_MS = [0, 120, 400, 900];
 
+// The relay answers a dialer that is holding a call open waiting for us, and it
+// gives up long before we do. Proven by the event log: calls that showed "a call
+// couldn't be logged" are in ProcessedEvents, applied correctly — we succeeded
+// on attempt three or four and nobody was listening by then.
+//
+// So the relay tries twice, fast. Trying harder was making the warning MORE
+// visible while changing nothing about whether the call was recorded. Two
+// things already cover the rest: the receiver dedupes on session_id, so their
+// own retry is free, and they keep the call details either way.
+const RELAY_ATTEMPTS = 2;
+const RELAY_BACKOFF_MS = [0, 250];
+
 // Google's failure page, which arrives with a 200 and an HTML body. Matching the
 // shape explicitly rather than treating every unparseable response as this one:
 // a genuine application error should reach the agent, not be retried four times
@@ -95,10 +107,12 @@ const sleep = ms => (ms ? new Promise(r => setTimeout(r, ms)) : Promise.resolve(
  * is always safe — the script never ran. A throw is ambiguous, so only callers
  * that are idempotent at the other end opt in.
  */
-async function originFetch(url, init, replaySafe) {
+async function originFetch(url, init, replaySafe, attempts, backoff) {
+  const tries = attempts || ORIGIN_ATTEMPTS;
+  const waits = backoff || ORIGIN_BACKOFF_MS;
   let detail = '';
-  for (let i = 0; i < ORIGIN_ATTEMPTS; i++) {
-    await sleep(ORIGIN_BACKOFF_MS[i] || 0);
+  for (let i = 0; i < tries; i++) {
+    await sleep(waits[i] || 0);
     let res, text;
     try {
       res = await fetch(url, init);
@@ -113,7 +127,7 @@ async function originFetch(url, init, replaySafe) {
     }
     detail = 'origin returned a non-JSON page (HTTP ' + res.status + ')';
   }
-  return { ok: false, detail: detail, attempts: ORIGIN_ATTEMPTS };
+  return { ok: false, detail: detail, attempts: tries };
 }
 
 /**
@@ -262,7 +276,7 @@ export default {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(body),
       redirect: 'follow'
-    }, true);
+    }, true, RELAY_ATTEMPTS, RELAY_BACKOFF_MS);
 
     if (!hit.ok) {
       // 502 rather than 500: retrying is the right thing for them to do, and

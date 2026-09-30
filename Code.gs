@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-29.whois';
+const CODE_VERSION         = '2026-09-29.auth-trace';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -715,23 +715,72 @@ function signSession_(payload) {
   return body + '.' + sig;
 }
 
+/**
+ * Records why a session was refused.
+ *
+ * There are five ways to fail here and the caller only ever saw "null", so
+ * "agents are getting kicked out" could not be told apart from "their token
+ * expired" without guessing. Written to a tab, because the agent it happens to
+ * is not the person who can read a log.
+ */
+function noteAuthFail_(reason, token, email) {
+  try {
+    const ss = authSS_();
+    let sh = ss.getSheetByName('AuthFailures');
+    if (!sh) {
+      sh = ss.insertSheet('AuthFailures');
+      sh.appendRow(['At', 'Reason', 'Email', 'Token length', 'Token head']);
+      sh.setFrozenRows(1);
+    }
+    sh.appendRow([Utilities.formatDate(new Date(), TZ, 'MM/dd/yyyy HH:mm:ss'),
+                  reason, email || '', String(token || '').length,
+                  String(token || '').slice(0, 24)]);
+  } catch (e) { /* never break a request to record why it broke */ }
+}
+
 function verifySession_(token) {
-  if (!token || token.indexOf('.') === -1) return null;
+  if (!token || token.indexOf('.') === -1) {
+    // The commonest by far, and the least alarming: no token was sent at all.
+    // Logged separately so it cannot be mistaken for a rejected one.
+    noteAuthFail_(token ? 'malformed token' : 'no token sent', token, '');
+    return null;
+  }
   const parts = token.split('.');
   const expected = Utilities.base64EncodeWebSafe(
     Utilities.computeHmacSha256Signature(parts[0], sessionSecret_()));
-  if (parts[1] !== expected) return null;               // tampered or forged
+  if (parts[1] !== expected) {
+    noteAuthFail_('signature mismatch', token, '');
+    return null;
+  }
 
   let payload;
   try {
     payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString());
-  } catch (e) { return null; }
-  if (!payload || !payload.e || Number(payload.x) < Date.now()) return null;
+  } catch (e) {
+    noteAuthFail_('payload unreadable', token, '');
+    return null;
+  }
+  if (!payload || !payload.e) {
+    noteAuthFail_('payload has no email', token, '');
+    return null;
+  }
+  if (Number(payload.x) < Date.now()) {
+    noteAuthFail_('expired ' + Math.round((Date.now() - Number(payload.x)) / 60000) +
+                  ' min ago', token, payload.e);
+    return null;
+  }
 
   // Re-read the sheet so disabling an agent takes effect immediately rather
   // than whenever their token happens to expire.
   const agent = findAgent_(payload.e);
-  if (!agent || agent.status !== 'active') return null;
+  if (!agent) {
+    noteAuthFail_('findAgent_ returned nothing', token, payload.e);
+    return null;
+  }
+  if (agent.status !== 'active') {
+    noteAuthFail_('status is ' + agent.status, token, payload.e);
+    return null;
+  }
 
   // The id has to be here. Reservations key on it now, and without it the
   // heartbeat reported nothing held, dispositions were refused as lead_released
@@ -3230,6 +3279,52 @@ function trellusOwnership() {
  *
  *   whoIs('teri')
  */
+/**
+ * What actually refused people, and how often. Run after a bad day.
+ *
+ *   authFailures()      last 24 hours
+ *   authFailures(72)    last three days
+ */
+function authFailures(hours) {
+  const back = Number(hours) || 24;
+  const cutoff = Date.now() - back * 3600000;
+  const sh = authSS_().getSheetByName('AuthFailures');
+  if (!sh || sh.getLastRow() < 2) {
+    const none = 'No AuthFailures tab yet, or nothing in it. Nobody has been refused since this shipped.';
+    Logger.log(none); return none;
+  }
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues()
+    .filter(function(r) { const t = parseStamp_(r[0]); return !t || t >= cutoff; });
+
+  const byReason = {}, byPerson = {};
+  rows.forEach(function(r) {
+    const reason = String(r[1] || '').replace(/expired \d+ min ago/, 'expired');
+    byReason[reason] = (byReason[reason] || 0) + 1;
+    const who = String(r[2] || '(unknown)');
+    byPerson[who] = byPerson[who] || {};
+    byPerson[who][reason] = (byPerson[who][reason] || 0) + 1;
+  });
+
+  const L = ['AUTH FAILURES — last ' + back + ' hours', '', 'Total: ' + rows.length, ''];
+  Object.keys(byReason).sort(function(a, b) { return byReason[b] - byReason[a]; })
+    .forEach(function(k) { L.push('   ' + (byReason[k] + '     ').slice(0, 6) + k); });
+  L.push('');
+  L.push('By person:');
+  Object.keys(byPerson).forEach(function(w) {
+    L.push('   ' + w);
+    Object.keys(byPerson[w]).forEach(function(r) {
+      L.push('      ' + byPerson[w][r] + '   ' + r);
+    });
+  });
+  L.push('');
+  L.push('"no token sent" is usually harmless — a page loading before sign-in.');
+  L.push('"expired" is the session simply running out; twelve hours is the life.');
+  L.push('"signature mismatch" or "findAgent_ returned nothing" would be real bugs.');
+  const out = L.join('\n');
+  Logger.log(out);
+  return out;
+}
+
 function whoIs(needle) {
   const q = String(needle || '').trim().toLowerCase();
   if (!q) {
