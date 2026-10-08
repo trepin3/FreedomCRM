@@ -420,7 +420,7 @@ const CALLBACK_HOLD_MS     = 72 * 60 * 60 * 1000;  // booking agent keeps it thi
 // steps, and doing the first without the second leaves the web app serving old
 // code while the editor runs new code — which has quietly happened here more
 // than once. ping reports this so the question is answerable from outside.
-const CODE_VERSION         = '2026-09-29.auth-trace';
+const CODE_VERSION         = '2026-10-08.dial-load';
 
 const REDIAL_COOLDOWN_MS   = 15 * 60 * 1000;
 // A stack nobody has actually dialled or dispositioned in this long goes back,
@@ -3976,8 +3976,30 @@ function actionTrellusEvent(body) {
  * A webhook is proof they are dialling. Treat it as activity across everything
  * they hold, not just the lead the event names.
  */
+// At most one full-stack refresh a minute per owner per state.
+//
+// This reads AND writes four columns across the whole sheet, and it ran on
+// every Trellus event — every call start, every hangup, on both the in-page
+// path and the webhook. Five lines parallel made that ten per round of
+// dialling, and twenty dials was enough to stop Apps Script answering, which
+// the client reads as a dead session and shows as a sign-in screen.
+//
+// Nothing is lost by skipping: a stack gets fifteen minutes of idle before the
+// release rules touch it, so once a minute is already far more often than the
+// thing it exists to prevent.
+const TOUCH_STACK_MIN_GAP_S = 60;
+
 function touchStack_(owner, state) {
   if (!owner || !sheets_()[state]) return 0;
+
+  const who = String((owner && (owner.id || owner.name)) || '');
+  const key = 'ts_' + who + '_' + state;
+  try {
+    const cache = CacheService.getScriptCache();
+    if (cache.get(key)) return 0;             // refreshed moments ago
+    cache.put(key, '1', TOUCH_STACK_MIN_GAP_S);
+  } catch (e) { /* cache down: do the work rather than skip it */ }
+
   const sheet = SpreadsheetApp.openById(sheets_()[state]).getSheetByName('Leads');
   const lr = sheet ? sheet.getLastRow() : 0;
   if (lr < 2) return 0;
@@ -3995,6 +4017,25 @@ function touchStack_(owner, state) {
 // Sheet-level lookup with no visibility check — the caller is the Worker, not a
 // user, and it has already been authenticated by the shared secret.
 function leadRowById_(leadId) {
+  // Remember where a lead lives. Rows are appended and never moved, so this
+  // cannot go stale in a way that matters, and it turns a sheet open plus a
+  // full column read — on every Trellus event, of which there are two per call
+  // per line — into a cache hit.
+  const ck = 'lr_' + leadId;
+  try {
+    const hit = CacheService.getScriptCache().get(ck);
+    if (hit) {
+      const p = hit.split('|');
+      const sh = SpreadsheetApp.openById(sheets_()[p[0]]).getSheetByName('Leads');
+      // Confirm before trusting it. A sheet rebuilt behind our back would
+      // otherwise send a disposition to whatever row now sits at that index.
+      if (sh && String(sh.getRange(Number(p[1]), COL['Lead ID']).getValue() || '')
+                 .trim().toUpperCase() === leadId) {
+        return { sheet: sh, rowIndex: Number(p[1]), state: p[0] };
+      }
+    }
+  } catch (e) {}
+
   const guess = leadId.split('-')[0];
   const order = sheets_()[guess] ? [guess].concat(activeStates_().filter(function(s) {
     return s !== guess; })) : activeStates_();
@@ -4006,6 +4047,8 @@ function leadRowById_(leadId) {
     const ids = sheet.getRange(2, COL['Lead ID'], lr - 1, 1).getValues();
     for (let i = 0; i < ids.length; i++) {
       if (String(ids[i][0] || '').trim().toUpperCase() === leadId) {
+        try { CacheService.getScriptCache()
+                .put('lr_' + leadId, state + '|' + (i + 2), 21600); } catch (e) {}
         return { sheet: sheet, rowIndex: i + 2, state: state };
       }
     }
