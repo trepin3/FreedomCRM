@@ -2027,7 +2027,41 @@ const TRELLUS_SEEN_MAX = 500;
 const trellusActiveSessions = new Map();   // session_id -> { leadId, at }
 const TRELLUS_SESSION_MAX_MS = 2 * 60 * 60 * 1000;
 
+// How often this is worth telling the server about at all.
+//
+// Every relayed event costs a scan of every state sheet to find the lead, then
+// a read AND a write of the whole stack to refresh it. At five lines parallel
+// that is ten of those per round of dialling — around forty in the twenty dials
+// it took to put an agent on the sign-in screen. Apps Script cannot absorb
+// that, and when it stops answering the client reads the silence as a dead
+// session.
+//
+// None of that frequency buys anything. The release rules give a stack fifteen
+// minutes of idle before they touch it, so refreshing once a minute is already
+// fifteen times more often than needed.
+const TRELLUS_RELAY_MIN_GAP_MS = 60 * 1000;
+let trellusLastRelayAt = 0;
+// Sessions we actually opened on the server, so a hangup only has to be sent
+// when there is a Call Open At flag of ours left to clear.
+const trellusRelayedStarts = new Set();
+
 function trellusRelay(event, sessionId, leadId, startedAt) {
+  const now = Date.now();
+
+  if (event === 'start') {
+    // Skipping a start is free: the next one through the gate refreshes the
+    // whole stack anyway, and that is the only thing keeping it alive.
+    if (now - trellusLastRelayAt < TRELLUS_RELAY_MIN_GAP_MS) return;
+    trellusLastRelayAt = now;
+    trellusRelayedStarts.add(sessionId);
+  } else {
+    // An end is only worth sending for a call we opened. Anything else would
+    // be clearing a flag that was never set.
+    if (!trellusRelayedStarts.has(sessionId)) return;
+    trellusRelayedStarts.delete(sessionId);
+    trellusLastRelayAt = now;
+  }
+
   api('POST', { action: 'trellusActivity', event: event,
                 sessionId: sessionId, leadId: leadId, startedAt: startedAt || '' })
     .catch(function() {});   // an activity hint is never worth a visible failure
